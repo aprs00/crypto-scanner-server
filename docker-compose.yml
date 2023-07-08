@@ -1,0 +1,79 @@
+services:
+    db:
+        container_name: crypto-scanner-db
+        image: postgres
+        volumes:
+            - ./data/db:/var/lib/postgresql/data
+        environment:
+            - POSTGRES_DB=${POSTGRES_NAME}
+            - POSTGRES_USER=${POSTGRES_USER}
+            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+
+    app:
+        container_name: crypto-scanner-app
+        build: .
+        restart: always
+        command: python manage.py runserver 0.0.0.0:8000
+        volumes:
+            - .:/code
+        ports:
+             - "8000:8000"
+        environment:
+            - POSTGRES_NAME=${POSTGRES_NAME}
+            - POSTGRES_USER=${POSTGRES_USER}
+            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+        depends_on:
+            - db
+
+    redis:
+        container_name: crypto-scanner-redis
+        image: "redis:alpine"
+
+    celery:
+        container_name: crypto-scanner-celery
+        build: .
+        restart: always
+        command: celery -A core worker -l INFO
+        volumes:
+            - .:/code
+        environment:
+            - DEBUG=1
+            - DJANGO_ALLOWED_HOSTS=*
+            - CELERY_BROKER=${CELERY_BROKER}
+            - CELERY_BACKEND=${CELERY_BACKEND}
+        depends_on:
+            - app
+            - redis
+
+    celery-beat:
+        container_name: crypto-scanner-celery-beat
+        build: .
+        restart: always
+        command: celery -A core beat -l INFO
+        volumes:
+            - .:/code
+        environment:
+            - DEBUG=1
+            - DJANGO_ALLOWED_HOSTS=*
+            - CELERY_BROKER=${CELERY_BROKER}
+            - CELERY_BACKEND=${CELERY_BACKEND}
+        depends_on:
+            - app
+            - redis
+
+    flower:
+        container_name: crypto-scanner-flower
+        build: .
+        command: celery -A core flower
+        volumes:
+            - .:/code
+        ports:
+            - "5555:5555"
+        environment:
+            - DEBUG=1
+            - DJANGO_ALLOWED_HOSTS=*
+            - CELERY_BROKER=${CELERY_BROKER}
+            - CELERY_BACKEND=${CELERY_BACKEND}
+        depends_on:
+            - app
+            - redis
