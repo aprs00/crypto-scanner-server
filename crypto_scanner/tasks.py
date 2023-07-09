@@ -12,12 +12,12 @@ client = Client()
 r = redis.Redis(host="localhost", port=6379, db=0)
 
 
-# @shared_task
-# def run_every_15_seconds():
-#     btc_price = client.get_symbol_ticker(symbol="BTCUSDT")
-#     btc_price = float(btc_price["price"])
-#     print(f"Current BTC price: {btc_price}")
-#     return "SUCCESSFUL RUN EVERY 15 SECONDS"
+@shared_task
+def run_every_15_seconds():
+    btc_price = client.get_symbol_ticker(symbol="BTCUSDT")
+    btc_price = float(btc_price["price"])
+    print(f"Current BTC price: {btc_price}")
+    return "SUCCESSFUL RUN EVERY 15 SECONDS"
 
 
 def something():

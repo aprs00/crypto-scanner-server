@@ -32,34 +32,34 @@ services:
         container_name: crypto-scanner-redis
         image: "redis:alpine"
 
-    # celery:
-    #     container_name: crypto-scanner-celery
-    #     build: .
-    #     restart: always
-    #     command: celery -A core worker -l INFO
-    #     volumes:
-    #         - .:/code
-    #     environment:
-    #         - DEBUG=1
-    #         - DJANGO_ALLOWED_HOSTS=*
-    #         - CELERY_BROKER=${CELERY_BROKER}
-    #         - CELERY_BACKEND=${CELERY_BACKEND}
-    #     depends_on:
-    #         - app
-    #         - redis
+    celery:
+        container_name: crypto-scanner-celery
+        build: .
+        restart: always
+        command: celery -A core worker -l INFO
+        volumes:
+            - .:/code
+        environment:
+            - DEBUG=1
+            - DJANGO_ALLOWED_HOSTS=*
+            - CELERY_BROKER=${CELERY_BROKER}
+            - CELERY_BACKEND=${CELERY_BACKEND}
+        depends_on:
+            - app
+            - redis
 
-    # celery-beat:
-    #     container_name: crypto-scanner-celery-beat
-    #     build: .
-    #     restart: always
-    #     command: celery -A core beat -l INFO
-    #     volumes:
-    #         - .:/code
-    #     environment:
-    #         - DEBUG=1
-    #         - DJANGO_ALLOWED_HOSTS=*
-    #         - CELERY_BROKER=${CELERY_BROKER}
-    #         - CELERY_BACKEND=${CELERY_BACKEND}
-    #     depends_on:
-    #         - app
-    #         - redis
+    celery-beat:
+        container_name: crypto-scanner-celery-beat
+        build: .
+        restart: always
+        command: celery -A core beat -l INFO
+        volumes:
+            - .:/code
+        environment:
+            - DEBUG=1
+            - DJANGO_ALLOWED_HOSTS=*
+            - CELERY_BROKER=${CELERY_BROKER}
+            - CELERY_BACKEND=${CELERY_BACKEND}
+        depends_on:
+            - app
+            - redis
