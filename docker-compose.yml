@@ -1,7 +1,7 @@
 services:
     db:
         container_name: crypto-scanner-db
-        image: postgres
+        image: postgres:15.3-alpine3.18
         volumes:
             - ./data/db:/var/lib/postgresql/data
         environment:
@@ -30,12 +30,11 @@ services:
 
     redis:
         container_name: crypto-scanner-redis
-        image: "redis:alpine"
+        image: "redis:7.2-rc2-alpine"
 
     celery:
         container_name: crypto-scanner-celery
         build: .
-        restart: always
         command: celery -A core worker -l INFO
         volumes:
             - .:/code
@@ -51,7 +50,6 @@ services:
     celery-beat:
         container_name: crypto-scanner-celery-beat
         build: .
-        restart: always
         command: celery -A core beat -l INFO
         volumes:
             - .:/code
