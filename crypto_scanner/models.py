@@ -19,3 +19,12 @@ class Snippet(models.Model):
 
     class Meta:
         ordering = ["created"]
+
+
+class BtcPrice(models.Model):
+    id = models.AutoField(primary_key=True)
+    created = models.DateTimeField(auto_now_add=True)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        ordering = ["created"]
