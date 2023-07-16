@@ -160,6 +160,6 @@ CELERY_TIMEZONE = "UTC"
 CELERY_BEAT_SCHEDULE = {
     "fetch-all-1m-klines": {
         "task": "crypto_scanner.tasks.fetch_all_1m_klines",
-        "schedule": crontab(minute="*/1"),
+        "schedule": crontab(minute="*/8"),
     },
 }
