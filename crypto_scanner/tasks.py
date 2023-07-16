@@ -1,5 +1,6 @@
 from __future__ import absolute_import, unicode_literals
 from django.db.models import Count
+from django.utils import timezone
 from crypto_scanner.models import (
     BtcKline1m,
     EthKline1m,
@@ -75,13 +76,21 @@ def populate_kline(ticker, date):
 
 
 def store_kline(ticker, kline):
-    start_time = datetime.fromtimestamp(kline[0] / 1000)
-    if databaseModels[ticker].objects.filter(start_time=start_time).exists():
+    start_time = timezone.make_aware(
+        datetime.fromtimestamp(kline[0] / 1000), timezone.utc
+    )
+
+    model = databaseModels[ticker]
+    if model.objects.filter(start_time=start_time).exists():
         return
 
-    kline_obj = databaseModels[ticker](
+    end_time = timezone.make_aware(
+        datetime.fromtimestamp(kline[6] / 1000), timezone.utc
+    )
+
+    kline_obj = model(
         start_time=start_time,
-        end_time=datetime.fromtimestamp(kline[6] / 1000),
+        end_time=end_time,
         open=kline[1],
         close=kline[4],
         high=kline[2],
@@ -94,20 +103,3 @@ def store_kline(ticker, kline):
     )
 
     kline_obj.save()
-
-
-def remove_duplicates(ticker):
-    model = databaseModels[ticker]
-
-    duplicate_start_times = (
-        model.objects.values("start_time")
-        .annotate(count=Count("start_time"))
-        .filter(count__gt=1)
-    )
-
-    duplicate_ids = model.objects.filter(
-        start_time__in=duplicate_start_times.values("start_time")
-    ).values_list("id", flat=True)
-
-    model.objects.exclude(id__in=duplicate_ids).delete()
-    print("finished")
