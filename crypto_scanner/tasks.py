@@ -103,6 +103,3 @@ def store_kline(ticker, kline):
     )
 
     kline_obj.save()
-
-
-# DOGEUSDT
