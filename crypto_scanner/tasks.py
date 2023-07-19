@@ -45,16 +45,15 @@ def fetch_all_1m_klines(limit=25):
                 kline_objects.append(kline_object)
 
         if kline_objects:
-            for i in range(0, len(kline_objects), 50000):
-                BinanceSpotKline1m.objects.bulk_create(kline_objects[i : i + 100])
+            BinanceSpotKline1m.objects.bulk_create(kline_objects)
 
 
-def populate_all_klines_date(date):
+def populate_all_klines_date(date, batch=40000):
     for ticker in tickers:
-        populate_kline(ticker, date)
+        populate_kline(ticker, date, batch)
 
 
-def populate_kline(ticker, date):
+def populate_kline(ticker, date, batch):
     klines = client.get_historical_klines(ticker, Client.KLINE_INTERVAL_1MINUTE, date)
 
     kline_objects = []
@@ -64,7 +63,8 @@ def populate_kline(ticker, date):
             kline_objects.append(kline_object)
 
     if kline_objects:
-        BinanceSpotKline1m.objects.bulk_create(kline_objects)
+        for i in range(0, len(kline_objects), batch):
+            BinanceSpotKline1m.objects.bulk_create(kline_objects[i : i + batch])
 
 
 def create_kline_object(ticker, kline):
