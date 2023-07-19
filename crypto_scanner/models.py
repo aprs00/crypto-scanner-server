@@ -30,38 +30,20 @@ class BtcPrice(models.Model):
         ordering = ["created"]
 
 
-attrs = {
-    "start_time": models.DateTimeField(),
-    "end_time": models.DateTimeField(),
-    "open": models.DecimalField(max_digits=24, decimal_places=10),
-    "close": models.DecimalField(max_digits=24, decimal_places=10),
-    "high": models.DecimalField(max_digits=24, decimal_places=10),
-    "low": models.DecimalField(max_digits=24, decimal_places=10),
-    "base_volume": models.DecimalField(max_digits=24, decimal_places=10),
-    "number_of_trades": models.IntegerField(),
-    "quote_asset_volume": models.DecimalField(max_digits=24, decimal_places=10),
-    "taker_buy_base_asset_volume": models.DecimalField(
-        max_digits=24, decimal_places=10
-    ),
-    "taker_buy_quote_asset_volume": models.DecimalField(
-        max_digits=24, decimal_places=10
-    ),
-    "__module__": "crypto_scanner.models",
-}
+class BinanceSpotKline1m(models.Model):
+    ticker = models.CharField(max_length=10)
+    start_time = models.DateTimeField()
+    end_time = models.DateTimeField()
+    open = models.DecimalField(max_digits=24, decimal_places=10)
+    close = models.DecimalField(max_digits=24, decimal_places=10)
+    high = models.DecimalField(max_digits=24, decimal_places=10)
+    low = models.DecimalField(max_digits=24, decimal_places=10)
+    base_volume = models.DecimalField(max_digits=24, decimal_places=10)
+    number_of_trades = models.IntegerField()
+    quote_asset_volume = models.DecimalField(max_digits=24, decimal_places=10)
+    taker_buy_base_asset_volume = models.DecimalField(max_digits=24, decimal_places=10)
+    taker_buy_quote_asset_volume = models.DecimalField(max_digits=24, decimal_places=10)
 
-
-BtcKline1m = type("binance_btcusdt_kline_1m", (models.Model,), attrs.copy())
-EthKline1m = type("binance_ethusdt_kline_1m", (models.Model,), attrs.copy())
-XrpKline1m = type("binance_xrpusdt_kline_1m", (models.Model,), attrs.copy())
-BnbKline1m = type("binance_bnbusdt_kline_1m", (models.Model,), attrs.copy())
-SolKline1m = type("binance_solusdt_kline_1m", (models.Model,), attrs.copy())
-AdaKline1m = type("binance_adausdt_kline_1m", (models.Model,), attrs.copy())
-DotKline1m = type("binance_dotusdt_kline_1m", (models.Model,), attrs.copy())
-DogeKline1m = type("binance_dogeusdt_kline_1m", (models.Model,), attrs.copy())
-UniKline1m = type("binance_uniusdt_kline_1m", (models.Model,), attrs.copy())
-LtcKline1m = type("binance_ltcusdt_kline_1m", (models.Model,), attrs.copy())
-LinkKline1m = type("binance_linkusdt_kline_1m", (models.Model,), attrs.copy())
-BchKline1m = type("binance_bchusdt_kline_1m", (models.Model,), attrs.copy())
-MaticKline1m = type("binance_maticusdt_kline_1m", (models.Model,), attrs.copy())
-AvaxKline1m = type("binance_avaxusdt_kline_1m", (models.Model,), attrs.copy())
-ShibKline1m = type("binance_shibusdt_kline_1m", (models.Model,), attrs.copy())
+    class Meta:
+        ordering = ["start_time"]
+        db_table = "crypto_scanner_binance_spot_kline_1m"
