@@ -104,9 +104,6 @@ DATABASES = {
         "PASSWORD": os.getenv("POSTGRES_PASSWORD"),
         "HOST": os.getenv("POSTGRES_HOST"),
         "PORT": os.getenv("POSTGRES_PORT"),
-        "OPTIONS": {
-            "options": "-c lc_collate=en_US.utf8 -c lc_ctype=en_US.utf8",
-        },
     }
 }
 
