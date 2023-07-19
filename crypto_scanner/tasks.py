@@ -45,7 +45,8 @@ def fetch_all_1m_klines(limit=25):
                 kline_objects.append(kline_object)
 
         if kline_objects:
-            BinanceSpotKline1m.objects.bulk_create(kline_objects)
+            for i in range(0, len(kline_objects), 1000):
+                BinanceSpotKline1m.objects.bulk_create(kline_objects[i : i + 100])
 
 
 def populate_all_klines_date(date):
