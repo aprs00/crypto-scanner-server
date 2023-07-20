@@ -58,7 +58,7 @@ def populate_kline(ticker, date, batch):
 
     kline_objects = []
     for kline in klines:
-        kline_object = create_kline_object(ticker, kline)
+        kline_object = create_kline_object(ticker, kline, True)
         if kline_object:
             kline_objects.append(kline_object)
 
@@ -67,13 +67,14 @@ def populate_kline(ticker, date, batch):
             BinanceSpotKline1m.objects.bulk_create(kline_objects[i : i + batch])
 
 
-def create_kline_object(ticker, kline):
+def create_kline_object(ticker, kline, check_exists=False):
     start_time = timezone.make_aware(
         datetime.fromtimestamp(kline[0] / 1000), timezone.utc
     )
 
-    if BinanceSpotKline1m.objects.filter(ticker=ticker, start_time=start_time).exists():
-        return None
+    if check_exists:
+        if BinanceSpotKline1m.objects.filter(ticker=ticker, start_time=start_time):
+            return None
 
     end_time = timezone.make_aware(
         datetime.fromtimestamp(kline[6] / 1000), timezone.utc
