@@ -95,3 +95,7 @@ def create_kline_object(ticker, kline):
     )
 
     return kline_obj
+
+
+# BTCUSDT
+# ETHUSDT

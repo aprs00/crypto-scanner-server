@@ -1,8 +1,8 @@
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.parsers import JSONParser
-from crypto_scanner.models import Snippet
-from crypto_scanner.serializers import SnippetSerializer
+from crypto_scanner.models import Snippet, BinanceSpotKline1m
+from crypto_scanner.serializers import SnippetSerializer, BinanceSpotKline1mSerializer
 
 
 @csrf_exempt
@@ -49,3 +49,22 @@ def snippet_detail(request, pk):
     elif request.method == "DELETE":
         snippet.delete()
         return HttpResponse(status=204)
+
+
+# return average price of a symbol for a given duration, given duration can be 1m: 1 month, 1w: 1 week, 1m: 1 month, 1y: 1 year
+# return average price per day of week, for example, how much does BTCUSDT go up on Mondays, etc...
+# example: /average-price/BTCUSDT/1m/
+# get data from database
+@csrf_exempt
+def average_price(request, symbol, duration):
+    """
+    Retrieve average coin movement for each day of the week.
+    """
+    try:
+        klines = BinanceSpotKline1m.objects.filter(ticker=symbol)
+    except BinanceSpotKline1m.DoesNotExist:
+        return JsonResponse({"error": "Ticker not found"}, status=404)
+
+    if request.method == "GET":
+        serializer = BinanceSpotKline1mSerializer(klines.first())
+        return JsonResponse(serializer.data)
