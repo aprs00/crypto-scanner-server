@@ -51,7 +51,7 @@ def fetch_all_klines(tf, limit=25):
         if kline_objects:
             model.objects.bulk_create(kline_objects)
 
-        time.sleep(45)
+        time.sleep(10)
 
 
 def populate_all_klines(tf, start_date, end_date=None, batch=40000):
