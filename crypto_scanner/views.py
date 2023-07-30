@@ -1,8 +1,16 @@
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+from django.db.models import Avg, F
+from django.db.models.functions import ExtractWeekDay
+from django.utils import timezone
+
 from rest_framework.parsers import JSONParser
-from crypto_scanner.models import Snippet, BinanceSpotKline1m
-from crypto_scanner.serializers import SnippetSerializer, BinanceSpotKline1mSerializer
+from crypto_scanner.models import Snippet, BinanceSpotKline5m
+from crypto_scanner.serializers import SnippetSerializer
+from datetime import timedelta
+
+from crypto_scanner.constants import avg_price_change_per_week_options
+from crypto_scanner.utils import format_options
 
 
 @csrf_exempt
@@ -52,15 +60,37 @@ def snippet_detail(request, pk):
 
 
 @csrf_exempt
-def average_price(request, symbol, duration):
-    """
-    Retrieve average coin movement for each day of the week.
-    """
-    try:
-        klines = BinanceSpotKline1m.objects.filter(ticker=symbol)
-    except BinanceSpotKline1m.DoesNotExist:
-        return JsonResponse({"error": "Ticker not found"}, status=404)
-
+def average_price_change_per_day_of_week(request, symbol, duration):
     if request.method == "GET":
-        serializer = BinanceSpotKline1mSerializer(klines.first())
-        return JsonResponse(serializer.data)
+        # Calculate the date 'duration' days ago from today
+        days_ago = timezone.now() - timedelta(
+            days=avg_price_change_per_week_options[duration]
+        )
+
+        # Group the 5-minute kline candles per day of the week and calculate average price movements
+        average_price_changes = (
+            BinanceSpotKline5m.objects.filter(ticker=symbol, start_time__gte=days_ago)
+            .annotate(day_of_week=ExtractWeekDay("start_time"))
+            .values("day_of_week")
+            .annotate(average_price_movement=Avg(F("close") - F("open")))
+        )
+
+        # Convert Decimal objects to floats for JSON serialization
+        for item in average_price_changes:
+            item["average_price_movement"] = float(item["average_price_movement"])
+
+        return JsonResponse(list(average_price_changes), safe=False)
+
+    # Other HTTP methods are not allowed for this view
+    return HttpResponse(status=405)
+
+
+@csrf_exempt
+def average_price_change_per_day_of_week_select(request):
+    if request.method == "GET":
+        return JsonResponse(
+            format_options(avg_price_change_per_week_options), safe=False
+        )
+
+    # Other HTTP methods are not allowed for this view
+    return HttpResponse(status=405)

@@ -8,24 +8,11 @@ from datetime import datetime
 import time
 import redis
 
+from crypto_scanner.constants import tickers
+
 client = Client()
 
 r = redis.Redis(host="localhost", port=6379, db=0)
-
-
-tickers = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "XRPUSDT",
-    "BNBUSDT",
-    "SOLUSDT",
-    "DOTUSDT",
-    "DOGEUSDT",
-    "LTCUSDT",
-    "LINKUSDT",
-    "BCHUSDT",
-    "SHIBUSDT",
-]
 
 
 def get_interval_model(tf):
