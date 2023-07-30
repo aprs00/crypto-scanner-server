@@ -1,12 +1,11 @@
 from __future__ import absolute_import, unicode_literals
 from django.utils import timezone
-from crypto_scanner.models import (
-    BinanceSpotKline1m,
-)
+from crypto_scanner.models import BinanceSpotKline1m, BinanceSpotKline5m
 from celery import shared_task
 from binance.client import Client
 from datetime import datetime
 
+import time
 import redis
 
 client = Client()
@@ -25,18 +24,23 @@ tickers = [
     "LTCUSDT",
     "LINKUSDT",
     "BCHUSDT",
-    "MATICUSDT",
-    "AVAXUSDT",
     "SHIBUSDT",
 ]
 
 
+def get_interval_model(tf):
+    if tf == "1m":
+        return BinanceSpotKline1m, Client.KLINE_INTERVAL_1MINUTE
+    elif tf == "5m":
+        return BinanceSpotKline5m, Client.KLINE_INTERVAL_5MINUTE
+
+
 @shared_task
-def fetch_all_1m_klines(limit=25):
+def fetch_all_klines(tf, limit=25):
+    model, interval = get_interval_model(tf)
+
     for ticker in tickers:
-        klines = client.get_klines(
-            symbol=ticker, interval=Client.KLINE_INTERVAL_1MINUTE, limit=limit
-        )
+        klines = client.get_klines(symbol=ticker, interval=interval, limit=limit)
 
         kline_objects = []
         for kline in klines:
@@ -45,42 +49,52 @@ def fetch_all_1m_klines(limit=25):
                 kline_objects.append(kline_object)
 
         if kline_objects:
-            BinanceSpotKline1m.objects.bulk_create(kline_objects)
+            model.objects.bulk_create(kline_objects)
+
+        time.sleep(45)
 
 
-def populate_all_klines_date(date, batch=40000):
+def populate_all_klines(tf, start_date, end_date=None, batch=40000):
+    if end_date is None:
+        end_date = datetime.now()
+
     for ticker in tickers:
-        populate_kline(ticker, date, batch)
+        populate_kline(tf, ticker, start_date, end_date, batch)
 
 
-def populate_kline(ticker, date, batch):
-    klines = client.get_historical_klines(ticker, Client.KLINE_INTERVAL_1MINUTE, date)
+def populate_kline(tf, ticker, start_date, end_date=None, batch=40000):
+    if end_date is None:
+        end_date = datetime.now()
+
+    model, interval = get_interval_model(tf)
+
+    klines = client.get_historical_klines(ticker, interval, start_date, end_date)
 
     kline_objects = []
     for kline in klines:
-        kline_object = create_kline_object(ticker, kline, True)
+        kline_object = create_kline_object(model, ticker, kline, True)
         if kline_object:
             kline_objects.append(kline_object)
 
     if kline_objects:
         for i in range(0, len(kline_objects), batch):
-            BinanceSpotKline1m.objects.bulk_create(kline_objects[i : i + batch])
+            model.objects.bulk_create(kline_objects[i : i + batch])
 
 
-def create_kline_object(ticker, kline, check_exists=False):
+def create_kline_object(model, ticker, kline, check_exists=False):
     start_time = timezone.make_aware(
         datetime.fromtimestamp(kline[0] / 1000), timezone.utc
     )
 
     if check_exists:
-        if BinanceSpotKline1m.objects.filter(ticker=ticker, start_time=start_time):
+        if model.objects.filter(ticker=ticker, start_time=start_time):
             return None
 
     end_time = timezone.make_aware(
         datetime.fromtimestamp(kline[6] / 1000), timezone.utc
     )
 
-    kline_obj = BinanceSpotKline1m(
+    kline_obj = model(
         ticker=ticker,
         start_time=start_time,
         end_time=end_time,
@@ -96,7 +110,3 @@ def create_kline_object(ticker, kline, check_exists=False):
     )
 
     return kline_obj
-
-
-# BTCUSDT
-# ETHUSDT

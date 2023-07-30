@@ -51,10 +51,6 @@ def snippet_detail(request, pk):
         return HttpResponse(status=204)
 
 
-# return average price of a symbol for a given duration, given duration can be 1m: 1 month, 1w: 1 week, 1m: 1 month, 1y: 1 year
-# return average price per day of week, for example, how much does BTCUSDT go up on Mondays, etc...
-# example: /average-price/BTCUSDT/1m/
-# get data from database
 @csrf_exempt
 def average_price(request, symbol, duration):
     """
