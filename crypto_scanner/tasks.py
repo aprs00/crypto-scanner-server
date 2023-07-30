@@ -44,7 +44,7 @@ def fetch_all_klines(tf, limit=25):
 
         kline_objects = []
         for kline in klines:
-            kline_object = create_kline_object(ticker, kline)
+            kline_object = create_kline_object(model, ticker, kline, True)
             if kline_object:
                 kline_objects.append(kline_object)
 
