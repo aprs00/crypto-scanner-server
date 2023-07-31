@@ -1,5 +1,6 @@
 avg_price_change_per_week_options = {
     "1w": 7,
+    "2w": 14,
     "1m": 30,
     "3m": 90,
 }

@@ -62,9 +62,13 @@ def snippet_detail(request, pk):
 @csrf_exempt
 def average_price_change_per_day_of_week(request, symbol, duration):
     if request.method == "GET":
-        # Calculate the date 'duration' days ago from today
-        days_ago = timezone.now() - timedelta(
-            days=avg_price_change_per_week_options[duration]
+        # Calculate the start date of the week
+        current_date = timezone.now()
+        start_of_week = current_date - timedelta(days=current_date.weekday())
+
+        # Calculate the date 'duration + 1' days ago from the start of the week to exclude Monday
+        days_ago = start_of_week - timedelta(
+            days=avg_price_change_per_week_options[duration] + 1
         )
 
         # Group the 5-minute kline candles per day of the week and calculate average price movements
