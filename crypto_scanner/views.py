@@ -1,7 +1,7 @@
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.db.models import Avg, F
-from django.db.models.functions import ExtractWeekDay
+from django.db.models import Avg, F, FloatField
+from django.db.models.functions import ExtractWeekDay, Cast
 from django.utils import timezone
 
 from rest_framework.parsers import JSONParser
@@ -9,7 +9,9 @@ from crypto_scanner.models import Snippet, BinanceSpotKline5m
 from crypto_scanner.serializers import SnippetSerializer
 from datetime import timedelta
 
-from crypto_scanner.constants import avg_price_change_per_week_options
+import numpy as np
+
+from crypto_scanner.constants import avg_price_change_per_week_options, tickers
 from crypto_scanner.utils import format_options
 
 
@@ -86,6 +88,85 @@ def average_price_change_per_day_of_week(request, symbol, duration):
         return JsonResponse(list(average_price_changes), safe=False)
 
     # Other HTTP methods are not allowed for this view
+    return HttpResponse(status=405)
+
+
+def calculate_pearson_correlation(x, y):
+    print(len(x), len(y))
+    return np.corrcoef(x, y)[0, 1]
+
+
+def calculate_percentage_changes(data):
+    # Calculate percentage changes between each k-line
+    percentage_changes = [
+        (data[i] - data[i - 1]) / data[i - 1] * 100 for i in range(1, len(data))
+    ]
+    return percentage_changes
+
+
+def calculate_correlation_between_coins(coin1, coin2, duration):
+    end_date = timezone.now()
+    start_date = end_date - timedelta(days=duration)
+
+    data_coin1 = (
+        BinanceSpotKline5m.objects.filter(
+            ticker=coin1, start_time__gte=start_date, start_time__lte=end_date
+        )
+        .annotate(close_as_float=Cast("close", FloatField()))
+        .values_list("close_as_float", flat=True)
+    )
+
+    data_coin2 = (
+        BinanceSpotKline5m.objects.filter(
+            ticker=coin2, start_time__gte=start_date, start_time__lte=end_date
+        )
+        .annotate(close_as_float=Cast("close", FloatField()))
+        .values_list("close_as_float", flat=True)
+    )
+
+    min_length = min(len(data_coin1), len(data_coin2))
+    data_coin1 = data_coin1[:min_length]
+    data_coin2 = data_coin2[:min_length]
+
+    percentage_changes_coin1 = calculate_percentage_changes(data_coin1)
+    percentage_changes_coin2 = calculate_percentage_changes(data_coin2)
+
+    # Calculate the Pearson correlation between the two coins
+    correlation = calculate_pearson_correlation(
+        percentage_changes_coin1, percentage_changes_coin2
+    )
+
+    return correlation
+
+
+def pearson_correlation(request, duration):
+    if request.method == "GET":
+        correlation_results = {}
+        duration = avg_price_change_per_week_options[duration]
+
+        for i in range(len(tickers)):
+            for j in range(i + 1, len(tickers)):
+                coin1 = tickers[i]
+                coin2 = tickers[j]
+
+                correlation = calculate_correlation_between_coins(
+                    coin1, coin2, duration
+                )
+
+                correlation_results[f"{coin1} - {coin2}"] = correlation
+
+        response = {
+            "xAxes": tickers,
+            "yAxes": tickers,
+            "data": [
+                [i, j, correlation_results[f"{tickers[i]} - {tickers[j]}"]]
+                for i in range(len(tickers))
+                for j in range(i + 1, len(tickers))
+            ],
+        }
+
+        return JsonResponse(response, safe=False)
+
     return HttpResponse(status=405)
 
 
