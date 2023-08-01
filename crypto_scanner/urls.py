@@ -12,7 +12,7 @@ urlpatterns = [
     path("average-price/select/", views.average_price_change_per_day_of_week_select),
     path(
         "pearson-correlation/<str:duration>",
-        views.pearson_correlation,
+        views.get_pearson_correlation,
         name="pearson-correlation",
     ),
 ]

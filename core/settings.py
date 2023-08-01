@@ -163,4 +163,8 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": timedelta(minutes=16),
         "args": ("5m", 5),
     },
+    "calculate-all-pearson-correlations": {
+        "task": "crypto_scanner.tasks.calculate_all_options_pearson_correlation",
+        "schedule": timedelta(minutes=35),
+    },
 }

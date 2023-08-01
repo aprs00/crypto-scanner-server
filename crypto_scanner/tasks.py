@@ -5,10 +5,13 @@ from celery import shared_task
 from binance.client import Client
 from datetime import datetime
 
+import os
 import time
 import redis
 
-from crypto_scanner.constants import tickers
+from crypto_scanner.constants import tickers, stats_select_options
+from crypto_scanner.utils import format_options
+from crypto_scanner.views import pearson_correlation
 
 client = Client()
 
@@ -20,6 +23,18 @@ def get_interval_model(tf):
         return BinanceSpotKline1m, Client.KLINE_INTERVAL_1MINUTE
     elif tf == "5m":
         return BinanceSpotKline5m, Client.KLINE_INTERVAL_5MINUTE
+
+
+@shared_task
+def calculate_all_options_pearson_correlation():
+    for duration in stats_select_options.keys():
+        response = pearson_correlation(duration)
+
+        r.set(f"pearson_correlation_{duration}", response)
+
+
+def test_redis():
+    r.set("testing", "otorinolaringologija")
 
 
 @shared_task

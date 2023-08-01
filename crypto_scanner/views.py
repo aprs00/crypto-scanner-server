@@ -10,9 +10,13 @@ from crypto_scanner.serializers import SnippetSerializer
 from datetime import timedelta
 
 import numpy as np
+import redis
 
-from crypto_scanner.constants import avg_price_change_per_week_options, tickers
+from crypto_scanner.constants import stats_select_options, tickers
 from crypto_scanner.utils import format_options
+
+
+r = redis.Redis(host="localhost", port=6379, db=0)
 
 
 @csrf_exempt
@@ -69,9 +73,7 @@ def average_price_change_per_day_of_week(request, symbol, duration):
         start_of_week = current_date - timedelta(days=current_date.weekday())
 
         # Calculate the date 'duration + 1' days ago from the start of the week to exclude Monday
-        days_ago = start_of_week - timedelta(
-            days=avg_price_change_per_week_options[duration] + 1
-        )
+        days_ago = start_of_week - timedelta(days=stats_select_options[duration] + 1)
 
         # Group the 5-minute kline candles per day of the week and calculate average price movements
         average_price_changes = (
@@ -139,43 +141,50 @@ def calculate_correlation_between_coins(coin1, coin2, duration):
     return correlation
 
 
-def pearson_correlation(request, duration):
+def pearson_correlation(duration):
+    # if request.method == "GET":
+    correlation_results = {}
+    duration = stats_select_options[duration]
+
+    for i in range(len(tickers)):
+        for j in range(i + 1, len(tickers)):
+            coin1 = tickers[i]
+            coin2 = tickers[j]
+
+            correlation = calculate_correlation_between_coins(coin1, coin2, duration)
+
+            correlation_results[f"{coin1} - {coin2}"] = correlation
+
+    response = {
+        "xAxes": tickers,
+        "yAxes": tickers,
+        "data": [
+            [i, j, correlation_results[f"{tickers[i]} - {tickers[j]}"]]
+            for i in range(len(tickers))
+            for j in range(i + 1, len(tickers))
+        ],
+    }
+
+    return response
+
+    # return JsonResponse(response, safe=False)
+
+    # return HttpResponse(status=405)
+
+
+def get_pearson_correlation(request, duration):
     if request.method == "GET":
-        correlation_results = {}
-        duration = avg_price_change_per_week_options[duration]
+        # return JsonResponse(pearson_correlation(duration), safe=False)
+        r.get(f"pearson_correlation_{duration}", pearson_correlation(duration))
 
-        for i in range(len(tickers)):
-            for j in range(i + 1, len(tickers)):
-                coin1 = tickers[i]
-                coin2 = tickers[j]
-
-                correlation = calculate_correlation_between_coins(
-                    coin1, coin2, duration
-                )
-
-                correlation_results[f"{coin1} - {coin2}"] = correlation
-
-        response = {
-            "xAxes": tickers,
-            "yAxes": tickers,
-            "data": [
-                [i, j, correlation_results[f"{tickers[i]} - {tickers[j]}"]]
-                for i in range(len(tickers))
-                for j in range(i + 1, len(tickers))
-            ],
-        }
-
-        return JsonResponse(response, safe=False)
-
+    # Other HTTP methods are not allowed for this view
     return HttpResponse(status=405)
 
 
 @csrf_exempt
 def average_price_change_per_day_of_week_select(request):
     if request.method == "GET":
-        return JsonResponse(
-            format_options(avg_price_change_per_week_options), safe=False
-        )
+        return JsonResponse(format_options(stats_select_options), safe=False)
 
     # Other HTTP methods are not allowed for this view
     return HttpResponse(status=405)

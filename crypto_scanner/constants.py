@@ -1,4 +1,4 @@
-avg_price_change_per_week_options = {
+stats_select_options = {
     "1w": 7,
     "2w": 14,
     "1m": 30,
