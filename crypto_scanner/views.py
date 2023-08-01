@@ -168,6 +168,7 @@ def pearson_correlation(duration):
     # return HttpResponse(status=405)
 
 
+@csrf_exempt
 def get_pearson_correlation(request, duration):
     if request.method == "GET":
         # return JsonResponse(pearson_correlation(duration), safe=False)

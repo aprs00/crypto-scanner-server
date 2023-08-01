@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "crypto_scanner",
     "rest_framework",
+    "django_redis.cache.RedisCache",
 ]
 
 REST_FRAMEWORK = {
