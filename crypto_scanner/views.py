@@ -91,7 +91,6 @@ def average_price_change_per_day_of_week(request, symbol, duration):
 
 
 def calculate_pearson_correlation(x, y):
-    print(len(x), len(y))
     return np.corrcoef(x, y)[0, 1]
 
 
@@ -172,7 +171,9 @@ def pearson_correlation(duration):
 def get_pearson_correlation(request, duration):
     if request.method == "GET":
         # return JsonResponse(pearson_correlation(duration), safe=False)
-        r.get(f"pearson_correlation_{duration}", pearson_correlation(duration))
+        response = cache.get(f"pearson_correlation_{duration}")
+
+        return JsonResponse(response, safe=False)
 
     # Other HTTP methods are not allowed for this view
     return HttpResponse(status=405)

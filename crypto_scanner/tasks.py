@@ -34,8 +34,9 @@ def test_redis():
     cache.set("testing", "otorinolaringologija")
 
 
-def test_redis_get():
-    return cache.get("testing")
+def test_cache_get(name):
+    print(cache.get(name))
+    return cache.get(name)
 
 
 @shared_task
