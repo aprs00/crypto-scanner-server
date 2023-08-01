@@ -25,8 +25,11 @@ services:
             - POSTGRES_NAME=${POSTGRES_NAME}
             - POSTGRES_USER=${POSTGRES_USER}
             - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+            - CELERY_BACKEND=${CELERY_BACKEND}
+            - CELERY_BROKER=${CELERY_BROKER}
         depends_on:
             - db
+            - redis
 
     redis:
         container_name: crypto-scanner-redis

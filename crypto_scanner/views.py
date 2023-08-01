@@ -1,4 +1,5 @@
 from django.http import HttpResponse, JsonResponse
+from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt
 from django.db.models import Avg, F, FloatField
 from django.db.models.functions import ExtractWeekDay, Cast
@@ -10,13 +11,9 @@ from crypto_scanner.serializers import SnippetSerializer
 from datetime import timedelta
 
 import numpy as np
-import redis
 
 from crypto_scanner.constants import stats_select_options, tickers
 from crypto_scanner.utils import format_options
-
-
-r = redis.Redis(host="localhost", port=6379, db=0)
 
 
 @csrf_exempt

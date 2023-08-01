@@ -1,21 +1,18 @@
 from __future__ import absolute_import, unicode_literals
+from django.core.cache import cache
 from django.utils import timezone
 from crypto_scanner.models import BinanceSpotKline1m, BinanceSpotKline5m
 from celery import shared_task
 from binance.client import Client
 from datetime import datetime
 
-import os
 import time
-import redis
 
 from crypto_scanner.constants import tickers, stats_select_options
 from crypto_scanner.utils import format_options
 from crypto_scanner.views import pearson_correlation
 
 client = Client()
-
-r = redis.Redis(host="localhost", port=6379, db=0)
 
 
 def get_interval_model(tf):
@@ -30,11 +27,15 @@ def calculate_all_options_pearson_correlation():
     for duration in stats_select_options.keys():
         response = pearson_correlation(duration)
 
-        r.set(f"pearson_correlation_{duration}", response)
+        cache.set(f"pearson_correlation_{duration}", response)
 
 
 def test_redis():
-    r.set("testing", "otorinolaringologija")
+    cache.set("testing", "otorinolaringologija")
+
+
+def test_redis_get():
+    return cache.get("testing")
 
 
 @shared_task
