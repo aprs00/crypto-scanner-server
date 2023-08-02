@@ -188,3 +188,7 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": timedelta(minutes=35),
     },
 }
+
+SECURE_SSL_REDIRECT = False
+SESSION_COOKIE_SECURE = False
+CSRF_COOKIE_SECURE = False
