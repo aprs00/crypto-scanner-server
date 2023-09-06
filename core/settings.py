@@ -67,11 +67,6 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
 ]
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "https://crypto-scanner-phi.vercel.app",
-]
-
 REST_FRAMEWORK = {
     # Use Django's standard `django.contrib.auth` permissions,
     # or allow read-only access for unauthenticated users.
@@ -189,6 +184,15 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
-SECURE_SSL_REDIRECT = False
-SESSION_COOKIE_SECURE = False
-CSRF_COOKIE_SECURE = False
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_HEADERS = (
+    # Add any additional headers you need to allow here.
+)
+CORS_ALLOW_CREDENTIALS = (
+    True  # If you need to include credentials (e.g., cookies) in your requests.
+)
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost",
+    "https://crypto-scanner-phi.vercel.app",
+]
