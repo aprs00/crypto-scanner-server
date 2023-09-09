@@ -195,4 +195,5 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost",
     "https://crypto-scanner-phi.vercel.app",
+    "https://www.crypto-scanner.xyz",
 ]
