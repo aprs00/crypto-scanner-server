@@ -3,6 +3,7 @@ stats_select_options = {
     "2w": 14,
     "1m": 30,
     "3m": 90,
+    "6m": 180,
 }
 
 tickers = [

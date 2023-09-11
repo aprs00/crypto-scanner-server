@@ -180,7 +180,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     "calculate-all-pearson-correlations": {
         "task": "crypto_scanner.tasks.calculate_all_options_pearson_correlation",
-        "schedule": timedelta(minutes=35),
+        "schedule": timedelta(minutes=150),
     },
 }
 

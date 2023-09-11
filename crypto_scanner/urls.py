@@ -9,7 +9,7 @@ urlpatterns = [
         views.average_price_change_per_day_of_week,
         name="average-price-change-per-week",
     ),
-    path("average-price/select", views.average_price_change_per_day_of_week_select),
+    path("stats-select-options", views.get_stats_select_options),
     path(
         "pearson-correlation/<str:duration>",
         views.get_pearson_correlation,

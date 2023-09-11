@@ -68,9 +68,15 @@ def average_price_change_per_day_of_week(request, symbol, duration):
         # Calculate the start date of the week
         current_date = timezone.now()
         start_of_week = current_date - timedelta(days=current_date.weekday())
+        num_of_days_select_options = stats_select_options[duration]
+
+        if num_of_days_select_options is None:
+            return JsonResponse(
+                {"error": "Invalid duration", "code": "INVALID_DURATION"}, status=400
+            )
 
         # Calculate the date 'duration + 1' days ago from the start of the week to exclude Monday
-        days_ago = start_of_week - timedelta(days=stats_select_options[duration] + 1)
+        days_ago = start_of_week - timedelta(days=num_of_days_select_options + 1)
 
         # Group the 5-minute kline candles per day of the week and calculate average price movements
         average_price_changes = (
@@ -137,7 +143,7 @@ def calculate_correlation_between_coins(coin1, coin2, duration):
     return correlation
 
 
-def pearson_correlation(duration):
+def format_pearson_correlation_response(duration):
     # if request.method == "GET":
     correlation_results = {}
     duration = stats_select_options[duration]
@@ -171,8 +177,12 @@ def pearson_correlation(duration):
 @csrf_exempt
 def get_pearson_correlation(request, duration):
     if request.method == "GET":
-        # return JsonResponse(pearson_correlation(duration), safe=False)
+        print("duration", duration)
         response = cache.get(f"pearson_correlation_{duration}")
+        # if response is None:
+        if True:
+            response = format_pearson_correlation_response(duration)
+            cache.set(f"pearson_correlation_{duration}", response)
 
         return JsonResponse(response, safe=False)
 
@@ -181,7 +191,7 @@ def get_pearson_correlation(request, duration):
 
 
 @csrf_exempt
-def average_price_change_per_day_of_week_select(request):
+def get_stats_select_options(request):
     if request.method == "GET":
         return JsonResponse(format_options(stats_select_options), safe=False)
 
