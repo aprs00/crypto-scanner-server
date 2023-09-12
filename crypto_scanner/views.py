@@ -124,6 +124,8 @@ def format_pearson_correlation_response(duration):
 
             correlation_results[f"{coin1} - {coin2}"] = correlation
 
+    tickers = [ticker[:-4] for ticker in tickers]
+
     response = {
         "xAxis": tickers,
         "yAxis": tickers,
