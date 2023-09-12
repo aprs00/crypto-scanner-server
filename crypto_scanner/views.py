@@ -5,61 +5,13 @@ from django.db.models import Avg, F, FloatField
 from django.db.models.functions import ExtractWeekDay, Cast
 from django.utils import timezone
 
-from rest_framework.parsers import JSONParser
-from crypto_scanner.models import Snippet, BinanceSpotKline5m
-from crypto_scanner.serializers import SnippetSerializer
+from crypto_scanner.models import BinanceSpotKline5m
 from datetime import timedelta
 
 import numpy as np
 
 from crypto_scanner.constants import stats_select_options, tickers
 from crypto_scanner.utils import format_options
-
-
-@csrf_exempt
-def snippet_list(request):
-    """
-    List all code snippets, or create a new snippet.
-    """
-    if request.method == "GET":
-        snippets = Snippet.objects.all()
-        serializer = SnippetSerializer(snippets, many=True)
-        return JsonResponse(serializer.data, safe=False)
-
-    elif request.method == "POST":
-        data = JSONParser().parse(request)
-        serializer = SnippetSerializer(data=data)
-        if serializer.is_valid():
-            serializer.save()
-            return JsonResponse(serializer.data, status=201)
-        return JsonResponse(serializer.errors, status=400)
-
-
-@csrf_exempt
-def snippet_detail(request, pk):
-    """
-    Retrieve, update or delete a code snippet.
-    """
-    try:
-        snippet = Snippet.objects.get(pk=pk)
-    except Snippet.DoesNotExist:
-        return HttpResponse(status=404)
-
-    if request.method == "GET":
-        serializer = SnippetSerializer(snippet)
-        return JsonResponse(serializer.data)
-
-    elif request.method == "PUT":
-        data = JSONParser().parse(request)
-        serializer = SnippetSerializer(snippet, data=data)
-        if serializer.is_valid():
-            serializer.save()
-            return JsonResponse(serializer.data)
-        return JsonResponse(serializer.errors, status=400)
-
-    elif request.method == "DELETE":
-        snippet.delete()
-        return HttpResponse(status=204)
 
 
 @csrf_exempt
@@ -144,7 +96,6 @@ def calculate_correlation_between_coins(coin1, coin2, duration):
 
 
 def format_pearson_correlation_response(duration):
-    # if request.method == "GET":
     correlation_results = {}
     duration = stats_select_options[duration]
 
@@ -161,17 +112,13 @@ def format_pearson_correlation_response(duration):
         "xAxes": tickers,
         "yAxes": tickers,
         "data": [
-            [i, j, correlation_results[f"{tickers[i]} - {tickers[j]}"]]
+            [i, j, round(correlation_results[f"{tickers[i]} - {tickers[j]}"], 2)]
             for i in range(len(tickers))
             for j in range(i + 1, len(tickers))
         ],
     }
 
     return response
-
-    # return JsonResponse(response, safe=False)
-
-    # return HttpResponse(status=405)
 
 
 @csrf_exempt
