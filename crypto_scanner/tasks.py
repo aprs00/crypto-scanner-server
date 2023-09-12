@@ -10,7 +10,7 @@ import time
 
 from crypto_scanner.constants import tickers, stats_select_options
 from crypto_scanner.utils import format_options
-from crypto_scanner.views import pearson_correlation
+from crypto_scanner.views import format_pearson_correlation_response
 
 client = Client()
 
@@ -25,7 +25,7 @@ def get_interval_model(tf):
 @shared_task
 def calculate_all_options_pearson_correlation():
     for duration in stats_select_options.keys():
-        response = pearson_correlation(duration)
+        response = format_pearson_correlation_response(duration)
 
         cache.set(f"pearson_correlation_{duration}", response)
 
