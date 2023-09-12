@@ -19,6 +19,7 @@ def average_price_change_per_day_of_week(request, symbol, duration):
     if request.method == "GET":
         # Calculate the start date of the week
         current_date = timezone.now()
+        current_day_of_week = timezone.now().weekday()
         start_of_week = current_date - timedelta(days=current_date.weekday())
         num_of_days_select_options = stats_select_options[duration]
 
@@ -42,9 +43,24 @@ def average_price_change_per_day_of_week(request, symbol, duration):
         for item in average_price_changes:
             item["average_price_movement"] = float(item["average_price_movement"])
 
-        return JsonResponse(list(average_price_changes), safe=False)
+        response = {
+            "xAxis": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            "data": [
+                {
+                    "value": round(item["average_price_movement"], 2),
+                    "itemStyle": {
+                        "color": "#a90000"
+                        # if current_day_of_week == item["day_of_week"]
+                        if item["average_price_movement"] < 0
+                        else "#00a900"
+                    },
+                }
+                for item in average_price_changes
+            ],
+        }
 
-    # Other HTTP methods are not allowed for this view
+        return JsonResponse(response, safe=False)
+
     return HttpResponse(status=405)
 
 
