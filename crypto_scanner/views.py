@@ -179,8 +179,7 @@ def get_pearson_correlation(request, duration):
     if request.method == "GET":
         print("duration", duration)
         response = cache.get(f"pearson_correlation_{duration}")
-        # if response is None:
-        if True:
+        if response is None:
             response = format_pearson_correlation_response(duration)
             cache.set(f"pearson_correlation_{duration}", response)
 
