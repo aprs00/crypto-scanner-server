@@ -133,8 +133,6 @@ def get_pearson_correlation(request, duration):
             response = calculate_pearson_correlation(duration)
             cache.set(f"pearson_correlation_{duration}", response)
 
-        response = calculate_pearson_correlation(duration)
-
         return JsonResponse(response, safe=False)
 
     # Other HTTP methods are not allowed for this view
