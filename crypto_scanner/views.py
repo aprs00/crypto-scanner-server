@@ -49,10 +49,10 @@ def average_price_change_per_day_of_week(request, symbol, duration):
                 {
                     "value": round(item["average_price_movement"], 2),
                     "itemStyle": {
-                        "color": "#a90000"
+                        "color": "#a50f15"
                         # if current_day_of_week == item["day_of_week"]
                         if item["average_price_movement"] < 0
-                        else "#00a900"
+                        else "#4393c3"
                     },
                 }
                 for item in average_price_changes
@@ -129,6 +129,7 @@ def get_pearson_correlation(request, duration):
         print("duration", duration)
         response = cache.get(f"pearson_correlation_{duration}")
         if response is None:
+            print("response is None: ", response)
             response = calculate_pearson_correlation(duration)
             cache.set(f"pearson_correlation_{duration}", response)
 
