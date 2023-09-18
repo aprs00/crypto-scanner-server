@@ -64,65 +64,49 @@ def average_price_change_per_day_of_week(request, symbol, duration):
     return HttpResponse(status=405)
 
 
-def calculate_pearson_correlation(x, y):
-    return np.corrcoef(x, y)[0, 1]
-
-
-def calculate_percentage_changes(data):
-    # Calculate percentage changes between each k-line
-    percentage_changes = [
-        (data[i] - data[i - 1]) / data[i - 1] * 100 for i in range(1, len(data))
-    ]
-    return percentage_changes
-
-
-def calculate_correlation_between_coins(coin1, coin2, duration):
-    end_date = timezone.now()
-    start_date = end_date - timedelta(days=duration)
-
-    data_coin1 = (
-        BinanceSpotKline5m.objects.filter(
-            ticker=coin1, start_time__gte=start_date, start_time__lte=end_date
-        )
-        .annotate(close_as_float=Cast("close", FloatField()))
-        .values_list("close_as_float", flat=True)
-    )
-
-    data_coin2 = (
-        BinanceSpotKline5m.objects.filter(
-            ticker=coin2, start_time__gte=start_date, start_time__lte=end_date
-        )
-        .annotate(close_as_float=Cast("close", FloatField()))
-        .values_list("close_as_float", flat=True)
-    )
-
-    min_length = min(len(data_coin1), len(data_coin2))
-    data_coin1 = data_coin1[:min_length]
-    data_coin2 = data_coin2[:min_length]
-
-    percentage_changes_coin1 = calculate_percentage_changes(data_coin1)
-    percentage_changes_coin2 = calculate_percentage_changes(data_coin2)
-
-    # Calculate the Pearson correlation between the two coins
-    correlation = calculate_pearson_correlation(
-        percentage_changes_coin1, percentage_changes_coin2
-    )
-
-    return correlation
-
-
-def format_pearson_correlation_response(duration):
-    correlation_results = {}
+# PEARSON CORRELATION
+def get_tickers_data(duration):
+    query_tickers_data = {}
     duration = stats_select_options[duration]
 
-    for i in range(len(tickers)):
-        for j in range(i + 1, len(tickers)):
-            coin1 = tickers[i]
-            coin2 = tickers[j]
+    for ticker in tickers:
+        query_tickers_data[ticker] = (
+            BinanceSpotKline5m.objects.filter(
+                ticker=ticker,
+                start_time__gte=timezone.now() - timedelta(days=duration),
+            )
+            .annotate(close_as_float=Cast("close", FloatField()))
+            .values_list("close_as_float", flat=True)
+        )
 
-            correlation = calculate_correlation_between_coins(coin1, coin2, duration)
+    min_length = min([len(data) for data in query_tickers_data.values()])
+    for ticker in tickers:
+        query_tickers_data[ticker] = query_tickers_data[ticker][:min_length]
 
-            correlation_results[f"{coin1} - {coin2}"] = correlation
+    return query_tickers_data
+
+
+def get_min_length(query_tickers_data):
+    min_length = min([len(data) for data in query_tickers_data.values()])
+    for ticker in tickers:
+        query_tickers_data[ticker] = query_tickers_data[ticker][:min_length]
+
+    return query_tickers_data
+
+
+def calculate_pearson_correlation(duration):
+    correlation_results = {}
+
+    query_tickers_data = get_tickers_data(duration)
+    query_tickers_data = get_min_length(query_tickers_data)
+
+    for ticker1 in tickers:
+        for ticker2 in tickers:
+            correlation_coefficient = np.corrcoef(
+                query_tickers_data[ticker1], query_tickers_data[ticker2]
+            )[0, 1]
+
+            correlation_results[f"{ticker1} - {ticker2}"] = correlation_coefficient
 
     formatted_tickers = [ticker[:-4] for ticker in tickers]
 
@@ -145,8 +129,10 @@ def get_pearson_correlation(request, duration):
         print("duration", duration)
         response = cache.get(f"pearson_correlation_{duration}")
         if response is None:
-            response = format_pearson_correlation_response(duration)
+            response = calculate_pearson_correlation(duration)
             cache.set(f"pearson_correlation_{duration}", response)
+
+        response = calculate_pearson_correlation(duration)
 
         return JsonResponse(response, safe=False)
 
