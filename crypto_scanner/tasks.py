@@ -111,3 +111,6 @@ def create_kline_object(model, ticker, kline, check_exists=False):
     )
 
     return kline_obj
+
+
+# box-shadow: inset 0px 1px 8px rgba(0, 0, 0, 0.5);

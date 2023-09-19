@@ -155,3 +155,13 @@ def get_stats_select_options(request):
 
     # Other HTTP methods are not allowed for this view
     return HttpResponse(status=405)
+
+
+@csrf_exempt
+def get_tickers_options(request):
+    if request.method == "GET":
+        response = format_options(tickers, "list")
+
+        return JsonResponse(response, safe=False)
+
+    return HttpResponse(status=405)
