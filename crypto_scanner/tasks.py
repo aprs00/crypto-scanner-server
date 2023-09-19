@@ -8,15 +8,21 @@ from datetime import datetime
 
 import time
 
-from crypto_scanner.constants import tickers, stats_select_options_all
+from crypto_scanner.constants import (
+    tickers,
+    stats_select_options_htf,
+    stats_select_options_ltf,
+)
 from crypto_scanner.views import calculate_pearson_correlation
 
 client = Client()
 
 
 @shared_task
-def calculate_all_options_pearson_correlation():
-    for duration in stats_select_options_all.keys():
+def calculate_options_pearson_correlation(calculate_ltf=False):
+    durations = stats_select_options_ltf if calculate_ltf else stats_select_options_htf
+
+    for duration in durations.keys():
         response = calculate_pearson_correlation(duration)
 
         cache.set(f"pearson_correlation_{duration}", response)

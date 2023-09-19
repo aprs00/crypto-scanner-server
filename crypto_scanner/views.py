@@ -11,7 +11,8 @@ from datetime import timedelta
 import numpy as np
 
 from crypto_scanner.constants import (
-    stats_select_options,
+    stats_select_options_htf,
+    stats_select_options_ltf,
     stats_select_options_all,
     tickers,
 )
@@ -25,17 +26,15 @@ def average_price_change_per_day_of_week(request, symbol, duration):
         current_date = timezone.now()
         current_day_of_week = timezone.now().weekday()
         start_of_week = current_date - timedelta(days=current_date.weekday())
-        num_of_days_select_options = stats_select_options[duration]
+        num_of_days_select_options = stats_select_options_htf[duration]
 
         if num_of_days_select_options is None:
             return JsonResponse(
                 {"error": "Invalid duration", "code": "INVALID_DURATION"}, status=400
             )
 
-        # Calculate the date 'duration + 1' days ago from the start of the week to exclude Monday
         days_ago = start_of_week - timedelta(hours=num_of_days_select_options + 1)
 
-        # Group the 5-minute kline candles per day of the week and calculate average price movements
         average_price_changes = (
             BinanceSpotKline5m.objects.filter(ticker=symbol, start_time__gte=days_ago)
             .annotate(day_of_week=ExtractWeekDay("start_time"))
@@ -146,14 +145,13 @@ def get_pearson_correlation(request, duration):
 @csrf_exempt
 def get_stats_select_options(request):
     if request.method == "GET":
-        include_ltf = request.GET.get("include_ltf", False)
+        response = {
+            "htf": format_options(stats_select_options_htf),
+            "ltf": format_options(stats_select_options_ltf),
+            "all": format_options(stats_select_options_all),
+        }
 
-        if include_ltf:
-            combined_options = stats_select_options_all
-        else:
-            combined_options = stats_select_options
-
-        return JsonResponse(format_options(combined_options), safe=False)
+        return JsonResponse(response, safe=False)
 
     # Other HTTP methods are not allowed for this view
     return HttpResponse(status=405)

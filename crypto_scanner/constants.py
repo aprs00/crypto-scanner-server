@@ -1,4 +1,4 @@
-stats_select_options = {
+stats_select_options_htf = {
     "1w": 7 * 24,
     "2w": 14 * 24,
     "1m": 30 * 24,
@@ -16,7 +16,7 @@ stats_select_options_ltf = {
     "1d": 24,
 }
 
-stats_select_options_all = {**stats_select_options, **stats_select_options_ltf}
+stats_select_options_all = {**stats_select_options_ltf, **stats_select_options_htf}
 
 tickers = [
     "BTCUSDT",
