@@ -1,2 +1,2 @@
 def format_options(options):
-    return [{"value": v, "label": k} for k, v in options.items()]
+    return [{"value": v, "label": v} for _, v in options.items()]

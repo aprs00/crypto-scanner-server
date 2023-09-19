@@ -10,7 +10,11 @@ from datetime import timedelta
 
 import numpy as np
 
-from crypto_scanner.constants import stats_select_options, tickers
+from crypto_scanner.constants import (
+    stats_select_options,
+    stats_select_options_all,
+    tickers,
+)
 from crypto_scanner.utils import format_options
 
 
@@ -29,7 +33,7 @@ def average_price_change_per_day_of_week(request, symbol, duration):
             )
 
         # Calculate the date 'duration + 1' days ago from the start of the week to exclude Monday
-        days_ago = start_of_week - timedelta(days=num_of_days_select_options + 1)
+        days_ago = start_of_week - timedelta(hours=num_of_days_select_options + 1)
 
         # Group the 5-minute kline candles per day of the week and calculate average price movements
         average_price_changes = (
@@ -67,7 +71,7 @@ def average_price_change_per_day_of_week(request, symbol, duration):
 # PEARSON CORRELATION
 def get_tickers_data(duration):
     query_tickers_data = {}
-    duration = stats_select_options[duration]
+    duration = stats_select_options_all[duration]
 
     for ticker in tickers:
         query_tickers_data[ticker] = (
@@ -142,7 +146,14 @@ def get_pearson_correlation(request, duration):
 @csrf_exempt
 def get_stats_select_options(request):
     if request.method == "GET":
-        return JsonResponse(format_options(stats_select_options), safe=False)
+        include_ltf = request.GET.get("include_ltf", False)
+
+        if include_ltf:
+            combined_options = stats_select_options_all
+        else:
+            combined_options = stats_select_options
+
+        return JsonResponse(format_options(combined_options), safe=False)
 
     # Other HTTP methods are not allowed for this view
     return HttpResponse(status=405)

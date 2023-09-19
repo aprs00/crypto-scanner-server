@@ -8,10 +8,18 @@ from datetime import datetime
 
 import time
 
-from crypto_scanner.constants import tickers, stats_select_options
+from crypto_scanner.constants import tickers, stats_select_options_all
 from crypto_scanner.views import calculate_pearson_correlation
 
 client = Client()
+
+
+@shared_task
+def calculate_all_options_pearson_correlation():
+    for duration in stats_select_options_all.keys():
+        response = calculate_pearson_correlation(duration)
+
+        cache.set(f"pearson_correlation_{duration}", response)
 
 
 def get_interval_model(tf):
@@ -19,23 +27,6 @@ def get_interval_model(tf):
         return BinanceSpotKline1m, Client.KLINE_INTERVAL_1MINUTE
     elif tf == "5m":
         return BinanceSpotKline5m, Client.KLINE_INTERVAL_5MINUTE
-
-
-@shared_task
-def calculate_all_options_pearson_correlation():
-    for duration in stats_select_options.keys():
-        response = calculate_pearson_correlation(duration)
-
-        cache.set(f"pearson_correlation_{duration}", response)
-
-
-def test_redis():
-    cache.set("testing", "otorinolaringologija")
-
-
-def test_cache_get(name):
-    print(cache.get(name))
-    return cache.get(name)
 
 
 @shared_task
