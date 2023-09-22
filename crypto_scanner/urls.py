@@ -14,4 +14,9 @@ urlpatterns = [
         views.get_pearson_correlation,
         name="pearson-correlation",
     ),
+    path(
+        "z-score-matrix/<str:duration>",
+        views.get_z_score_matrix,
+        name="z-score-matrix",
+    ),
 ]

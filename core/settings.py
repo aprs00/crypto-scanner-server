@@ -11,7 +11,6 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 from pathlib import Path
-from celery.schedules import crontab
 from datetime import timedelta
 import os
 import dotenv
@@ -179,14 +178,23 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": timedelta(minutes=6),
         "args": ("5m", 4),
     },
+    "calculate-ltf-pearson-correlations": {
+        "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
+        "schedule": timedelta(minutes=6),
+        "args": (True),
+    },
     "calculate-htf-pearson-correlations": {
         "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
         "schedule": timedelta(minutes=90),
     },
-    "calculate-ltf-pearson-correlations": {
-        "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
-        "schedule": timedelta(minutes=7),
+    "calculate-ltf-z-scores": {
+        "task": "crypto_scanner.tasks.calculate_options_z_score",
+        "schedule": timedelta(minutes=6),
         "args": (True),
+    },
+    "calculate-htf-z-scores": {
+        "task": "crypto_scanner.tasks.calculate_options_z_score",
+        "schedule": timedelta(minutes=90),
     },
 }
 
