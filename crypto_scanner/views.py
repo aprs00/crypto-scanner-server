@@ -15,6 +15,7 @@ from crypto_scanner.constants import (
     stats_select_options_ltf,
     stats_select_options_all,
     tickers,
+    ticker_colors,
 )
 from crypto_scanner.utils import format_options
 
@@ -115,11 +116,6 @@ def get_tickers_data_z_score(duration):
             ticker=ticker, start_time__gte=start_time, start_time__lte=end_time
         ).values_list("base_volume", "close", "number_of_trades")
 
-    for base_volume, close, number_of_trades in trades_volume_price_tickers_data[
-        "BTCUSDT"
-    ]:
-        print(base_volume, close, number_of_trades)
-
     trades_volume_price_tickers_data = get_min_length(trades_volume_price_tickers_data)
 
     return trades_volume_price_tickers_data
@@ -162,20 +158,6 @@ def get_z_score_matrix(request, duration):
         if response is None:
             response = calculate_z_score(duration)
             cache.set(f"z_score_{duration}", response)
-
-        ticker_colors = [
-            "#3357CC",  # Lighter blue
-            "#7A42FF",  # Lighter purple
-            "#4DFF4D",  # Lighter green
-            "#1F1F1F",  # Slightly lighter dark grey
-            "#6243B6",  # Lighter indigo
-            "#00B3B3",  # Lighter cyan
-            "#555555",  # Gray (unchanged)
-            "#1E57B7",  # Slightly lighter blue
-            "#B30000",  # Lighter red
-            "#6B7F4F",  # Lighter olive green
-            "#666666",  # Gray (unchanged)
-        ]
 
         response = [
             {
@@ -254,7 +236,6 @@ def get_pearson_correlation(request, duration):
         response = cache.get(f"pearson_correlation_{duration}")
 
         if response is None:
-            print("response is None: ", response)
             response = calculate_pearson_correlation(duration)
             cache.set(f"pearson_correlation_{duration}", response)
 

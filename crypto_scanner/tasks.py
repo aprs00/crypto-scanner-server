@@ -23,7 +23,7 @@ def calculate_options_z_score(calculate_ltf=False):
         durations = stats_select_options_ltf
     else:
         durations = stats_select_options_htf
-        time.sleep(20)
+        time.sleep(10)
 
     for duration in durations:
         response = calculate_z_score(duration)
@@ -35,7 +35,7 @@ def calculate_options_z_score(calculate_ltf=False):
 def calculate_options_pearson_correlation(calculate_ltf=False):
     if calculate_ltf:
         durations = stats_select_options_ltf
-        time.sleep(70)
+        time.sleep(80)
     else:
         durations = stats_select_options_htf
         time.sleep(20)

@@ -31,3 +31,17 @@ tickers = [
     "BCHUSDT",
     "SHIBUSDT",
 ]
+
+ticker_colors = [
+    "#3357CC",
+    "#7A42FF",
+    "#4DFF4D",
+    "#B9B4C7",
+    "#6243B6",
+    "#00B3B3",
+    "#26577C",
+    "#1E57B7",
+    "#B30000",
+    "#6B7F4F",
+    "#5C5470",
+]
