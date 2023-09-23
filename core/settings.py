@@ -176,7 +176,7 @@ CELERY_BEAT_SCHEDULE = {
     "fetch-all-1m-klines": {
         "task": "crypto_scanner.tasks.fetch_all_klines",
         "schedule": timedelta(minutes=9),
-        "args": ("5m", 4),
+        "args": ("5m", 5),
     },
     "calculate-ltf-pearson-correlations": {
         "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
@@ -195,6 +195,10 @@ CELERY_BEAT_SCHEDULE = {
     "calculate-htf-z-scores": {
         "task": "crypto_scanner.tasks.calculate_options_z_score",
         "schedule": timedelta(minutes=90),
+    },
+    "calculate-z-score-past-data": {
+        "task": "crypto_scanner.tasks.calculate_z_score_history",
+        "schedule": timedelta(minutes=35),
     },
 }
 
