@@ -1,7 +1,7 @@
 from django.urls import path
 
 from crypto_scanner.api import (
-    pearson_correlation,
+    pearson,
     z_score,
     average_price_per_day,
     options,
@@ -18,7 +18,7 @@ urlpatterns = [
     ),
     path(
         "pearson-correlation/<str:duration>",
-        pearson_correlation.get_pearson_correlation,
+        pearson.get_pearson_correlation,
         name="pearson-correlation",
     ),
     path(

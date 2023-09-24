@@ -11,9 +11,8 @@ from crypto_scanner.constants import (
     stats_select_options_ltf,
 )
 from crypto_scanner.api import (
-    calculate_pearson_correlation,
-    calculate_z_score,
-    calculate_z_score_history,
+    pearson,
+    z_score,
 )
 from crypto_scanner.utils import create_kline_object, get_interval_model
 
@@ -30,7 +29,7 @@ def calculate_options_z_score(calculate_ltf=False):
         time.sleep(10)
 
     for duration in durations:
-        response = calculate_z_score(duration)
+        response = z_score.calculate_z_score(duration)
 
         cache.set(f"z_score_{duration}", response)
 
@@ -45,7 +44,7 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
         time.sleep(20)
 
     for duration in durations.keys():
-        response = calculate_pearson_correlation(duration)
+        response = pearson.calculate_pearson_correlation(duration)
 
         cache.set(f"pearson_correlation_{duration}", response)
 

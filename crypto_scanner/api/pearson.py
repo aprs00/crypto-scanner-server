@@ -38,17 +38,6 @@ def get_tickers_data(duration):
             .values_list("close_as_float", flat=True)
         )
 
-    print(
-        BinanceSpotKline5m.objects.filter(
-            ticker=ticker,
-            start_time__gte=start_time_utc,
-            start_time__lte=end_time_utc,
-        )
-        .annotate(close_as_float=Cast("close", FloatField()))
-        .values_list("close_as_float", flat=True)
-        .query
-    )
-
     query_tickers_data = get_min_length(query_tickers_data)
 
     return query_tickers_data
