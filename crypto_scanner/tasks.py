@@ -33,6 +33,8 @@ def calculate_options_z_score(calculate_ltf=False):
 
         cache.set(f"z_score_{duration}", response)
 
+    return "Done"
+
 
 @shared_task
 def calculate_options_pearson_correlation(calculate_ltf=False):
@@ -48,6 +50,8 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
 
         cache.set(f"pearson_correlation_{duration}", response)
 
+    return "Done"
+
 
 @shared_task
 def calculate_z_score_history():
@@ -57,6 +61,8 @@ def calculate_z_score_history():
     response = calculate_z_score_history(duration)
 
     cache.set(f"z_score_data_{duration}", response)
+
+    return "Done"
 
 
 @shared_task
@@ -76,3 +82,5 @@ def fetch_all_klines(tf, limit=25):
             model.objects.bulk_create(kline_objects)
 
         time.sleep(6)
+
+    return "Done"
