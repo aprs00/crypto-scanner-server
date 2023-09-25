@@ -29,7 +29,7 @@ def calculate_options_z_score_matrix(calculate_ltf=False):
         time.sleep(10)
 
     for duration in durations:
-        response = z_score.calculate_z_score(duration)
+        response = z_score.calculate_z_score_matrix(duration)
 
         cache.set(f"z_score_{duration}", response)
 
