@@ -39,7 +39,7 @@ def calculate_options_z_score_matrix(calculate_ltf=False):
 @shared_task
 def calculate_z_score_history():
     time.sleep(16)
-    duration = "1d"
+    duration = "12h"
 
     response = z_score.calculate_z_score_history(duration)
 

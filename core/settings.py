@@ -210,6 +210,8 @@ CORS_ALLOW_CREDENTIALS = (
     True  # If you need to include credentials (e.g., cookies) in your requests.
 )
 CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost",
     "https://crypto-scanner-phi.vercel.app",
     "https://www.crypto-scanner.xyz",
 ]

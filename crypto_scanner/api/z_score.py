@@ -151,7 +151,9 @@ def format_z_score_history_response(data, data_type):
             }
             for ticker, data in data["data"].items()
         ],
-        "time": data["start_time_values"],
+        "time": [
+            str(time + timedelta(hours=2))[11:16] for time in data["start_time_values"]
+        ],
     }
 
 
