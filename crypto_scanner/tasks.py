@@ -20,7 +20,7 @@ client = Client()
 
 
 @shared_task
-def calculate_options_z_score(calculate_ltf=False):
+def calculate_options_z_score_matrix(calculate_ltf=False):
     if calculate_ltf:
         time.sleep(70)
         durations = stats_select_options_ltf
@@ -32,6 +32,18 @@ def calculate_options_z_score(calculate_ltf=False):
         response = z_score.calculate_z_score(duration)
 
         cache.set(f"z_score_{duration}", response)
+
+    return "Done"
+
+
+@shared_task
+def calculate_z_score_history():
+    time.sleep(16)
+    duration = "1d"
+
+    response = z_score.calculate_z_score_history(duration)
+
+    cache.set(f"z_score_data_{duration}", response)
 
     return "Done"
 
@@ -49,18 +61,6 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
         response = pearson.calculate_pearson_correlation(duration)
 
         cache.set(f"pearson_correlation_{duration}", response)
-
-    return "Done"
-
-
-@shared_task
-def calculate_z_score_history():
-    time.sleep(16)
-    duration = "1d"
-
-    response = calculate_z_score_history(duration)
-
-    cache.set(f"z_score_data_{duration}", response)
 
     return "Done"
 
