@@ -22,7 +22,7 @@ client = Client()
 @shared_task
 def calculate_options_z_score_matrix(calculate_ltf=False):
     if calculate_ltf:
-        time.sleep(70)
+        time.sleep(85)
         durations = stats_select_options_ltf
     else:
         durations = stats_select_options_htf
@@ -52,7 +52,7 @@ def calculate_z_score_history():
 def calculate_options_pearson_correlation(calculate_ltf=False):
     if calculate_ltf:
         durations = stats_select_options_ltf
-        time.sleep(80)
+        time.sleep(95)
     else:
         durations = stats_select_options_htf
         time.sleep(20)
@@ -81,6 +81,6 @@ def fetch_all_klines(tf, limit=25):
         if kline_objects:
             model.objects.bulk_create(kline_objects)
 
-        time.sleep(6)
+        time.sleep(4)
 
     return "Done"
