@@ -83,4 +83,8 @@ def fetch_all_klines(tf, limit=25):
 
         time.sleep(4)
 
+    print(
+        "FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES"
+    )
+
     return "Done"
