@@ -139,11 +139,22 @@ def average_price_change_per_hour_of_day(request, symbol, duration):
             hourly_price_changes, "hour_of_day"
         )
 
+        hours_dict_values = dict(sorted(hours_dict_values.items()))
+
         formatted_data = format_data(hours_dict_values)
+        xAxis = []
+
+        int_values_array = [int(float(str(item))) for item in hours_dict_values.keys()]
+
+        for hour in int_values_array:
+            if hour < 10:
+                xAxis.append(f"0{hour}:00")
+            else:
+                xAxis.append(f"{hour}:00")
 
         response = {
             "data": formatted_data,
-            "xAxis": [f"{hour}:00" for hour in range(24)],
+            "xAxis": xAxis,
         }
 
         return JsonResponse(response, safe=False)
