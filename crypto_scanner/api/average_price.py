@@ -47,6 +47,7 @@ def extract_db_data(symbol, start_time_utc, group_by):
             DATE_TRUNC('{group_by}', start_time)
     """
     price_changes = BinanceSpotKline5m.objects.raw(query)
+    print(price_changes.query)
 
     return price_changes
 
@@ -101,13 +102,18 @@ def average_price_change_per_day_of_week(request, symbol, duration):
         )
 
         formatted_data = format_data(weekdays_dict_values)
+        xAxis = []
 
-        weekdays = weekdays[1:] + weekdays[:1]
-        formatted_data = formatted_data[1:] + formatted_data[:1]
+        int_values_array = [
+            int(float(str(item))) for item in weekdays_dict_values.keys()
+        ]
+
+        for day in int_values_array:
+            xAxis.append(weekdays[day])
 
         response = {
             "data": formatted_data,
-            "xAxis": weekdays,
+            "xAxis": xAxis,
         }
 
         return JsonResponse(response, safe=False)
