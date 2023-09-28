@@ -13,6 +13,7 @@ import numpy as np
 from crypto_scanner.constants import (
     stats_select_options_all,
     tickers,
+    invalid_params_error,
 )
 from crypto_scanner.api.utils import get_min_length
 
@@ -72,8 +73,13 @@ def calculate_pearson_correlation(duration):
 
 
 @csrf_exempt
-def get_pearson_correlation(request, duration):
+def get_pearson_correlation(request):
     if request.method == "GET":
+        duration = request.GET.get("duration", None)
+
+        if duration is None:
+            return JsonResponse(invalid_params_error, status=400)
+
         response = cache.get(f"pearson_correlation_{duration}")
 
         if response is None:

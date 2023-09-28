@@ -13,6 +13,7 @@ from crypto_scanner.constants import (
     stats_select_options_all,
     tickers,
     ticker_colors,
+    invalid_params_error,
 )
 
 
@@ -100,12 +101,13 @@ def format_z_score_matrix_response(data, xAxis, yAxis, roundBy):
 
 
 @csrf_exempt
-def get_z_score_matrix(request, duration):
+def get_z_score_matrix(request):
     if request.method == "GET":
         xAxis = request.GET.get("x_axis", None)
         yAxis = request.GET.get("y_axis", None)
+        duration = request.GET.get("duration", None)
 
-        if xAxis is None or yAxis is None:
+        if xAxis is None or yAxis is None or duration is None:
             return JsonResponse(
                 {"error": "Invalid axis", "code": "INVALID_AXIS"}, status=400
             )
@@ -158,8 +160,14 @@ def format_z_score_history_response(data, data_type):
 
 
 @csrf_exempt
-def get_z_score_history(request, duration, type):
+def get_z_score_history(request):
     if request.method == "GET":
+        duration = request.GET.get("duration", None)
+        type = request.GET.get("type", None)
+
+        if duration is None or type is None:
+            return JsonResponse(invalid_params_error, status=400)
+
         response = cache.get(f"z_score_history_{duration}")
 
         if response is None:

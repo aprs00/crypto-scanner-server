@@ -55,3 +55,8 @@ ticker_colors = [
     "#03C988",
     "#892CDC",
 ]
+
+invalid_params_error = {
+    "error": "Invalid parameters",
+    "code": "INVALID_PARAMS",
+}

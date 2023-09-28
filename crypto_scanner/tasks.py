@@ -17,12 +17,13 @@ from crypto_scanner.api import (
 from crypto_scanner.utils import create_kline_object, get_interval_model
 
 client = Client()
+# client = None
 
 
 @shared_task
 def calculate_options_z_score_matrix(calculate_ltf=False):
     if calculate_ltf:
-        time.sleep(85)
+        time.sleep(90)
         durations = stats_select_options_ltf
     else:
         durations = stats_select_options_htf
@@ -38,7 +39,7 @@ def calculate_options_z_score_matrix(calculate_ltf=False):
 
 @shared_task
 def calculate_z_score_history():
-    time.sleep(16)
+    time.sleep(88)
     duration = "12h"
 
     response = z_score.calculate_z_score_history(duration)

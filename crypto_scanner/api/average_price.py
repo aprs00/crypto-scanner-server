@@ -7,7 +7,7 @@ from crypto_scanner.models import BinanceSpotKline5m
 from datetime import timedelta
 
 
-from crypto_scanner.constants import stats_select_options_htf
+from crypto_scanner.constants import stats_select_options_htf, invalid_params_error
 
 
 def extract_db_data(symbol, start_time_utc, group_by):
@@ -82,8 +82,14 @@ def calculate_dict_percentage(data, grouped_by):
 
 
 @csrf_exempt
-def average_price_change_per_day_of_week(request, symbol, duration):
+def average_price_change_per_day_of_week(request):
     if request.method == "GET":
+        duration = request.GET.get("duration", None)
+        symbol = request.GET.get("symbol", None)
+
+        if duration is None or symbol is None:
+            return JsonResponse(invalid_params_error, status=400)
+
         duration_hours = stats_select_options_htf[duration]
 
         if duration_hours is None:
@@ -122,8 +128,14 @@ def average_price_change_per_day_of_week(request, symbol, duration):
 
 
 @csrf_exempt
-def average_price_change_per_hour_of_day(request, symbol, duration):
+def average_price_change_per_hour_of_day(request):
     if request.method == "GET":
+        duration = request.GET.get("duration", None)
+        symbol = request.GET.get("symbol", None)
+
+        if duration is None or symbol is None:
+            return JsonResponse(invalid_params_error, status=400)
+
         duration_hours = stats_select_options_htf[duration]
 
         if duration_hours is None:

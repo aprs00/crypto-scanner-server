@@ -185,7 +185,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     "calculate-htf-pearson-correlations": {
         "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
-        "schedule": timedelta(minutes=90),
+        "schedule": timedelta(minutes=120),
     },
     "calculate-ltf-z-scores": {
         "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
@@ -194,11 +194,11 @@ CELERY_BEAT_SCHEDULE = {
     },
     "calculate-htf-z-scores": {
         "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-        "schedule": timedelta(minutes=90),
+        "schedule": timedelta(minutes=120),
     },
     "calculate-z-score-past-data": {
         "task": "crypto_scanner.tasks.calculate_z_score_history",
-        "schedule": timedelta(minutes=35),
+        "schedule": timedelta(minutes=9),
     },
 }
 

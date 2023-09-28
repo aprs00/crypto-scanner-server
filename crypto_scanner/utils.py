@@ -9,6 +9,7 @@ from crypto_scanner.constants import tickers
 
 
 client = Client()
+# client = None
 
 
 def format_options(options, type="dict"):
