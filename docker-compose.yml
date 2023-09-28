@@ -31,6 +31,22 @@ services:
             - db
             - redis
 
+    # binance_websocket:
+    #     container_name: crypto-scanner-binance-websocket
+    #     build: .
+    #     command: python manage.py run_binance_websocket
+    #     volumes:
+    #         - .:/code
+    #     environment:
+    #         - POSTGRES_NAME=${POSTGRES_NAME}
+    #         - POSTGRES_USER=${POSTGRES_USER}
+    #         - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    #         - CELERY_BACKEND=${CELERY_BACKEND}
+    #         - CELERY_BROKER=${CELERY_BROKER}
+    #     depends_on:
+    #         - db
+    #         - redis
+
     redis:
         container_name: crypto-scanner-redis
         image: "redis:7.2-rc2-alpine"

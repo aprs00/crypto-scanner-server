@@ -13,13 +13,8 @@ urlpatterns = [
     path("tickers-options", options.get_tickers_options),
     path(
         "average-prices",
-        average_price.average_price_change_per_day_of_week,
+        average_price.get_average_prices,
         name="average-price-change-per-week",
-    ),
-    path(
-        "average-price-hour",
-        average_price.average_price_change_per_hour_of_day,
-        name="average-price-change-per-hour",
     ),
     path(
         "pearson-correlation",

@@ -35,6 +35,7 @@ ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS").split(",")
 # Application definition
 
 INSTALLED_APPS = [
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -93,6 +94,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "core.wsgi.application"
+ASGI_APPLICATION = "core.asgi.application"
 
 
 # Database
@@ -118,6 +120,15 @@ CACHES = {
         },
         "KEY_PREFIX": "crypto-scanner-server",
         "TIMEOUT": 60 * 60 * 36,
+    }
+}
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("redis", 6379)],
+        },
     }
 }
 
