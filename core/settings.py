@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 
 from pathlib import Path
 from datetime import timedelta
+from celery.schedules import crontab
+
 import os
 import dotenv
 
@@ -114,11 +116,11 @@ DATABASES = {
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://redis:6379/1",
+        "LOCATION": "redis://redis:6379/0",
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         },
-        "KEY_PREFIX": "crypto-scanner-server",
+        # "KEY_PREFIX": "crypto-scanner-server",
         "TIMEOUT": 60 * 60 * 36,
     }
 }
@@ -176,40 +178,48 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
 # CELERY
-CELERY_BROKER_URL = os.getenv("CELERY_BROKER", "redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = os.getenv("CELERY_BROKER", "redis://localhost:6379/0")
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER", "redis://redis:6379/0")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_BROKER", "redis://redis:6379/0")
 CELERY_ACCEPT_CONTENT = ["application/json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 
 CELERY_BEAT_SCHEDULE = {
+    # "testing-celery": {
+    #     "task": "crypto_scanner.tasks.testing_celery",
+    #     "schedule": timedelta(seconds=1),
+    # },
     "fetch-all-1m-klines": {
         "task": "crypto_scanner.tasks.fetch_all_klines",
-        "schedule": timedelta(minutes=9),
+        # "schedule": timedelta(minutes=9),
+        "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
         "args": ("5m", 4),
     },
     "calculate-ltf-pearson-correlations": {
         "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
-        "schedule": timedelta(minutes=9),
+        # "schedule": timedelta(minutes=9),
+        "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
         "args": (True,),
     },
     "calculate-htf-pearson-correlations": {
         "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
-        "schedule": timedelta(minutes=120),
+        "schedule": crontab(minute=34, hour="*/2"),
     },
     "calculate-ltf-z-scores": {
         "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-        "schedule": timedelta(minutes=9),
+        # "schedule": timedelta(minutes=9),
+        "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
         "args": (True,),
     },
     "calculate-htf-z-scores": {
         "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-        "schedule": timedelta(minutes=120),
+        "schedule": crontab(minute=34, hour="*/2"),
     },
     "calculate-z-score-past-data": {
         "task": "crypto_scanner.tasks.calculate_z_score_history",
-        "schedule": timedelta(minutes=9),
+        # "schedule": timedelta(minutes=9),
+        "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
     },
 }
 

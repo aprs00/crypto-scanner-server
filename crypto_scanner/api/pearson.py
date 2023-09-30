@@ -4,8 +4,6 @@ from django.views.decorators.csrf import csrf_exempt
 from django.db.models import FloatField
 from django.db.models.functions import Cast
 from django.utils import timezone
-
-from crypto_scanner.models import BinanceSpotKline5m
 from datetime import timedelta
 
 import numpy as np
@@ -15,6 +13,7 @@ from crypto_scanner.constants import (
     tickers,
     invalid_params_error,
 )
+from crypto_scanner.models import BinanceSpotKline5m
 from crypto_scanner.api.utils import get_min_length
 
 
@@ -37,6 +36,7 @@ def get_tickers_data(duration):
             )
             .annotate(close_as_float=Cast("close", FloatField()))
             .values_list("close_as_float", flat=True)
+            .order_by("start_time")
         )
 
     query_tickers_data = get_min_length(query_tickers_data)

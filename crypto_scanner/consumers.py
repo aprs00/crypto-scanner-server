@@ -1,6 +1,7 @@
 import websockets
 import json
-import redis
+
+# import redis
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 
@@ -9,21 +10,21 @@ class BinanceConsumer(AsyncWebsocketConsumer):
         await self.accept()
 
         # Binance WebSocket endpoint for BTC/USDT ticker
-        binance_ws_endpoint = "wss://stream.binance.com:9443/ws/btcusdt@ticker"
+        # binance_ws_endpoint = "wss://stream.binance.com:9443/ws/btcusdt@ticker"
 
         # Initialize Redis connection
-        self.redis_client = redis.StrictRedis(host="localhost", port=6379, db=0)
+        # self.redis_client = redis.StrictRedis(host="localhost", port=6379, db=0)
 
-        async with websockets.connect(binance_ws_endpoint) as websocket:
-            while True:
-                data = await websocket.recv()
-                parsed_data = json.loads(data)
+        # async with websockets.connect(binance_ws_endpoint) as websocket:
+        #     while True:
+        #         data = await websocket.recv()
+        #         parsed_data = json.loads(data)
 
-                # Update Redis with the received data
-                # self.update_redis(parsed_data)
-                print(parsed_data)
+        #         # Update Redis with the received data
+        #         # self.update_redis(parsed_data)
+        #         print(parsed_data)
 
-                await self.send(text_data=json.dumps(parsed_data))
+        #         await self.send(text_data=json.dumps(parsed_data))
 
     # def update_redis(self, data):
     #     # Update Redis with the necessary data

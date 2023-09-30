@@ -21,6 +21,13 @@ client = Client()
 
 
 @shared_task
+def testing_celery():
+    print("TESTING CELERY")
+
+    return "TESTING CELERY DONE"
+
+
+@shared_task
 def calculate_options_z_score_matrix(calculate_ltf=False):
     if calculate_ltf:
         time.sleep(90)

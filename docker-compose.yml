@@ -34,7 +34,7 @@ services:
     # binance_websocket:
     #     container_name: crypto-scanner-binance-websocket
     #     build: .
-    #     command: python manage.py run_binance_websocket
+    #     command: python binance_websocket.py
     #     volumes:
     #         - .:/code
     #     environment:
@@ -45,7 +45,7 @@ services:
     #         - CELERY_BROKER=${CELERY_BROKER}
     #     depends_on:
     #         - db
-    #         - redis
+            # - redis
 
     redis:
         container_name: crypto-scanner-redis
