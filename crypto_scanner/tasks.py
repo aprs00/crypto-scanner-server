@@ -46,12 +46,12 @@ def calculate_options_z_score_matrix(calculate_ltf=False):
 
 @shared_task
 def calculate_z_score_history():
-    time.sleep(88)
+    time.sleep(50)
     duration = "12h"
 
     response = z_score.calculate_z_score_history(duration)
 
-    cache.set(f"z_score_data_{duration}", response)
+    cache.set(f"z_score_history_{duration}", response)
 
     return "Done"
 
@@ -89,7 +89,7 @@ def fetch_all_klines(tf, limit=25):
         if kline_objects:
             model.objects.bulk_create(kline_objects)
 
-        time.sleep(4)
+        time.sleep(1)
 
     print(
         "FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES"

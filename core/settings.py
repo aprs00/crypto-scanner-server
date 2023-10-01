@@ -192,13 +192,11 @@ CELERY_BEAT_SCHEDULE = {
     # },
     "fetch-all-1m-klines": {
         "task": "crypto_scanner.tasks.fetch_all_klines",
-        # "schedule": timedelta(minutes=9),
         "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
         "args": ("5m", 4),
     },
     "calculate-ltf-pearson-correlations": {
         "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
-        # "schedule": timedelta(minutes=9),
         "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
         "args": (True,),
     },
@@ -208,7 +206,6 @@ CELERY_BEAT_SCHEDULE = {
     },
     "calculate-ltf-z-scores": {
         "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-        # "schedule": timedelta(minutes=9),
         "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
         "args": (True,),
     },
@@ -218,7 +215,6 @@ CELERY_BEAT_SCHEDULE = {
     },
     "calculate-z-score-past-data": {
         "task": "crypto_scanner.tasks.calculate_z_score_history",
-        # "schedule": timedelta(minutes=9),
         "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
     },
 }

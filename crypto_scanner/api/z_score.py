@@ -54,6 +54,8 @@ def get_tickers_data_z_score(duration):
             .order_by("start_time")
         )
 
+        # print(trades_volume_price_tickers_data[ticker].query)
+
     trades_volume_price_tickers_data = get_min_length(trades_volume_price_tickers_data)
 
     return trades_volume_price_tickers_data
