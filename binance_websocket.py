@@ -3,9 +3,10 @@ import redis
 
 import time
 
+from crypto_scanner.constants import tickers as symbols
+
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
-symbols = ["BTCUSDT", "ETHUSDT"]
 aggregation_types = ["avg", "sum", "std.p", "std.s", "var.p", "var.s", "twa"]
 
 """"
