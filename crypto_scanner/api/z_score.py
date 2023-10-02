@@ -155,7 +155,6 @@ def format_z_score_history_response(data, data_type):
             {
                 "name": ticker,
                 "type": "line",
-                "stack": "Total",
                 "data": [float(item) for item in data[data_type]],
                 "emphasis": {"focus": "self"},
             }
