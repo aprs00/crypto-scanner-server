@@ -186,10 +186,10 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 
 CELERY_BEAT_SCHEDULE = {
-    "testing-celery": {
-        "task": "crypto_scanner.tasks.testing_celery",
-        "schedule": timedelta(seconds=30),
-    },
+    # "testing-celery": {
+    #     "task": "crypto_scanner.tasks.testing_celery",
+    #     "schedule": timedelta(seconds=30),
+    # },
     "fetch-all-1m-klines": {
         "task": "crypto_scanner.tasks.fetch_all_klines",
         "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
