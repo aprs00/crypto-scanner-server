@@ -20,7 +20,7 @@ services:
         volumes:
             - .:/code
         ports:
-             - "8000:8000"
+            - "8000:8000"
         environment:
             - POSTGRES_NAME=${POSTGRES_NAME}
             - POSTGRES_USER=${POSTGRES_USER}
@@ -31,28 +31,40 @@ services:
             - db
             - redis
 
-    # binance_websocket:
-    #     container_name: crypto-scanner-binance-websocket
-    #     build: .
-    #     command: python binance_websocket.py
-    #     volumes:
-    #         - .:/code
-    #     environment:
-    #         - POSTGRES_NAME=${POSTGRES_NAME}
-    #         - POSTGRES_USER=${POSTGRES_USER}
-    #         - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-    #         - CELERY_BACKEND=${CELERY_BACKEND}
-    #         - CELERY_BROKER=${CELERY_BROKER}
-    #     depends_on:
-    #         - db
-            # - redis
+    binance_websocket:
+        container_name: crypto-scanner-binance-websocket
+        build: .
+        command: python binance_websocket.py
+        volumes:
+            - .:/code
+        environment:
+            - POSTGRES_NAME=${POSTGRES_NAME}
+            - POSTGRES_USER=${POSTGRES_USER}
+            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+            - CELERY_BACKEND=${CELERY_BACKEND}
+            - CELERY_BROKER=${CELERY_BROKER}
+        depends_on:
+            - db
+            - redis
+            # - redis-stack-stack-server
 
     redis:
         container_name: crypto-scanner-redis
-        image: "redis:7.2-rc2-alpine"
+        # image: "redis:7.2-rc2-alpine"
+        # image: "redislabs/redistimeseries:latest"
+        image: "redis/redis-stack-server:latest"
         volumes:
             - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
-        command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+        # command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+        ports:
+            - "6379:6379"
+            
+
+    # redis-stack-server:
+    #     container_name: crypto-scanner-redis-stack-server
+    #     image: "redis/redis-stack-server"
+    #     ports:
+    #         - "6380:6379"
 
     celery:
         container_name: crypto-scanner-celery

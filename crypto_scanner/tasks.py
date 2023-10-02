@@ -30,11 +30,10 @@ def testing_celery():
 @shared_task
 def calculate_options_z_score_matrix(calculate_ltf=False):
     if calculate_ltf:
-        time.sleep(90)
+        time.sleep(68)
         durations = stats_select_options_ltf
     else:
         durations = stats_select_options_htf
-        time.sleep(10)
 
     for duration in durations:
         response = z_score.calculate_z_score_matrix(duration)
@@ -46,7 +45,8 @@ def calculate_options_z_score_matrix(calculate_ltf=False):
 
 @shared_task
 def calculate_z_score_history():
-    time.sleep(50)
+    print("KALKULIRAMMMM CALCULATE Z SCORE HISTORY")
+    time.sleep(60)
     duration = "12h"
 
     response = z_score.calculate_z_score_history(duration)
@@ -60,10 +60,10 @@ def calculate_z_score_history():
 def calculate_options_pearson_correlation(calculate_ltf=False):
     if calculate_ltf:
         durations = stats_select_options_ltf
-        time.sleep(95)
+        time.sleep(74)
     else:
         durations = stats_select_options_htf
-        time.sleep(20)
+        time.sleep(25)
 
     for duration in durations.keys():
         response = pearson.calculate_pearson_correlation(duration)

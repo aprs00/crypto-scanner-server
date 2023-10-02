@@ -121,8 +121,8 @@ CACHES = {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         },
         # "KEY_PREFIX": "crypto-scanner-server",
-        "TIMEOUT": 60 * 60 * 36,
-    }
+        "TIMEOUT": None,
+    },
 }
 
 CHANNEL_LAYERS = {
@@ -186,10 +186,10 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 
 CELERY_BEAT_SCHEDULE = {
-    # "testing-celery": {
-    #     "task": "crypto_scanner.tasks.testing_celery",
-    #     "schedule": timedelta(seconds=1),
-    # },
+    "testing-celery": {
+        "task": "crypto_scanner.tasks.testing_celery",
+        "schedule": timedelta(seconds=30),
+    },
     "fetch-all-1m-klines": {
         "task": "crypto_scanner.tasks.fetch_all_klines",
         "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
@@ -213,7 +213,7 @@ CELERY_BEAT_SCHEDULE = {
         "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
         "schedule": crontab(minute=34, hour="*/2"),
     },
-    "calculate-z-score-past-data": {
+    "calculate-z-score-history": {
         "task": "crypto_scanner.tasks.calculate_z_score_history",
         "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
     },

@@ -1,109 +1,87 @@
-# from binance import ThreadedWebsocketManager
-from django.core.cache import cache
-import numpy as np
-
-from django_redis import get_redis_connection
-
+from binance import ThreadedWebsocketManager
 import redis
 
-from crypto_scanner.constants import tickers
+import time
 
-# set core settings
-import os
-import json
-import django
+r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
-django.setup()
+symbols = ["BTCUSDT", "ETHUSDT"]
+aggregation_types = ["avg", "sum", "std.p", "std.s", "var.p", "var.s", "twa"]
 
-# r = redis.Redis(host="redis", port=6379, db=0)
-con = get_redis_connection("default")
+""""
+r.execute_command(f"TS.CREATE 1s_candles:BTCUSDT RETENTION {retention}")
+r.execute_command(
+    f"TS.CREATE 1s_candles:BTCUSDT:sum RETENTION {retention} LABELS symbol BTCUSDT aggregation_type sum"
+)
+
+r.execute_command(f"TS.CREATE 1s_candles:ETHUSDT RETENTION {retention}")
+r.execute_command(
+    f"TS.CREATE 1s_candles:ETHUSDT:sum RETENTION {retention} LABELS symbol ETHUSDT aggregation_type sum"
+)
+
+r.execute_command(
+    f"TS.CREATERULE 1s_candles:BTCUSDT 1s_candles:BTCUSDT:sum AGGREGATION sum 15000"
+)
+r.execute_command(
+    f"TS.CREATERULE 1s_candles:ETHUSDT 1s_candles:ETHUSDT:sum AGGREGATION sum 15000"
+)
+"""
+
+
+def create_keys(retention, bucket_size):
+    for symbol in symbols:
+        if not r.exists(f"1s_candles:{symbol}"):
+            r.execute_command(f"TS.CREATE 1s_candles:{symbol} RETENTION {retention}")
+        for aggregation_type in aggregation_types:
+            if not r.exists(f"1s_candles:{symbol}:{aggregation_type}"):
+                r.execute_command(
+                    f"TS.CREATE 1s_candles:{symbol}:{aggregation_type} RETENTION {retention} LABELS symbol {symbol} aggregation_type {aggregation_type}"
+                )
+                r.execute_command(
+                    f"TS.CREATERULE 1s_candles:{symbol} 1s_candles:{symbol}:{aggregation_type} AGGREGATION {aggregation_type} {bucket_size}"
+                )
 
 
 def main():
-    # twm = ThreadedWebsocketManager()
-    # twm.start()
-    # to_trim = 1 * 60 * 15
+    twm = ThreadedWebsocketManager()
+    twm.start()
 
-    # def extract_key_values(data, key):
-    #     return [item[key] for item in data]
+    retention = "900000"
+    bucket_size = "15000"
 
-    # def decode_redis_data(data):
-    #     parsed_data = []
-    #     for item in data:
-    #         item_str = item.decode("utf-8")
+    create_keys(retention=retention, bucket_size=bucket_size)
 
-    #         # Find the index of the last '}'
-    #         end_index = item_str.rfind("}")
+    def handle_socket_message(msg):
+        data = msg["data"]["k"]
+        symbol = data["s"]
+        volume = float(data["v"])
+        timestamp = data["t"]
 
-    #         if end_index != -1:
-    #             # Trim the string to extract the JSON-like portion
-    #             json_str = item_str[: end_index + 1]
-
-    #             try:
-    #                 # Parse the extracted JSON string
-    #                 parsed_item = json.loads(json_str)
-    #                 parsed_data.append(parsed_item)
-    #             except json.JSONDecodeError as e:
-    #                 print("Error decoding JSON:", str(e))
-    #         else:
-    #             print("No valid JSON-like portion found.")
-
-    #     return parsed_data
-
-    # def handle_socket_message(msg):
-    #     data = json.dumps(msg["data"]["k"])
-
-    #     redis_data_length = con.llen("kline_1s:btcusdt")
-
-    #     if redis_data_length == to_trim:
-    #         con.lpop("kline_1s:btcusdt")
-
-    #     con.lpush("kline_1s:btcusdt", data)
-    #     con.ltrim("kline_1s:btcusdt", 0, to_trim)
-
-    #     # get value from redis
-    #     klines_900 = con.lrange("kline_1s:btcusdt", 0, to_trim)
-
-    #     volume_list = []
-
-    #     parsed_data = decode_redis_data(klines_900)
-    #     # parsed_data = []
-
-    #     for item in parsed_data:
-    #         volume_list.append(float(item["v"]))
-
-    #     average_volume_900s = np.average(volume_list)
-
-    #     con.hset(
-    #         "btcusdt:stats",
-    #         mapping={"average_volume_15s": average_volume_900s},
-    #     )
-
-    #     print(con.hgetall("btcusdt:stats"))
-
-    #     # print(redis_data_length)
-
-    # # streams = [f"{ticker.lower()}@kline_1s" for ticker in tickers]
-    # streams = ["btcusdt@kline_1s"]
-    # twm.start_multiplex_socket(callback=handle_socket_message, streams=streams)
-
-    # twm.join()
-
-    con.set(
-        "APOIDFHPOEHWAPOFIEAWOPIFHEWOPIAWEFHPIOEFWHPIOAEHFIOAFHOEIHOPAWEFHOPAEFW",
-        "bbbCON",
-    )
-    print(
-        con.get(
-            "APOIDFHPOEHWAPOFIEAWOPIFHEWOPIAWEFHPIOEFWHPIOAEHFIOAFHOEIHOPAWEFHOPAEFW"
+        r.execute_command(
+            f"ts.add 1s_candles:{symbol} {timestamp} {volume} LABELS symbol {symbol}"
         )
-    )
 
-    # r.set.set("aaaR", "bbbR")
-    # print(r.set.get("aaaR"))
+        # btcusdt_data = r.execute_command(f"TS.MGET - + FILTER symbol=BTCUSDT")
+
+        # for data in btcusdt_data:
+        #     aggregation_type = data[0].split(":")[2]
+        #     value = data[2][1]
+        #     print(aggregation_type, value)
+
+        # print(btcusdt_data)
+
+    # Streams to subscribe to
+    streams = ["btcusdt@kline_1s", "ethusdt@kline_1s"]
+    twm.start_multiplex_socket(callback=handle_socket_message, streams=streams)
+
+    twm.join()
 
 
+"""
+ts.range 1s_candles:BTCUSDT:sum - + +
+TS.MRANGE - + FILTER symbol=BTCUSDT
+TS.MRANGE - + FILTER aggregation_type=sum
+"""
 if __name__ == "__main__":
     main()
 

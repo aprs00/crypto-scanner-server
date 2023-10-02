@@ -30,6 +30,7 @@ djangorestframework==3.14.0
 frozenlist==1.4.0
 hyperlink==21.0.0
 idna==3.4
+importlib-metadata==4.13.0
 incremental==22.10.0
 kombu==5.3.1
 msgpack==1.0.7
@@ -65,4 +66,5 @@ vine==5.0.0
 wcwidth==0.2.6
 websockets==11.0.3
 yarl==1.9.2
+zipp==3.17.0
 zope.interface==6.0
