@@ -34,7 +34,7 @@ def create_keys(retention, bucket_size):
         if not r.exists(f"1s_candles:{symbol}"):
             r.execute_command(f"TS.CREATE 1s_candles:{symbol} RETENTION {retention}")
         for aggregation_type in aggregation_types:
-            if not r.exists(f"1s_candles:{symbol}:{aggregation_type}"):
+            if r.exists(f"1s_candles:{symbol}:{aggregation_type}"):
                 r.execute_command(
                     f"TS.CREATE 1s_candles:{symbol}:{aggregation_type} RETENTION {retention} LABELS symbol {symbol} aggregation_type {aggregation_type}"
                 )
@@ -72,7 +72,8 @@ def main():
         # print(btcusdt_data)
 
     # Streams to subscribe to
-    streams = ["btcusdt@kline_1s", "ethusdt@kline_1s"]
+    # streams = ["btcusdt@kline_1s", "ethusdt@kline_1s"]
+    streams = [f"{symbol.lower()}usdt@kline_1s" for symbol in symbols]
     twm.start_multiplex_socket(callback=handle_socket_message, streams=streams)
 
     twm.join()
