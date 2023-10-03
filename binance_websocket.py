@@ -34,13 +34,29 @@ def create_keys(retention, bucket_size):
         if not r.exists(f"1s_candles:{symbol}"):
             r.execute_command(f"TS.CREATE 1s_candles:{symbol} RETENTION {retention}")
         for aggregation_type in aggregation_types:
-            if r.exists(f"1s_candles:{symbol}:{aggregation_type}"):
+            # r.execute_command(
+            #     f"TS.CREATE 1s_candles:{symbol}:{aggregation_type} RETENTION {retention} LABELS symbol {symbol} aggregation_type {aggregation_type}"
+            # )
+            # r.execute_command(
+            #     f"TS.CREATERULE 1s_candles:{symbol} 1s_candles:{symbol}:{aggregation_type} AGGREGATION {aggregation_type} {bucket_size}"
+            # ),
+            try:
                 r.execute_command(
                     f"TS.CREATE 1s_candles:{symbol}:{aggregation_type} RETENTION {retention} LABELS symbol {symbol} aggregation_type {aggregation_type}"
                 )
+            except:
+                print(f"1s_candles:{symbol}:{aggregation_type} already exists")
+                pass
+
+            try:
                 r.execute_command(
                     f"TS.CREATERULE 1s_candles:{symbol} 1s_candles:{symbol}:{aggregation_type} AGGREGATION {aggregation_type} {bucket_size}"
                 )
+            except:
+                print(
+                    f"TS.CREATERULE 1s_candles:{symbol} 1s_candles:{symbol}:{aggregation_type} already exists"
+                )
+                pass
 
 
 def main():
