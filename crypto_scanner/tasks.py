@@ -30,7 +30,7 @@ def testing_celery():
 @shared_task
 def calculate_options_z_score_matrix(calculate_ltf=False):
     if calculate_ltf:
-        time.sleep(68)
+        time.sleep(72)
         durations = stats_select_options_ltf
     else:
         durations = stats_select_options_htf
@@ -46,7 +46,7 @@ def calculate_options_z_score_matrix(calculate_ltf=False):
 @shared_task
 def calculate_z_score_history():
     print("KALKULIRAMMMM CALCULATE Z SCORE HISTORY")
-    time.sleep(60)
+    time.sleep(88)
     duration = "12h"
 
     response = z_score.calculate_z_score_history(duration)
@@ -60,7 +60,7 @@ def calculate_z_score_history():
 def calculate_options_pearson_correlation(calculate_ltf=False):
     if calculate_ltf:
         durations = stats_select_options_ltf
-        time.sleep(74)
+        time.sleep(99)
     else:
         durations = stats_select_options_htf
         time.sleep(25)
@@ -89,7 +89,7 @@ def fetch_all_klines(tf, limit=25):
         if kline_objects:
             model.objects.bulk_create(kline_objects)
 
-        time.sleep(1)
+        time.sleep(4)
 
     print(
         "FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES"

@@ -74,6 +74,8 @@ def main():
         volume = float(data["v"])
         timestamp = data["t"]
 
+        print(symbol, volume, timestamp)
+
         r.execute_command(
             f"ts.add 1s_candles:{symbol} {timestamp} {volume} LABELS symbol {symbol}"
         )
