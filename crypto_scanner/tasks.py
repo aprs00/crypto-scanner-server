@@ -15,7 +15,8 @@ from crypto_scanner.api import (
     pearson,
     z_score,
 )
-from crypto_scanner.utils import create_kline_object, get_interval_model
+from crypto_scanner.utils import create_kline_object
+from crypto_scanner.models import BinanceSpotKline5m
 
 client = Client()
 # client = None
@@ -78,7 +79,8 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
 
 @shared_task
 def fetch_all_klines(tf, limit=25):
-    model, interval = get_interval_model(tf)
+    model = BinanceSpotKline5m
+    interval = Client.KLINE_INTERVAL_5MINUTE
 
     for ticker in tickers:
         klines = client.get_klines(symbol=ticker, interval=interval, limit=limit)
