@@ -18,6 +18,42 @@ stats_select_options_ltf = {
 
 stats_select_options_all = {**stats_select_options_ltf, **stats_select_options_htf}
 
+socket_symbols = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "DOTUSDT",
+    "AVAXUSDT",
+    "ADAUSDT",
+    "MATICUSDT",
+    "XMRUSDT",
+    "DOGEUSDT",
+    "LTCUSDT",
+    "TRXUSDT",
+    "LINKUSDT",
+    "BCHUSDT",
+    "SHIBUSDT",
+    "LOOMUSDT",
+    "STORJUSDT",
+    "RUNEUSDT",
+    "CYBERUSDT",
+    "AVAXUSDT",
+    "TRBUSDT",
+    "OPUSDT",
+    "STRAXUSDT",
+    "LEVERUSDT",
+    "BAKEUSDT",
+    "FRONTUSDT",
+    "ALPACAUSDT",
+    "LQTYUSDT",
+    "ZRXUSDT",
+    "RNDRUSDT",
+    "MASKUSDT",
+    "GLMRUSDT",
+]
+
 tickers = [
     "BTCUSDT",
     "ETHUSDT",
@@ -55,6 +91,8 @@ ticker_colors = [
     "#03C988",
     "#892CDC",
 ]
+
+timeseries_agg_types = ["avg", "sum", "std.p", "std.s", "var.p", "var.s", "twa"]
 
 invalid_params_error = {
     "error": "Invalid parameters",

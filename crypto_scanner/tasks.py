@@ -4,6 +4,7 @@ from celery import shared_task
 from binance.client import Client
 
 import time
+import redis
 
 from crypto_scanner.constants import (
     tickers,
@@ -18,6 +19,8 @@ from crypto_scanner.utils import create_kline_object, get_interval_model
 
 client = Client()
 # client = None
+
+r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
 
 @shared_task
@@ -89,10 +92,15 @@ def fetch_all_klines(tf, limit=25):
         if kline_objects:
             model.objects.bulk_create(kline_objects)
 
-        time.sleep(4)
+        time.sleep(6)
 
     print(
         "FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES"
     )
 
     return "Done"
+
+
+@shared_task
+def reconnect_binance_1s_klines_sockets():
+    r.publish("binance_1s_data", "reconnect_apis")

@@ -50,21 +50,11 @@ services:
 
     redis:
         container_name: crypto-scanner-redis
-        # image: "redis:7.2-rc2-alpine"
-        # image: "redislabs/redistimeseries:latest"
         image: "redis/redis-stack-server:latest"
         volumes:
             - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
-        # command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
         ports:
-            - "6379:6379"
-            
-
-    # redis-stack-server:
-    #     container_name: crypto-scanner-redis-stack-server
-    #     image: "redis/redis-stack-server"
-    #     ports:
-    #         - "6380:6379"
+            - "6378:6379"
 
     celery:
         container_name: crypto-scanner-celery

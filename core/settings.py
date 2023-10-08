@@ -190,6 +190,10 @@ CELERY_BEAT_SCHEDULE = {
     #     "task": "crypto_scanner.tasks.testing_celery",
     #     "schedule": timedelta(seconds=30),
     # },
+    # "reconnect-binance-sockets": {
+    #     "task": "crypto_scanner.tasks.reconnect_binance_1s_klines_sockets",
+    #     "schedule": timedelta(seconds=10),
+    # },
     "fetch-all-1m-klines": {
         "task": "crypto_scanner.tasks.fetch_all_klines",
         "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
