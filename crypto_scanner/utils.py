@@ -1,5 +1,5 @@
 from django.utils import timezone
-from crypto_scanner.models import BinanceSpotKline1m, BinanceSpotKline5m
+from crypto_scanner.models import BinanceSpotKline5m
 from binance.client import Client
 from datetime import datetime
 
@@ -19,13 +19,6 @@ def format_options(options, type="dict"):
         return [{"value": i, "label": i} for i in options]
 
 
-def get_interval_model(tf):
-    if tf == "1m":
-        return BinanceSpotKline1m, Client.KLINE_INTERVAL_1MINUTE
-    elif tf == "5m":
-        return BinanceSpotKline5m, Client.KLINE_INTERVAL_5MINUTE
-
-
 def populate_all_klines(tf, start_date, end_date=None, batch=40000):
     if end_date is None:
         end_date = datetime.now()
@@ -39,7 +32,8 @@ def populate_kline(tf, ticker, start_date, end_date=None, batch=40000):
     if end_date is None:
         end_date = datetime.now()
 
-    model, interval = get_interval_model(tf)
+    model = BinanceSpotKline5m
+    interval = Client.KLINE_INTERVAL_5MINUTE
 
     klines = client.get_historical_klines(ticker, interval, start_date, end_date)
 

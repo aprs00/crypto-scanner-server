@@ -46,3 +46,8 @@ class BinanceSpotKline5m(models.Model):
     class Meta:
         ordering = ["start_time"]
         db_table = "crypto_scanner_binance_spot_kline_5m"
+
+
+# class BinanceTickers(models.Model):
+#     ticker = models.CharField(max_length=16)
+#     color: models.CharField(max_length=10)
