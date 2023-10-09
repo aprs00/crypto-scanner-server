@@ -105,6 +105,9 @@ def format_binance_1s_data():
                         agg_value,
                     )
 
+    for symbol, aggregation_values in response.items():
+        r.execute_command(f"HSET aggregation:timestamps:{symbol} {aggregation_values}")
+
     response = list(response.values())
     response = json.dumps(response)
 
@@ -147,12 +150,12 @@ def main():
         data = msg["data"]["k"]
 
         symbol = data["s"]
-        volume = float(data["v"])
+        quote_volume = float(data["q"])
         price = float(data["c"])
         num_of_trades = data["n"]
         timestamp = data["t"]
 
-        agg_redis_command.append(f"1s:volume:{symbol} {timestamp} {volume}")
+        agg_redis_command.append(f"1s:volume:{symbol} {timestamp} {quote_volume}")
         agg_redis_command.append(f"1s:price:{symbol} {timestamp} {price}")
         agg_redis_command.append(f"1s:trades:{symbol} {timestamp} {num_of_trades}")
 
@@ -184,3 +187,84 @@ ts.madd 1s:trades:BTCUSDT 10000 10
 """
 if __name__ == "__main__":
     main()
+
+"""
+SHIBUSDT:aggregation = {
+    "symbol": "SHIBUSDT",
+    "t_avg_30s": "0.5714",
+    "v_avg_30s": "11354066.1071",
+    "t_sum_30s": "16.0",
+    "v_sum_30s": "317913851.0",
+    "t_std.p_30s": "0.8207",
+    "v_std.p_30s": "26142057.7546",
+    "t_std.s_30s": "0.8357",
+    "v_std.s_30s": "26621768.5516",
+    "t_var.p_30s": "0.6735",
+    "v_var.p_30s": "683407183642274.9",
+    "t_var.s_30s": "0.6984",
+    "v_var.s_30s": "708718560814211.0",
+    "p_twa_30s": "0.0",
+    "t_twa_30s": "0.5379",
+    "v_twa_30s": "10365747.5404",
+    "t_avg_1m": "0.6552",
+    "v_avg_1m": "11480523.431",
+    "t_sum_1m": "38.0",
+    "v_sum_1m": "665870359.0",
+    "t_std.p_1m": "1.0595",
+    "v_std.p_1m": "26605204.5958",
+    "t_std.s_1m": "1.0687",
+    "v_std.s_1m": "26837568.8731",
+    "t_var.p_1m": "1.1225",
+    "v_var.p_1m": "707836911584437.1",
+    "t_var.s_1m": "1.1422",
+    "v_var.s_1m": "720255103015743.0",
+    "p_twa_1m": "0.0",
+    "t_twa_1m": "0.6394",
+    "v_twa_1m": "11005210.695",
+    "t_avg_5m": "0.4899",
+    "v_avg_5m": "14509014.1611",
+    "t_sum_5m": "146.0",
+    "v_sum_5m": "4323686220.0",
+    "t_std.p_5m": "1.6633",
+    "v_std.p_5m": "115523247.5874",
+    "t_std.s_5m": "1.6661",
+    "v_std.s_5m": "115717567.7375",
+    "t_var.p_5m": "2.7667",
+    "v_var.p_5m": "1.3345620733151078e+16",
+    "t_var.s_5m": "2.776",
+    "v_var.s_5m": "1.3390555483094346e+16",
+    "p_twa_5m": "0.0",
+    "t_twa_5m": "0.4868",
+    "v_twa_5m": "14418015.3407",
+    "t_avg_15m": "0.5935",
+    "v_avg_15m": "36905206.8497",
+    "t_sum_15m": "533.0",
+    "v_sum_15m": "33140875751.0",
+    "t_std.p_15m": "3.0897",
+    "v_std.p_15m": "298322772.6909",
+    "t_std.s_15m": "3.0914",
+    "v_std.s_15m": "298489015.5418",
+    "t_var.p_15m": "9.5464",
+    "v_var.p_15m": "8.89964767059903e+16",
+    "t_var.s_15m": "9.557",
+    "v_var.s_15m": "8.909569239908506e+16",
+    "p_twa_15m": "0.0",
+    "t_twa_15m": "0.5925",
+    "v_twa_15m": "36878310.5362",
+    "t_avg_1h": "0.5331",
+    "v_avg_1h": "33807346.8849",
+    "t_sum_1h": "1918.0",
+    "v_sum_1h": "121638834092.0",
+    "t_std.p_1h": "2.5326",
+    "v_std.p_1h": "262432593.1114",
+    "t_std.s_1h": "2.5329",
+    "v_std.s_1h": "262469069.9471",
+    "t_var.p_1h": "6.414",
+    "v_var.p_1h": "6.887086592719227e+16",
+    "t_var.s_1h": "6.4158",
+    "v_var.s_1h": "6.889001267890959e+16",
+    "p_twa_1h": "0.0",
+    "t_twa_1h": "0.5328",
+    "v_twa_1h": "33800521.1046",
+}
+"""

@@ -1,11 +1,11 @@
 from django.utils import timezone
-from crypto_scanner.models import BinanceSpotKline5m
 from binance.client import Client
 from datetime import datetime
 
 import time
 
 from crypto_scanner.constants import tickers
+from crypto_scanner.models import BinanceSpotKline5m
 
 
 client = Client()
@@ -57,9 +57,15 @@ def create_kline_object(model, ticker, kline, check_exists=False):
         if model.objects.filter(ticker=ticker, start_time=start_time):
             return None
 
+    # if check_exists:
+    #     if model.objects.filter(ticker__name=ticker, start_time=start_time).exists():
+    #         return None
+
     end_time = timezone.make_aware(
         datetime.fromtimestamp(kline[6] / 1000), timezone.utc
     )
+
+    # ticker, _ = BinanceSpotTickers.objects.get_or_create(name=ticker)
 
     kline_obj = model(
         ticker=ticker,

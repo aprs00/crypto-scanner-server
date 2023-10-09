@@ -46,6 +46,36 @@ def extract_db_data(symbol, start_time_utc, group_by):
         GROUP BY
             DATE_TRUNC('{group_by}', start_time)
     """
+
+    # query = f"""
+    #     WITH ranked_data AS (
+    #         SELECT
+    #             id,
+    #             start_time,
+    #             open,
+    #             close,
+    #             ROW_NUMBER() OVER (PARTITION BY DATE_TRUNC('{group_by}', start_time), ticker ORDER BY start_time) AS row_asc,
+    #             ROW_NUMBER() OVER (PARTITION BY DATE_TRUNC('{group_by}', start_time), ticker ORDER BY start_time DESC) AS row_desc
+    #         FROM
+    #             "crypto_scanner_binance_spot_kline_5m"
+    #         LEFT JOIN
+    #             crypto_scanner_binance_spot_tickers AS tickers
+    #         ON
+    #             kline.ticker_id = tickers.id
+    #         WHERE
+    #             tickers.name = '{symbol}'
+    #             AND start_time >= '{start_time_utc}'
+    #     )
+    #     SELECT
+    #         MAX(id) as id,
+    #         extract({extract_function} from DATE_TRUNC('{group_by}', start_time)) AS {column_name},
+    #         MAX(CASE WHEN row_asc = 1 THEN open END) AS open,
+    #         MAX(CASE WHEN row_desc = 1 THEN close END) AS close
+    #     FROM
+    #         ranked_data
+    #     GROUP BY
+    #         DATE_TRUNC('{group_by}', start_time)
+    # """
     price_changes = BinanceSpotKline5m.objects.raw(query)
     print(price_changes.query)
 
