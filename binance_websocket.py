@@ -53,7 +53,7 @@ def extract_timeseries(data):
     agg_value = data[2][0][1]
 
     agg_value = float(agg_value)
-    agg_value = round(agg_value, 4)
+    agg_value = round(agg_value, 2)
     agg_value = str(agg_value)
 
     value_type_abbr = value_type[0]
