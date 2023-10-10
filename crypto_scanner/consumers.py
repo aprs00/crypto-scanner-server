@@ -43,7 +43,6 @@ class TableConsumer(AsyncWebsocketConsumer):
                         "v_var_s_5m",
                         "v_var_p_5m",
                         "t_var_s_15m",
-                        "t_var_p_5m",
                     ]
                     joined_agg_keys = " ".join(agg_keys)
 
