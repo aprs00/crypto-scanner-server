@@ -32,7 +32,19 @@ class TableConsumer(AsyncWebsocketConsumer):
         async def handle_socket_message():
             try:
                 while True:
-                    agg_keys = ["p_twa_15m", "v_twa_1m", "v_twa_5m", "t_var.s_15m"]
+                    agg_keys = [
+                        "p_twa_15m",
+                        "v_sum_30s",
+                        "t_sum_30s",
+                        "v_twa_1m",
+                        "v_twa_5m",
+                        "v_sum_5m",
+                        "t_sum_5m",
+                        "v_var_s_5m",
+                        "v_var_p_5m",
+                        "t_var_s_15m",
+                        "t_var_p_5m",
+                    ]
                     joined_agg_keys = " ".join(agg_keys)
 
                     response = []
@@ -62,8 +74,6 @@ class TableConsumer(AsyncWebsocketConsumer):
     async def listen_to_redis(self):
         self.pubsub.subscribe(self.redis_channel)
 
-        print("LISTEN TO REDIS")
-
         try:
             while True:
                 message = self.pubsub.get_message()
@@ -73,7 +83,6 @@ class TableConsumer(AsyncWebsocketConsumer):
                     and message["data"] == "updated"
                 ):
                     try:
-                        # await self.send("fočihefwopifhwepoifhwe")
                         await self.handle_socket_message()
                     except Exception as e:
                         print("Error sending response:", str(e))

@@ -108,6 +108,8 @@ def format_binance_1s_data():
     for symbol, aggregation_values in response.items():
         key_values_agg = ""
         for agg_key, agg_value in aggregation_values.items():
+            if "." in agg_key:
+                agg_key = agg_key.replace(".", "_")
             key_values_agg += f"{agg_key} {agg_value} "
 
         r.execute_command(f"HMSET aggregation:timestamps:{symbol} {key_values_agg}")
