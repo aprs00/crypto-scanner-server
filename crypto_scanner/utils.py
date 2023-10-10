@@ -8,8 +8,8 @@ from crypto_scanner.constants import tickers
 from crypto_scanner.models import BinanceSpotKline5m
 
 
-# client = Client()
-client = None
+client = Client()
+# client = None
 
 
 def format_options(options, type="dict"):
