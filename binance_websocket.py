@@ -106,12 +106,11 @@ def format_binance_1s_data():
                     )
 
     for symbol, aggregation_values in response.items():
-        r.execute_command(f"HSET aggregation:timestamps:{symbol} {aggregation_values}")
+        key_values_agg = ""
+        for agg_key, agg_value in aggregation_values.items():
+            key_values_agg += f"{agg_key} {agg_value} "
 
-    # response = list(response.values())
-    # response = json.dumps(response)
-
-    # r.set("formatted_binance_1s_data", response)
+        r.execute_command(f"HMSET aggregation:timestamps:{symbol} {key_values_agg}")
 
 
 def subscribe_to_redis_channel(channel):

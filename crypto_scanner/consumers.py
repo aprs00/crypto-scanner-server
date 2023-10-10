@@ -1,8 +1,5 @@
 import json
 import asyncio
-import time
-import numpy as np
-import urllib.parse
 
 import redis
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -35,7 +32,7 @@ class TableConsumer(AsyncWebsocketConsumer):
         async def handle_socket_message():
             try:
                 while True:
-                    agg_keys = ["v_twa_1m", "v_twa_1h", "t_var.s_15m"]
+                    agg_keys = ["p_twa_15m", "v_twa_1m", "v_twa_5m", "t_var.s_15m"]
                     joined_agg_keys = " ".join(agg_keys)
 
                     response = []
