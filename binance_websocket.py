@@ -91,11 +91,6 @@ def format_binance_1s_data():
                         agg_value,
                     ) = extract_timeseries(data)
 
-                    if value_type == "price" and agg_type not in [
-                        "twa",
-                    ]:
-                        continue
-
                     add_to_response(
                         response,
                         symbol,

@@ -1,27 +1,20 @@
 import json
 import asyncio
-
+import urllib.parse
 import redis
+
 from channels.generic.websocket import AsyncWebsocketConsumer
-from .constants import timeseries_agg_types, socket_symbols
+
+from .constants import socket_symbols
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
 
 class TableConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        # query_string = self.scope["query_string"].decode("utf-8")
-        # params = urllib.parse.parse_qs(query_string)
-        # param1 = params.get("param1", [""])[0]
-        # param2 = params.get("param2", [""])[0]
-        # jsonObj = params.get("jsonObj", [""])[0]
-
-        # convert jsonObj to dict
-        # jsonObj = json.loads(jsonObj)
-
-        # print(param1)
-        # print(param2)
-        # print(jsonObj["name"])
+        query_string = self.scope["query_string"].decode("utf-8")
+        params = urllib.parse.parse_qs(query_string)
+        agg_keys = params.get("aggregations", [""])[0].split(",")
 
         self.redis_channel = "binance_1s_data"
         self.pubsub = r.pubsub()
@@ -32,18 +25,6 @@ class TableConsumer(AsyncWebsocketConsumer):
         async def handle_socket_message():
             try:
                 while True:
-                    agg_keys = [
-                        "p_twa_15m",
-                        "v_sum_30s",
-                        "t_sum_30s",
-                        "v_twa_1m",
-                        "v_twa_5m",
-                        "v_sum_5m",
-                        "t_sum_5m",
-                        "v_var_s_5m",
-                        "v_var_p_5m",
-                        "t_var_p_5m",
-                    ]
                     joined_agg_keys = " ".join(agg_keys)
 
                     response = []

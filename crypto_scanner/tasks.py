@@ -106,3 +106,6 @@ def fetch_all_klines(tf, limit=25):
 @shared_task
 def reconnect_binance_1s_klines_sockets():
     r.publish("binance_1s_data", "reconnect_apis")
+
+
+# crypto_scanner.tasks.fetch_all_klines("5m", 450)
