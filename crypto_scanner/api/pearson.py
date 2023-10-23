@@ -95,13 +95,11 @@ def get_pearson_correlation(request):
         if duration is None:
             return JsonResponse(invalid_params_error, status=400)
 
-        # response = cache.get(f"pearson_correlation_{duration}")
+        response = cache.get(f"pearson_correlation_{duration}")
 
-        # if response is None:
-        #     response = calculate_pearson_correlation(duration)
-        #     cache.set(f"pearson_correlation_{duration}", response)
-
-        response = calculate_pearson_correlation(duration)
+        if response is None:
+            response = calculate_pearson_correlation(duration)
+            cache.set(f"pearson_correlation_{duration}", response)
 
         return JsonResponse(response, safe=False)
 
