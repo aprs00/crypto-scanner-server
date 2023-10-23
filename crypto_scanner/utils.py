@@ -5,11 +5,13 @@ from datetime import datetime
 import time
 
 from crypto_scanner.constants import tickers
-from crypto_scanner.models import BinanceSpotKline5m
+
+# from crypto_scanner.models import BinanceSpotKline5m
+BinanceSpotKline5m = None
 
 
-client = Client()
-# client = None
+# client = Client()
+client = None
 
 
 def format_options(options, type="dict"):

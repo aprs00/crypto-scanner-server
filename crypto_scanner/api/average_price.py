@@ -3,7 +3,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 import numpy as np
 
-from crypto_scanner.models import BinanceSpotKline5m
+# from crypto_scanner.models import BinanceSpotKline5m
+BinanceSpotKline5m = None
 from datetime import timedelta
 
 

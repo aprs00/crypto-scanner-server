@@ -16,10 +16,12 @@ from crypto_scanner.api import (
     z_score,
 )
 from crypto_scanner.utils import create_kline_object
-from crypto_scanner.models import BinanceSpotKline5m
 
-client = Client()
-# client = None
+# from crypto_scanner.models import BinanceSpotKline5m
+BinanceSpotKline5m = None
+
+# client = Client()
+client = None
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 

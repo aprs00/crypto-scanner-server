@@ -3,7 +3,8 @@ from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 
-from crypto_scanner.models import BinanceSpotKline5m
+# from crypto_scanner.models import BinanceSpotKline5m
+BinanceSpotKline5m = None
 from datetime import timedelta
 
 import numpy as np
