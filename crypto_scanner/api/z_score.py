@@ -5,7 +5,6 @@ from django.utils import timezone
 
 from crypto_scanner.models import BinanceSpotKline5m
 
-# BinanceSpotKline5m = None
 from datetime import timedelta
 
 import numpy as np
@@ -19,7 +18,7 @@ from crypto_scanner.constants import (
 )
 
 
-def get_tickers_data_z_score(duration):
+def get_tickers_data_z_score(duration, nth_element=1):
     duration_hours = stats_select_options_all[duration]
 
     end_time = timezone.now()
@@ -54,7 +53,7 @@ def get_tickers_data_z_score(duration):
             )
             .values_list("base_volume", "close", "number_of_trades", "start_time")
             .order_by("start_time")
-        )
+        )[::nth_element]
 
         # print(trades_volume_price_tickers_data[ticker].query)
 
@@ -76,7 +75,21 @@ def calculate_z_scores(values):
 
 
 def calculate_z_score_matrix(duration):
-    tickers_data_z_scores = get_tickers_data_z_score(duration)
+    every_x_elements = 1
+
+    if duration == "1w":
+        every_x_elements = 10
+    if duration == "2w":
+        every_x_elements = 20
+    elif duration == "1m":
+        every_x_elements = 50
+    elif duration == "3m":
+        every_x_elements = 150
+    elif duration == "6m":
+        every_x_elements = 400
+
+    tickers_data_z_scores = get_tickers_data_z_score(duration, every_x_elements)
+    print(len(tickers_data_z_scores["BTCUSDT"]))
     z_scores = {}
 
     for ticker, data in tickers_data_z_scores.items():
@@ -122,11 +135,13 @@ def get_z_score_matrix(request):
                 {"error": "Invalid axis", "code": "INVALID_AXIS"}, status=400
             )
 
-        response = cache.get(f"z_score_{duration}")
+        # response = cache.get(f"z_score_{duration}")
 
-        if response is None:
-            response = calculate_z_score_matrix(duration)
-            cache.set(f"z_score_{duration}", response)
+        # if response is None:
+        #     response = calculate_z_score_matrix(duration)
+        #     cache.set(f"z_score_{duration}", response)
+
+        response = calculate_z_score_matrix(duration)
 
         response = format_z_score_matrix_response(response, xAxis, yAxis, 2)
 

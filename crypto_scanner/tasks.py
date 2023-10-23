@@ -2,6 +2,7 @@ from __future__ import absolute_import, unicode_literals
 from django.core.cache import cache
 from celery import shared_task
 from binance.client import Client
+from django.db import IntegrityError
 
 import time
 import redis
@@ -18,8 +19,6 @@ from crypto_scanner.api import (
 from crypto_scanner.utils import create_kline_object
 
 from crypto_scanner.models import BinanceSpotKline5m
-
-# BinanceSpotKline5m = None
 
 client = Client()
 # client = None
@@ -52,7 +51,6 @@ def calculate_options_z_score_matrix(calculate_ltf=False):
 
 @shared_task
 def calculate_z_score_history():
-    print("KALKULIRAMMMM CALCULATE Z SCORE HISTORY")
     time.sleep(88)
     duration = "12h"
 
@@ -90,14 +88,18 @@ def fetch_all_klines(tf, limit=25):
 
         kline_objects = []
         for kline in klines:
-            kline_object = create_kline_object(model, ticker, kline, True)
+            kline_object = create_kline_object(model, ticker, kline)
             if kline_object:
                 kline_objects.append(kline_object)
 
         if kline_objects:
-            model.objects.bulk_create(kline_objects)
+            try:
+                model.objects.bulk_create(kline_objects, ignore_conflicts=True)
+            except IntegrityError as e:
+                print("IntegrityError:", str(e))
+                pass
 
-        time.sleep(6)
+        time.sleep(4)
 
     print(
         "FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES"

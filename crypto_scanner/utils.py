@@ -1,14 +1,13 @@
 from django.utils import timezone
 from binance.client import Client
 from datetime import datetime
+from django.db import IntegrityError
 
 import time
 
 from crypto_scanner.constants import tickers
 
 from crypto_scanner.models import BinanceSpotKline5m
-
-# BinanceSpotKline5m = None
 
 
 client = Client()
@@ -28,7 +27,7 @@ def populate_all_klines(tf, start_date, end_date=None, batch=40000):
 
     for ticker in tickers:
         populate_kline(tf, ticker, start_date, end_date, batch)
-        time.sleep(30)
+        time.sleep(10)
 
 
 def populate_kline(tf, ticker, start_date, end_date=None, batch=40000):
@@ -42,23 +41,33 @@ def populate_kline(tf, ticker, start_date, end_date=None, batch=40000):
 
     kline_objects = []
     for kline in klines:
-        kline_object = create_kline_object(model, ticker, kline, True)
+        kline_object = create_kline_object(model, ticker, kline)
         if kline_object:
             kline_objects.append(kline_object)
 
     if kline_objects:
         for i in range(0, len(kline_objects), batch):
-            model.objects.bulk_create(kline_objects[i : i + batch])
+            try:
+                model.objects.bulk_create(
+                    kline_objects[i : i + batch], ignore_conflicts=True
+                )
+            except IntegrityError as e:
+                print("IntegrityError:", str(e))
+                pass
 
 
-def create_kline_object(model, ticker, kline, check_exists=False):
+def create_kline_object(model, ticker, kline):
     start_time = timezone.make_aware(
         datetime.fromtimestamp(kline[0] / 1000), timezone.utc
     )
 
-    if check_exists:
-        if model.objects.filter(ticker=ticker, start_time=start_time):
-            return None
+    # if check_exists:
+    #     # if model.objects.filter(ticker=ticker, start_time=start_time):
+    #     #     return None
+
+    #     # latest_kline = model.objects.filter(ticker=ticker).latest("start_time")
+    #     if start_time <= latest_start_time:
+    #         return None
 
     # if check_exists:
     #     if model.objects.filter(ticker__name=ticker, start_time=start_time).exists():
@@ -86,3 +95,7 @@ def create_kline_object(model, ticker, kline, check_exists=False):
     )
 
     return kline_obj
+
+
+# utils.populate_all_klines("5m", "23 Apr 2023", "23 Oct 2023")
+# utils.populate_kline("5m", "SHIBUSDT", "23 Apr 2023", "23 Oct 2023")

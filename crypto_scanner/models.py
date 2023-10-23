@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import UniqueConstraint
 
 
 # class BtcPrice(models.Model):
@@ -58,3 +59,8 @@ class BinanceSpotKline5m(models.Model):
     class Meta:
         ordering = ["start_time"]
         db_table = "crypto_scanner_binance_spot_kline_5m"
+        constraints = [
+            UniqueConstraint(
+                fields=["ticker", "start_time"], name="unique_ticker_start_time"
+            ),
+        ]

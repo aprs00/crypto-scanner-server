@@ -1,7 +1,7 @@
 from django.http import HttpResponse, JsonResponse
 from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt
-from django.db.models import FloatField
+from django.db.models import FloatField, F
 from django.db.models.functions import Cast
 from django.utils import timezone
 from datetime import timedelta
@@ -16,11 +16,10 @@ from crypto_scanner.constants import (
 
 from crypto_scanner.models import BinanceSpotKline5m
 
-# BinanceSpotKline5m = None
 from crypto_scanner.api.utils import get_min_length
 
 
-def get_tickers_data(duration):
+def get_tickers_data(duration, nth_element=1):
     query_tickers_data = {}
     duration_hours = stats_select_options_all[duration]
 
@@ -40,7 +39,7 @@ def get_tickers_data(duration):
             .annotate(close_as_float=Cast("close", FloatField()))
             .values_list("close_as_float", flat=True)
             .order_by("start_time")
-        )
+        )[::nth_element]
 
     query_tickers_data = get_min_length(query_tickers_data)
 
@@ -49,8 +48,21 @@ def get_tickers_data(duration):
 
 def calculate_pearson_correlation(duration):
     correlation_results = {}
+    every_x_elements = 1
 
-    query_tickers_data = get_tickers_data(duration)
+    if duration == "1w":
+        every_x_elements = 7
+    if duration == "2w":
+        every_x_elements = 14
+    elif duration == "1m":
+        every_x_elements = 32
+    elif duration == "3m":
+        every_x_elements = 64
+    elif duration == "6m":
+        every_x_elements = 120
+
+    query_tickers_data = get_tickers_data(duration, nth_element=every_x_elements)
+    print(len(query_tickers_data["BTCUSDT"]))
 
     for ticker1 in tickers:
         for ticker2 in tickers:
@@ -83,11 +95,13 @@ def get_pearson_correlation(request):
         if duration is None:
             return JsonResponse(invalid_params_error, status=400)
 
-        response = cache.get(f"pearson_correlation_{duration}")
+        # response = cache.get(f"pearson_correlation_{duration}")
 
-        if response is None:
-            response = calculate_pearson_correlation(duration)
-            cache.set(f"pearson_correlation_{duration}", response)
+        # if response is None:
+        #     response = calculate_pearson_correlation(duration)
+        #     cache.set(f"pearson_correlation_{duration}", response)
+
+        response = calculate_pearson_correlation(duration)
 
         return JsonResponse(response, safe=False)
 

@@ -5,7 +5,6 @@ import numpy as np
 
 from crypto_scanner.models import BinanceSpotKline5m
 
-# BinanceSpotKline5m = None
 from datetime import timedelta
 
 
