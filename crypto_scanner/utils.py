@@ -6,8 +6,9 @@ import time
 
 from crypto_scanner.constants import tickers
 
-# from crypto_scanner.models import BinanceSpotKline5m
-BinanceSpotKline5m = None
+from crypto_scanner.models import BinanceSpotKline5m
+
+# BinanceSpotKline5m = None
 
 
 # client = Client()

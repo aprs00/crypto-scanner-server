@@ -14,8 +14,9 @@ from crypto_scanner.constants import (
     invalid_params_error,
 )
 
-# from crypto_scanner.models import BinanceSpotKline5m
-BinanceSpotKline5m = None
+from crypto_scanner.models import BinanceSpotKline5m
+
+# BinanceSpotKline5m = None
 from crypto_scanner.api.utils import get_min_length
 
 

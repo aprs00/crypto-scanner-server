@@ -17,8 +17,9 @@ from crypto_scanner.api import (
 )
 from crypto_scanner.utils import create_kline_object
 
-# from crypto_scanner.models import BinanceSpotKline5m
-BinanceSpotKline5m = None
+from crypto_scanner.models import BinanceSpotKline5m
+
+# BinanceSpotKline5m = None
 
 # client = Client()
 client = None
