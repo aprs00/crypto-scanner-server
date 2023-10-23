@@ -28,7 +28,7 @@ def populate_all_klines(tf, start_date, end_date=None, batch=40000):
 
     for ticker in tickers:
         populate_kline(tf, ticker, start_date, end_date, batch)
-        time.sleep(1800)
+        time.sleep(30)
 
 
 def populate_kline(tf, ticker, start_date, end_date=None, batch=40000):
