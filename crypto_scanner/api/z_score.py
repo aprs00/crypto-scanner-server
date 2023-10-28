@@ -135,13 +135,11 @@ def get_z_score_matrix(request):
                 {"error": "Invalid axis", "code": "INVALID_AXIS"}, status=400
             )
 
-        # response = cache.get(f"z_score_{duration}")
+        response = cache.get(f"z_score_{duration}")
 
-        # if response is None:
-        #     response = calculate_z_score_matrix(duration)
-        #     cache.set(f"z_score_{duration}", response)
-
-        response = calculate_z_score_matrix(duration)
+        if response is None:
+            response = calculate_z_score_matrix(duration)
+            cache.set(f"z_score_{duration}", response)
 
         response = format_z_score_matrix_response(response, xAxis, yAxis, 2)
 
