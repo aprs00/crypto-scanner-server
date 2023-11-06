@@ -4,7 +4,8 @@ services:
         image: postgres:15.3-alpine3.18
         volumes:
             # - ./data/db:/var/lib/postgresql/data
-            - postgres-data:/var/lib/postgresql/data
+            # - postgres-data:/var/lib/postgresql/data
+            - ./postgres-data:/var/lib/postgresql/data
         environment:
             - POSTGRES_DB=${POSTGRES_NAME}
             - POSTGRES_USER=${POSTGRES_USER}
