@@ -1,10 +1,10 @@
+version: '3.8'
+
 services:
     db:
         container_name: crypto-scanner-db
         image: postgres:15.3-alpine3.18
         volumes:
-            # - ./data/db:/var/lib/postgresql/data
-            # - postgres-data:/var/lib/postgresql/data
             - ./postgres-data:/var/lib/postgresql/data
         environment:
             - POSTGRES_DB=${POSTGRES_NAME}
@@ -87,5 +87,5 @@ services:
             - app
             - redis
 
-    volumes:
-        postgres-data:
+volumes:
+    postgres-data:
