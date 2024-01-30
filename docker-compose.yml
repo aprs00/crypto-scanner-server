@@ -88,4 +88,4 @@ services:
             - redis
 
 volumes:
-    pg-data:
+    pgdata:
