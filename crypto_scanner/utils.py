@@ -97,6 +97,6 @@ def create_kline_object(model, ticker, kline):
     return kline_obj
 
 
-# utils.populate_all_klines("5m", "04 May 2023", "05 Nov 2023")
+# utils.populate_all_klines("5m", "06 Aug 2023", "08 Feb 2024")
 # crypto_scanner.tasks.fetch_all_klines("5m", 450)
 # utils.populate_kline("5m", "SHIBUSDT", "23 Apr 2023", "23 Oct 2023")
