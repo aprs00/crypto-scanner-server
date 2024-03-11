@@ -7,7 +7,11 @@ import json
 
 dotenv.load_dotenv()
 
-from crypto_scanner.constants import socket_symbols, timeseries_agg_types
+from crypto_scanner.constants import (
+    socket_symbols,
+    test_socket_symbols,
+    timeseries_agg_types,
+)
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
@@ -30,14 +34,14 @@ def create_keys(retention):
 
 def get_timestamps():
     now = int(time.time() * 1000)
-    thirty_seconds_ago = now - 30000
+    # thirty_seconds_ago = now - 30000
     one_minute_ago = now - 60000
     five_minutes_ago = now - 300000
     fifteen_minutes_ago = now - 900000
     # one_hour_ago = now - 3600000
 
     ago_timestamps = [
-        {"30s": thirty_seconds_ago},
+        # {"30s": thirty_seconds_ago},
         {"1m": one_minute_ago},
         {"5m": five_minutes_ago},
         {"15m": fifteen_minutes_ago},
@@ -166,6 +170,15 @@ def main():
     # asyncio.run_coroutine_threadsafe(
     #     twm.start_multiplex_socket(callback=handle_socket_message, streams=streams),
     # )
+
+    #
+    # TEST MULTIPLE CONNECTIONS
+    #
+    def handle_socket_message_test(msg):
+        print(msg)
+
+    streams2 = [f"{symbol.lower()}@kline_1s" for symbol in test_socket_symbols]
+    twm.start_multiplex_socket(callback=handle_socket_message_test, streams=streams2)
 
     subscribe_to_redis_channel(redis_channel)
 
