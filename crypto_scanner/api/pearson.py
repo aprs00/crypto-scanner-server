@@ -26,11 +26,7 @@ from crypto_scanner.models import BinanceSpotKline5m
 from crypto_scanner.api.utils import get_min_length
 
 
-@csrf_exempt
-def get_last_15_minutes_of_data(request):
-    if request.method != "GET":
-        return HttpResponse(status=405)
-
+def calculate_large_pearson_correlation():
     current_time_ms = int(time.time() * 1000)
     five_minutes_ago_ms = current_time_ms - (5 * 60 * 1000)
     data = {}
@@ -71,6 +67,20 @@ def get_last_15_minutes_of_data(request):
             for j in range(i + 1, len(test_socket_symbols))
         ],
     }
+
+    return response
+
+
+@csrf_exempt
+def get_last_15_minutes_of_data(request):
+    if request.method != "GET":
+        return HttpResponse(status=405)
+
+    response = cache.get("pearson_correlation_large")
+
+    if response is None:
+        response = calculate_large_pearson_correlation()
+        cache.set("pearson_correlation_large", response)
 
     return JsonResponse(response, safe=False)
 
