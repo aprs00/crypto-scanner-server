@@ -31,4 +31,9 @@ urlpatterns = [
         z_score.get_z_score_history,
         name="z-score-history",
     ),
+    path(
+        "test-redis-data",
+        pearson.get_last_15_minutes_of_data,
+        name="test-redis-data",
+    ),
 ]

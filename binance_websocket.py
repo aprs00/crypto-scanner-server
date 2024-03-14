@@ -129,6 +129,67 @@ def subscribe_to_redis_channel(channel):
                 main()
 
 
+def return_last_15_minutes_of_data():
+    type = "1s:price_v2"
+    symbol = "BTCUSDT"
+
+    data = r.execute_command(f"TS.RANGE {type}:{symbol} - +")
+    return data
+
+
+def format_binance_1s_data_v2():
+    # only store the last 15 minutes of data in redis, no aggregations or anything
+    retention = "900000"
+
+    create_keys_v2(retention=retention)
+
+    for symbol in test_socket_symbols:
+        timeseries_data = r.execute_command(
+            f"TS.MREVRANGE - + FILTER symbol={symbol} LIMIT 900000"
+        )
+
+        for data in timeseries_data:
+            value_type = data[1][0][1]
+            symbol = data[1][2][1]
+            agg_value = data[2][0][1]
+            timestamp = data[0]
+
+            r.execute_command(
+                f"ts.add 1s:{value_type}_v2:{symbol} {timestamp} {agg_value}"
+            )
+
+
+def subscribe_to_redis_channel_v2(channel):
+    pubsub = r.pubsub()
+    pubsub.subscribe(channel)
+
+    for message in pubsub.listen():
+        print(message)
+
+        if message["type"] == "message":
+            if message["data"] == "updated":
+                format_binance_1s_data_v2()
+            if message["data"] == "reconnect_apis":
+                print("RECONNECTING APIS")
+                main()
+
+
+def create_keys_v2(retention):
+    for symbol in test_socket_symbols:
+        if not r.exists(f"1s:volume_v2:{symbol}"):
+            r.execute_command(
+                f"TS.CREATE 1s:volume_v2:{symbol} LABELS value_type volume type binance_1s_data symbol {symbol} RETENTION {retention}"
+            )
+        if not r.exists(f"1s:price_v2:{symbol}"):
+            r.execute_command(
+                f"TS.CREATE 1s:price_v2:{symbol} LABELS value_type price type binance_1s_data symbol {symbol} RETENTION {retention}"
+            )
+        if not r.exists(f"1s:trades_v2:{symbol}"):
+            r.execute_command(
+                f"TS.CREATE 1s:trades_v2:{symbol} LABELS value_type trades type binance_1s_data symbol {symbol} RETENTION {retention}"
+            )
+
+
 def main():
     twm = ThreadedWebsocketManager()
     # asyncio.run_coroutine_threadsafe(twm.stop_client(), twm._loop)
@@ -144,29 +205,29 @@ def main():
 
     create_keys(retention=retention)
 
-    def handle_socket_message(msg):
-        nonlocal count
-        count += 1
-        data = msg["data"]["k"]
-
-        symbol = data["s"]
-        quote_volume = float(data["q"])
-        price = float(data["c"])
-        num_of_trades = data["n"]
-        timestamp = data["t"]
-
-        agg_redis_command.append(f"1s:volume:{symbol} {timestamp} {quote_volume}")
-        agg_redis_command.append(f"1s:price:{symbol} {timestamp} {price}")
-        agg_redis_command.append(f"1s:trades:{symbol} {timestamp} {num_of_trades}")
-
-        if count == symbols_len:
-            r.publish(redis_channel, "updated")
-            r.execute_command(f"ts.madd {' '.join(agg_redis_command)}")
-            agg_redis_command.clear()
-            count = 0
-
-    streams = [f"{symbol.lower()}@kline_1s" for symbol in socket_symbols]
-    twm.start_multiplex_socket(callback=handle_socket_message, streams=streams)
+    # def handle_socket_message(msg):
+    #     nonlocal count
+    #     count += 1
+    #     data = msg["data"]["k"]
+    #
+    #     symbol = data["s"]
+    #     quote_volume = float(data["q"])
+    #     price = float(data["c"])
+    #     num_of_trades = data["n"]
+    #     timestamp = data["t"]
+    #
+    #     agg_redis_command.append(f"1s:volume:{symbol} {timestamp} {quote_volume}")
+    #     agg_redis_command.append(f"1s:price:{symbol} {timestamp} {price}")
+    #     agg_redis_command.append(f"1s:trades:{symbol} {timestamp} {num_of_trades}")
+    #
+    #     if count == symbols_len:
+    #         r.publish(redis_channel, "updated")
+    #         r.execute_command(f"ts.madd {' '.join(agg_redis_command)}")
+    #         agg_redis_command.clear()
+    #         count = 0
+    #
+    # streams = [f"{symbol.lower()}@kline_1s" for symbol in socket_symbols]
+    # twm.start_multiplex_socket(callback=handle_socket_message, streams=streams)
     # asyncio.run_coroutine_threadsafe(
     #     twm.start_multiplex_socket(callback=handle_socket_message, streams=streams),
     # )
@@ -175,12 +236,23 @@ def main():
     # TEST MULTIPLE CONNECTIONS
     #
     def handle_socket_message_test(msg):
-        print(msg)
+        # store data in redis
+        data = msg["data"]["k"]
+        symbol = data["s"]
+        quote_volume = float(data["q"])
+        price = float(data["c"])
+        num_of_trades = data["n"]
+        timestamp = data["t"]
 
-    streams2 = [f"{symbol.lower()}@kline_1s" for symbol in test_socket_symbols]
+        r.execute_command(f"ts.add 1s:volume_v2:{symbol} {timestamp} {quote_volume}")
+        r.execute_command(f"ts.add 1s:price_v2:{symbol} {timestamp} {price}")
+        r.execute_command(f"ts.add 1s:trades_v2:{symbol} {timestamp} {num_of_trades}")
+
+    streams2 = [f"{symbol.lower()}USDT@kline_1s" for symbol in test_socket_symbols]
     twm.start_multiplex_socket(callback=handle_socket_message_test, streams=streams2)
 
     subscribe_to_redis_channel(redis_channel)
+    subscribe_to_redis_channel_v2("binance_1s_data_v2")
 
     twm.join()
 
