@@ -76,7 +76,6 @@ def get_last_15_minutes_of_data(request):
         return HttpResponse(status=405)
 
     response = cache.get("pearson_correlation_large")
-    response = None
 
     if response is None:
         response = calculate_large_pearson_correlation()
