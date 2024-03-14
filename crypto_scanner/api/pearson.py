@@ -32,7 +32,6 @@ def calculate_large_pearson_correlation():
     data = {}
 
     for symbol in test_socket_symbols:
-        print(f"TS.RANGE 1s:price_v2:{symbol} {five_minutes_ago_ms} +")
         redis_data = r.execute_command(
             f"TS.RANGE 1s:price_v2:{symbol} {five_minutes_ago_ms} +"
         )
@@ -77,6 +76,7 @@ def get_last_15_minutes_of_data(request):
         return HttpResponse(status=405)
 
     response = cache.get("pearson_correlation_large")
+    response = None
 
     if response is None:
         response = calculate_large_pearson_correlation()

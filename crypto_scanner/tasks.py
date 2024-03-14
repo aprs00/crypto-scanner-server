@@ -79,18 +79,10 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
 
 
 @shared_task
-def calculate_large_pearson_correlation(calculate_ltf=False):
-    if calculate_ltf:
-        durations = stats_select_options_ltf
-        time.sleep(99)
-    else:
-        durations = stats_select_options_htf
-        time.sleep(25)
+def calculate_large_pearson_correlation():
+    response = pearson.calculate_large_pearson_correlation()
 
-    for duration in durations.keys():
-        response = pearson.calculate_pearson_correlation(duration)
-
-        cache.set(f"pearson_correlation_large", response)
+    cache.set(f"pearson_correlation_large", response)
 
     return "Done"
 
