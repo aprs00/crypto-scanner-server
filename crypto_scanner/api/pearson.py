@@ -36,6 +36,7 @@ def get_last_15_minutes_of_data(request):
     data = {}
 
     for symbol in test_socket_symbols:
+        print(f"TS.RANGE 1s:price_v2:{symbol} {five_minutes_ago_ms} +")
         redis_data = r.execute_command(
             f"TS.RANGE 1s:price_v2:{symbol} {five_minutes_ago_ms} +"
         )
@@ -45,7 +46,6 @@ def get_last_15_minutes_of_data(request):
 
     correlations = {}
 
-    # now calculate pearson correlation for each pair of symbols
     for symbol1 in test_socket_symbols:
         for symbol2 in test_socket_symbols:
             correlation_coefficient = np.corrcoef(data[symbol1], data[symbol2])[0, 1]
