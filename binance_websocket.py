@@ -200,6 +200,7 @@ def main():
     agg_redis_command = []
 
     create_keys(retention=retention)
+    create_keys_v2(retention=retention)
 
     # def handle_socket_message(msg):
     #     nonlocal count
@@ -244,11 +245,11 @@ def main():
         r.execute_command(f"ts.add 1s:price_v2:{symbol} {timestamp} {price}")
         r.execute_command(f"ts.add 1s:trades_v2:{symbol} {timestamp} {num_of_trades}")
 
-    streams2 = [f"{symbol.lower()}USDT@kline_1s" for symbol in test_socket_symbols]
+    streams2 = [f"{symbol.lower()}@kline_1s" for symbol in test_socket_symbols]
     twm.start_multiplex_socket(callback=handle_socket_message_test, streams=streams2)
 
     subscribe_to_redis_channel(redis_channel)
-    subscribe_to_redis_channel_v2("binance_1s_data_v2")
+    # subscribe_to_redis_channel_v2("binance_1s_data_v2")
 
     twm.join()
 
