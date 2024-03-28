@@ -26,15 +26,17 @@ from crypto_scanner.models import BinanceSpotKline5m
 from crypto_scanner.api.utils import get_min_length
 
 
-def calculate_large_pearson_correlation():
+def calculate_large_pearson_correlation(tf):
     current_time_ms = int(time.time() * 1000)
-    five_minutes_ago_ms = current_time_ms - (5 * 60 * 1000)
+    timeframes = {
+        "5m": 5 * 60 * 1000,
+        "15m": 15 * 60 * 1000,
+    }
+    ago_ms = current_time_ms - timeframes[tf]
     data = {}
 
     for symbol in test_socket_symbols:
-        redis_data = r.execute_command(
-            f"TS.RANGE 1s:price_v2:{symbol} {five_minutes_ago_ms} +"
-        )
+        redis_data = r.execute_command(f"TS.RANGE 1s:price:{symbol} {ago_ms} +")
         price_data = [float(x[1]) for x in redis_data][::4]
 
         data[symbol] = price_data
@@ -68,20 +70,6 @@ def calculate_large_pearson_correlation():
     }
 
     return response
-
-
-@csrf_exempt
-def get_last_15_minutes_of_data(request):
-    if request.method != "GET":
-        return HttpResponse(status=405)
-
-    response = cache.get("pearson_correlation_large")
-
-    if response is None:
-        response = calculate_large_pearson_correlation()
-        cache.set("pearson_correlation_large", response)
-
-    return JsonResponse(response, safe=False)
 
 
 def get_tickers_data(duration, nth_element=1):
@@ -149,6 +137,25 @@ def calculate_pearson_correlation(duration):
     }
 
     return response
+
+
+@csrf_exempt
+def get_large_pearson_correlation(request):
+    if request.method != "GET":
+        return HttpResponse(status=405)
+
+    tf = request.GET.get("duration", None)
+
+    if tf not in ["5m", "15m"]:
+        return JsonResponse(invalid_params_error, status=400)
+
+    response = cache.get(f"pearson_correlation_large_{tf}")
+
+    if response is None:
+        response = calculate_large_pearson_correlation(tf)
+        cache.set(f"pearson_correlation_large_{tf}", response)
+
+    return JsonResponse(response, safe=False)
 
 
 @csrf_exempt

@@ -32,8 +32,8 @@ urlpatterns = [
         name="z-score-history",
     ),
     path(
-        "test-redis-data",
-        pearson.get_last_15_minutes_of_data,
-        name="test-redis-data",
+        "large-pearson-correlation",
+        pearson.get_large_pearson_correlation,
+        name="large-pearson-correlation",
     ),
 ]

@@ -79,10 +79,14 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
 
 
 @shared_task
-def calculate_large_pearson_correlation():
-    response = pearson.calculate_large_pearson_correlation()
+def calculate_all_pearson_correlations():
+    print("DOVDE")
+    timeframes = ["5m", "15m"]
 
-    cache.set(f"pearson_correlation_large", response)
+    for tf in timeframes:
+        response = pearson.calculate_large_pearson_correlation(tf)
+
+        cache.set(f"pearson_correlation_{tf}", response)
 
     return "Done"
 

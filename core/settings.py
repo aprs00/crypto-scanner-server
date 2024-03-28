@@ -209,8 +209,8 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute=34, hour="*/2"),
     },
     "calculate-large-pearson-correlations": {
-        "task": "crypto_scanner.tasks.calculate_large_pearson_correlation",
-        "schedule": timedelta(seconds=10),
+        "task": "crypto_scanner.tasks.calculate_all_pearson_correlations",
+        "schedule": timedelta(seconds=20),
     },
     "calculate-ltf-z-scores": {
         "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
