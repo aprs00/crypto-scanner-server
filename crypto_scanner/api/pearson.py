@@ -149,11 +149,13 @@ def get_large_pearson_correlation(request):
     if tf not in ["5m", "15m"]:
         return JsonResponse(invalid_params_error, status=400)
 
-    response = cache.get(f"pearson_correlation_large_{tf}")
+    # response = cache.get(f"pearson_correlation_large_{tf}")
+    #
+    # if response is None:
+    #     response = calculate_large_pearson_correlation(tf)
+    #     cache.set(f"pearson_correlation_large_{tf}", response)
 
-    if response is None:
-        response = calculate_large_pearson_correlation(tf)
-        cache.set(f"pearson_correlation_large_{tf}", response)
+    response = calculate_large_pearson_correlation(tf)
 
     return JsonResponse(response, safe=False)
 
