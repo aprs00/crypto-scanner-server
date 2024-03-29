@@ -7,6 +7,8 @@ from crypto_scanner.constants import (
     stats_select_options_ltf,
     stats_select_options_all,
     tickers,
+    large_pearson_types,
+    large_pearson_timeframes,
 )
 from crypto_scanner.utils import format_options
 
@@ -33,4 +35,24 @@ def get_stats_select_options(request):
         return JsonResponse(response, safe=False)
 
     # Other HTTP methods are not allowed for this view
+    return HttpResponse(status=405)
+
+
+@csrf_exempt
+def get_large_pearson_types(request):
+    if request.method == "GET":
+        response = format_options(large_pearson_types, "list", True)
+
+        return JsonResponse(response, safe=False)
+
+    return HttpResponse(status=405)
+
+
+@csrf_exempt
+def get_large_pearson_timeframes(request):
+    if request.method == "GET":
+        response = format_options(large_pearson_timeframes, "list")
+
+        return JsonResponse(response, safe=False)
+
     return HttpResponse(status=405)

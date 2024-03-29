@@ -14,11 +14,17 @@ client = Client()
 # client = None
 
 
-def format_options(options, type="dict"):
+def format_options(options, type="dict", label_to_upper=False):
     if type == "dict":
-        return [{"value": k, "label": k} for k, _ in options.items()]
+        return [
+            {"value": k, "label": k.capitalize() if label_to_upper else k}
+            for k, _ in options.items()
+        ]
     elif type == "list":
-        return [{"value": i, "label": i} for i in options]
+        return [
+            {"value": i, "label": i.capitalize() if label_to_upper else i}
+            for i in options
+        ]
 
 
 def populate_all_klines(tf, start_date, end_date=None, batch=40000):

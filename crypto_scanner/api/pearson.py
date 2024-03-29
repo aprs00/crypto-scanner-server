@@ -19,6 +19,8 @@ from crypto_scanner.constants import (
     stats_select_options_all,
     tickers,
     invalid_params_error,
+    large_pearson_types,
+    large_pearson_timeframes,
 )
 
 from crypto_scanner.models import BinanceSpotKline5m
@@ -26,17 +28,15 @@ from crypto_scanner.models import BinanceSpotKline5m
 from crypto_scanner.api.utils import get_min_length
 
 
-def calculate_large_pearson_correlation(tf):
+def calculate_large_pearson_correlation(tf, type):
     current_time_ms = int(time.time() * 1000)
-    timeframes = {
-        "5m": 5 * 60 * 1000,
-        "15m": 15 * 60 * 1000,
-    }
-    ago_ms = current_time_ms - timeframes[tf]
+    tf = int(tf[:-1])
+
+    ago_ms = current_time_ms - tf * 60 * 1000
     data = {}
 
     for symbol in test_socket_symbols:
-        redis_data = r.execute_command(f"TS.RANGE 1s:price:{symbol} {ago_ms} +")
+        redis_data = r.execute_command(f"TS.RANGE 1s:{type}:{symbol} {ago_ms} +")
         price_data = [float(x[1]) for x in redis_data][::4]
 
         data[symbol] = price_data
@@ -145,15 +145,16 @@ def get_large_pearson_correlation(request):
         return HttpResponse(status=405)
 
     tf = request.GET.get("duration", None)
+    type = request.GET.get("type", None)
 
-    if tf not in ["5m", "15m"]:
+    if tf not in large_pearson_timeframes or type not in large_pearson_types:
         return JsonResponse(invalid_params_error, status=400)
 
-    response = cache.get(f"pearson_correlation_large_{tf}")
+    response = cache.get(f"pearson_correlation_large_{type}_{tf}")
 
     if response is None:
-        response = calculate_large_pearson_correlation(tf)
-        cache.set(f"pearson_correlation_large_{tf}", response)
+        response = calculate_large_pearson_correlation(tf, type)
+        cache.set(f"pearson_correlation_large_{type}_{tf}", response)
 
     return JsonResponse(response, safe=False)
 

@@ -11,6 +11,8 @@ from crypto_scanner.constants import (
     tickers,
     stats_select_options_htf,
     stats_select_options_ltf,
+    large_pearson_timeframes,
+    large_pearson_types,
 )
 from crypto_scanner.api import (
     pearson,
@@ -80,12 +82,11 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
 
 @shared_task
 def calculate_all_large_pearson_correlations():
-    timeframes = ["5m", "15m"]
+    for tf in large_pearson_timeframes:
+        for type in large_pearson_types:
+            response = pearson.calculate_large_pearson_correlation(tf, type)
 
-    for tf in timeframes:
-        response = pearson.calculate_large_pearson_correlation(tf)
-
-        cache.set(f"pearson_correlation_large_{tf}", response)
+            cache.set(f"pearson_correlation_large_{type}_{tf}", response)
 
     return "Done"
 
@@ -112,10 +113,6 @@ def fetch_all_klines(tf, limit=25):
                 pass
 
         time.sleep(4)
-
-    print(
-        "FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES, FETCH ALL KLINES"
-    )
 
     return "Done"
 
