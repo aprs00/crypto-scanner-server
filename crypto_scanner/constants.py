@@ -105,6 +105,9 @@ test_socket_symbols = [
     "MATICUSDT",
     "SANDUSDT",
     "MKRUSDT",
+    "ENAUSDT",
+    "WIFUSDT",
+    "PEPEUSDT",
 ]
 
 tickers = [
