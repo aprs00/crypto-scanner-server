@@ -35,9 +35,14 @@ def calculate_large_pearson_correlation(tf, type):
     ago_ms = current_time_ms - tf * 60 * 1000
     data = {}
 
+    price_data_to_skip = 4
+
+    if tf == 15:
+        price_data_to_skip = 14
+
     for symbol in test_socket_symbols:
         redis_data = r.execute_command(f"TS.RANGE 1s:{type}:{symbol} {ago_ms} +")
-        price_data = [float(x[1]) for x in redis_data][::4]
+        price_data = [float(x[1]) for x in redis_data][::price_data_to_skip]
 
         data[symbol] = price_data
 
