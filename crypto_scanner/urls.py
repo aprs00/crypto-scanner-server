@@ -29,6 +29,11 @@ urlpatterns = [
         name="z-score-matrix",
     ),
     path(
+        "z-score-matrix-large",
+        z_score.get_large_z_score_matrix,
+        name="z-score-matrix-large",
+    ),
+    path(
         "z-score-history",
         z_score.get_z_score_history,
         name="z-score-history",

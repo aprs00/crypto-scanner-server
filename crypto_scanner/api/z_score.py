@@ -2,6 +2,8 @@ from django.http import HttpResponse, JsonResponse
 from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+import redis
+import time
 
 from crypto_scanner.models import BinanceSpotKline5m
 
@@ -15,7 +17,12 @@ from crypto_scanner.constants import (
     tickers,
     ticker_colors,
     invalid_params_error,
+    test_socket_symbols,
+    large_pearson_timeframes,
+    large_pearson_types,
 )
+
+r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
 
 def get_tickers_data_z_score(duration, nth_element=1):
@@ -89,7 +96,6 @@ def calculate_z_score_matrix(duration):
         every_x_elements = 400
 
     tickers_data_z_scores = get_tickers_data_z_score(duration, every_x_elements)
-    print(len(tickers_data_z_scores["BTCUSDT"]))
     z_scores = {}
 
     for ticker, data in tickers_data_z_scores.items():
@@ -104,7 +110,35 @@ def calculate_z_score_matrix(duration):
     return z_scores
 
 
-def format_z_score_matrix_response(data, xAxis, yAxis, roundBy):
+def calculate_large_z_score_matrix():
+    for tf in large_pearson_timeframes:
+        current_time_ms = int(time.time() * 1000)
+        parsed_tf = int(tf[:-1])
+
+        ago_ms = current_time_ms - parsed_tf * 60 * 1000
+
+        data_to_skip = 4
+
+        if parsed_tf == 15:
+            data_to_skip = 14
+
+        z_scores = {}
+
+        for symbol in test_socket_symbols:
+            z_scores[symbol] = {}
+
+            for type in large_pearson_types:
+                redis_data = r.execute_command(
+                    f"TS.RANGE 1s:{type}:{symbol} {ago_ms} +"
+                )
+                skipped_data = [float(x[1]) for x in redis_data][::data_to_skip]
+
+                z_scores[symbol][type] = calculate_current_z_score(skipped_data)
+
+        cache.set(f"z_score_matrix_large_{tf}", z_scores)
+
+
+def format_z_score_matrix_response(data, tickers, xAxis, yAxis, roundBy):
     return [
         {
             "type": "scatter",
@@ -121,6 +155,31 @@ def format_z_score_matrix_response(data, xAxis, yAxis, roundBy):
         }
         for i, ticker in enumerate(tickers)
     ]
+
+
+@csrf_exempt
+def get_large_z_score_matrix(request):
+    if request.method != "GET":
+        return HttpResponse(status=405)
+
+    xAxis = request.GET.get("x_axis", None)
+    yAxis = request.GET.get("y_axis", None)
+    tf = request.GET.get("tf", None)
+
+    if xAxis is None or yAxis is None or tf is None:
+        return JsonResponse(invalid_params_error, status=400)
+
+    response = cache.get(f"z_score_matrix_large_{tf}")
+
+    if response is None:
+        calculate_large_z_score_matrix()
+        response = cache.get(f"z_score_matrix_large_{tf}")
+
+    response = format_z_score_matrix_response(
+        response, test_socket_symbols, xAxis, yAxis, 2
+    )
+
+    return JsonResponse(response, safe=False)
 
 
 @csrf_exempt
@@ -141,7 +200,7 @@ def get_z_score_matrix(request):
             response = calculate_z_score_matrix(duration)
             cache.set(f"z_score_{duration}", response)
 
-        response = format_z_score_matrix_response(response, xAxis, yAxis, 2)
+        response = format_z_score_matrix_response(response, tickers, xAxis, yAxis, 2)
 
         return JsonResponse(response, safe=False)
 

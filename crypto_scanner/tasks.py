@@ -52,6 +52,15 @@ def calculate_options_z_score_matrix(calculate_ltf=False):
 
 
 @shared_task
+def calculate_options_large_z_score_matrix():
+    time.sleep(11)
+
+    z_score.calculate_large_z_score_matrix()
+
+    return "Done"
+
+
+@shared_task
 def calculate_z_score_history():
     time.sleep(88)
     duration = "12h"
