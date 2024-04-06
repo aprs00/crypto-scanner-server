@@ -105,6 +105,10 @@ test_socket_symbols = [
     "ENAUSDT",
     "WIFUSDT",
     "PEPEUSDT",
+    "ICPUSDT",
+    "PENDLEUSDT",
+    "COSUSDT",
+    "YGGUSDT",
 ]
 
 tickers = [
