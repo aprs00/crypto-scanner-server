@@ -1,5 +1,6 @@
 from binance import ThreadedWebsocketManager
 
+import time
 import redis
 import dotenv
 
@@ -48,8 +49,14 @@ def main():
         r.execute_command(f"ts.add 1s:price:{symbol} {timestamp} {price}")
         r.execute_command(f"ts.add 1s:trades:{symbol} {timestamp} {num_of_trades}")
 
-    streams2 = [f"{symbol.lower()}@kline_1s" for symbol in test_socket_symbols]
-    twm.start_multiplex_socket(callback=handle_socket_message_test, streams=streams2)
+    streams = [f"{symbol.lower()}@kline_1s" for symbol in test_socket_symbols]
+
+    try:
+        twm.start_multiplex_socket(callback=handle_socket_message_test, streams=streams)
+    except Exception as e:
+        print(e)
+        time.sleep(5)
+        main()
 
     twm.join()
 
