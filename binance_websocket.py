@@ -55,7 +55,8 @@ def main():
         twm.start_multiplex_socket(callback=handle_socket_message_test, streams=streams)
     except Exception as e:
         print(e)
-        time.sleep(5)
+        twm.stop()
+        time.sleep(8)
         main()
 
     twm.join()

@@ -78,7 +78,6 @@ def extract_db_data(symbol, start_time_utc, group_by):
     #         DATE_TRUNC('{group_by}', start_time)
     # """
     price_changes = BinanceSpotKline5m.objects.raw(query)
-    print(price_changes.query)
 
     return price_changes
 

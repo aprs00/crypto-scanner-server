@@ -115,7 +115,6 @@ def subscribe_to_redis_channel(channel):
     pubsub.subscribe(channel)
 
     for message in pubsub.listen():
-        print(message)
 
         if message["type"] == "message":
             if message["data"] == "updated":
