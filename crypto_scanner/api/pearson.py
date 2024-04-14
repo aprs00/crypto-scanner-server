@@ -42,9 +42,11 @@ def calculate_large_pearson_correlation(tf, type):
 
     for symbol in test_socket_symbols:
         redis_data = r.execute_command(f"TS.RANGE 1s:{type}:{symbol} {ago_ms} +")
-        price_data = [float(x[1]) for x in redis_data][::price_data_to_skip]
+        symbol_type_data = np.array(
+            [float(x[1]) for x in redis_data][::price_data_to_skip]
+        )
 
-        data[symbol] = price_data
+        data[symbol] = symbol_type_data
 
     correlations = {}
 
@@ -120,6 +122,7 @@ def calculate_pearson_correlation(duration):
         every_x_elements = 120
 
     query_tickers_data = get_tickers_data(duration, nth_element=every_x_elements)
+    query_tickers_data = {k: np.array(v) for k, v in query_tickers_data.items()}
 
     for ticker1 in tickers:
         for ticker2 in tickers:
