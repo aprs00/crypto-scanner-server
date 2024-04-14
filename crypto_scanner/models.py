@@ -64,3 +64,12 @@ class BinanceSpotKline5m(models.Model):
                 fields=["ticker", "start_time"], name="unique_ticker_start_time"
             ),
         ]
+
+
+class ErrorLog(models.Model):
+    created = models.DateTimeField(auto_now_add=True)
+    message = models.TextField()
+
+    class Meta:
+        ordering = ["-created"]
+        db_table = "crypto_scanner_error_log"

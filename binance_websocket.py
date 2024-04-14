@@ -9,6 +9,9 @@ dotenv.load_dotenv()
 from crypto_scanner.constants import (
     test_socket_symbols,
 )
+from crypto_scanner.models import (
+    ErrorLog,
+)
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
@@ -57,7 +60,13 @@ def main():
             )
             twm.join()
         except Exception as e:
-            print(e)
+            query = f"""
+                INSERT INTO crypto_scanner_error_log (message) 
+                VALUES ('{str(e)}')
+            """
+
+            ErrorLog.objects.raw(query)
+
             twm.stop()
             time.sleep(8)
             main()
