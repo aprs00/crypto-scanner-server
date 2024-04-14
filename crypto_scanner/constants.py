@@ -109,6 +109,10 @@ test_socket_symbols = [
     "PENDLEUSDT",
     "COSUSDT",
     "YGGUSDT",
+    "SUIUSDT",
+    "OPUSDT",
+    "RNDRUSDT",
+    "INJUSDT",
 ]
 
 tickers = [
