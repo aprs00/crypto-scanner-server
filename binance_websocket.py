@@ -13,7 +13,7 @@ from crypto_scanner.constants import (
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
 
-def create_redis_keys(retention):
+def create_redis_keys(retention="900000"):
     for symbol in test_socket_symbols:
         if not r.exists(f"1s:volume:{symbol}"):
             r.execute_command(
@@ -29,37 +29,38 @@ def create_redis_keys(retention):
             )
 
 
+def store_socket_data_to_redis(msg):
+    data = msg["data"]["k"]
+    symbol = data["s"]
+    quote_volume = float(data["q"])
+    price = float(data["c"])
+    num_of_trades = data["n"]
+    timestamp = data["t"]
+
+    r.execute_command(f"ts.add 1s:volume:{symbol} {timestamp} {quote_volume}")
+    r.execute_command(f"ts.add 1s:price:{symbol} {timestamp} {price}")
+    r.execute_command(f"ts.add 1s:trades:{symbol} {timestamp} {num_of_trades}")
+
+
 def main():
     twm = ThreadedWebsocketManager()
     twm.start()
 
-    retention = "900000"
-
-    create_redis_keys(retention=retention)
-
-    def handle_socket_message_test(msg):
-        data = msg["data"]["k"]
-        symbol = data["s"]
-        quote_volume = float(data["q"])
-        price = float(data["c"])
-        num_of_trades = data["n"]
-        timestamp = data["t"]
-
-        r.execute_command(f"ts.add 1s:volume:{symbol} {timestamp} {quote_volume}")
-        r.execute_command(f"ts.add 1s:price:{symbol} {timestamp} {price}")
-        r.execute_command(f"ts.add 1s:trades:{symbol} {timestamp} {num_of_trades}")
+    create_redis_keys()
 
     streams = [f"{symbol.lower()}@kline_1s" for symbol in test_socket_symbols]
 
-    try:
-        twm.start_multiplex_socket(callback=handle_socket_message_test, streams=streams)
-    except Exception as e:
-        print(e)
-        twm.stop()
-        time.sleep(8)
-        main()
-
-    twm.join()
+    while True:
+        try:
+            twm.start_multiplex_socket(
+                callback=store_socket_data_to_redis, streams=streams
+            )
+            twm.join()
+        except Exception as e:
+            print(e)
+            twm.stop()
+            time.sleep(8)
+            main()
 
 
 if __name__ == "__main__":
