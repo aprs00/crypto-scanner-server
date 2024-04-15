@@ -69,6 +69,8 @@ def main():
             # ErrorLog.objects.raw(query)
             print(e)
 
+            r.execute_command(f"LPUSH error_log {str(e)}")
+
             twm.stop()
             time.sleep(8)
             main()
