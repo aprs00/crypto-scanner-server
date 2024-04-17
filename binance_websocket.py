@@ -42,6 +42,9 @@ class KlinesSocketManager:
         self.r = RedisManager()
         self.socket_name = None
 
+    def initialize(self):
+        self.twm.start()
+
     def stop(self):
         self.twm.stop_socket(self.socket_name)
 
@@ -76,6 +79,7 @@ class KlinesSocketManager:
 
     def main(self):
         self.r.create_keys()
+        self.initialize()
         self.start()
 
     @staticmethod
