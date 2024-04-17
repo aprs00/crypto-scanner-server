@@ -46,7 +46,6 @@ services:
             - CELERY_BACKEND=${CELERY_BACKEND}
             - CELERY_BROKER=${CELERY_BROKER}
         depends_on:
-            - db
             - redis
 
     redis:
