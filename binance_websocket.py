@@ -33,7 +33,7 @@ class RedisManager:
         self.r.execute_command(f"ts.add 1s:trades:{symbol} {timestamp} {num_of_trades}")
 
     def store_error(self, error):
-        self.r.execute_command(f"LPUSH error_log {error}")
+        self.r.execute_command(f"LPUSH error_log {str(error)}")
 
 
 class KlinesSocketManager:

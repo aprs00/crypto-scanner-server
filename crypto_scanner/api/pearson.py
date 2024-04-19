@@ -20,8 +20,8 @@ from crypto_scanner.constants import (
     stats_select_options_all,
     tickers,
     invalid_params_error,
-    large_pearson_types,
-    large_pearson_timeframes,
+    large_correlation_data_types,
+    large_correlations_timeframes,
 )
 
 from crypto_scanner.models import BinanceSpotKline5m
@@ -175,7 +175,10 @@ def get_large_pearson_correlation(request):
     tf = request.GET.get("duration", None)
     type = request.GET.get("type", None)
 
-    if tf not in large_pearson_timeframes or type not in large_pearson_types:
+    if (
+        tf not in large_correlations_timeframes
+        or type not in large_correlation_data_types
+    ):
         return JsonResponse(invalid_params_error, status=400)
 
     formatted_tickers = [ticker[:-4] for ticker in test_socket_symbols]

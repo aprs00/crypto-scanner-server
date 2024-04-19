@@ -16,9 +16,11 @@ stats_select_options_ltf = {
     "1d": 24,
 }
 
-large_pearson_timeframes = ["5m", "15m"]
+large_correlations_timeframes = ["5m", "15m"]
 
-large_pearson_types = ["price", "volume", "trades"]
+large_correlation_data_types = ["price", "volume", "trades"]
+
+large_correlation_types = ["pearson", "spearman"]
 
 stats_select_options_all = {**stats_select_options_ltf, **stats_select_options_htf}
 

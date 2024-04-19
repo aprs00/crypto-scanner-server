@@ -18,8 +18,8 @@ from crypto_scanner.constants import (
     ticker_colors,
     invalid_params_error,
     test_socket_symbols,
-    large_pearson_timeframes,
-    large_pearson_types,
+    large_correlations_timeframes,
+    large_correlation_data_types,
 )
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
@@ -111,7 +111,7 @@ def calculate_z_score_matrix(duration):
 
 
 def calculate_large_z_score_matrix():
-    for tf in large_pearson_timeframes:
+    for tf in large_correlations_timeframes:
         current_time_ms = int(time.time() * 1000)
         parsed_tf = int(tf[:-1])
 
@@ -127,7 +127,7 @@ def calculate_large_z_score_matrix():
         for symbol in test_socket_symbols:
             z_scores[symbol] = {}
 
-            for type in large_pearson_types:
+            for type in large_correlation_data_types:
                 redis_data = r.execute_command(
                     f"TS.RANGE 1s:{type}:{symbol} {ago_ms} +"
                 )

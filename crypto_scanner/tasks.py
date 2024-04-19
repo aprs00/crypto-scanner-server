@@ -11,8 +11,9 @@ from crypto_scanner.constants import (
     tickers,
     stats_select_options_htf,
     stats_select_options_ltf,
-    large_pearson_timeframes,
-    large_pearson_types,
+    large_correlations_timeframes,
+    large_correlation_data_types,
+    large_correlation_types,
 )
 from crypto_scanner.api import (
     pearson,
@@ -90,14 +91,24 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
 
 
 @shared_task
-def calculate_all_large_pearson_correlations():
-    for tf in large_pearson_timeframes:
-        for type in large_pearson_types:
-            response = pearson.calculate_large_pearson_correlation(tf, type)
+def calculate_all_large_correlations():
+    for correlation_type in large_correlation_types:
+        calculate_correlation_func = None
 
-            cache.set(f"pearson_correlation_large_{type}_{tf}", response)
+        if correlation_type == "pearson":
+            calculate_correlation_func = pearson.calculate_large_pearson_correlation
+        elif correlation_type == "spearman":
+            calculate_correlation_func = pearson.calculate_large_spearman_correlation
 
-    return "Done"
+        for tf in large_correlations_timeframes:
+            for data_type in large_correlation_data_types:
+                response = calculate_correlation_func(tf, data_type)
+
+                cache.set(
+                    f"{correlation_type}_correlation_large_{data_type}_{tf}", response
+                )
+
+    return "DONE"
 
 
 @shared_task

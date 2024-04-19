@@ -7,8 +7,8 @@ from crypto_scanner.constants import (
     stats_select_options_ltf,
     stats_select_options_all,
     tickers,
-    large_pearson_types,
-    large_pearson_timeframes,
+    large_correlation_data_types,
+    large_correlations_timeframes,
 )
 from crypto_scanner.utils import format_options
 
@@ -41,7 +41,7 @@ def get_stats_select_options(request):
 @csrf_exempt
 def get_large_pearson_types(request):
     if request.method == "GET":
-        response = format_options(large_pearson_types, "list", True)
+        response = format_options(large_correlation_data_types, "list", True)
 
         return JsonResponse(response, safe=False)
 
@@ -51,7 +51,7 @@ def get_large_pearson_types(request):
 @csrf_exempt
 def get_large_pearson_timeframes(request):
     if request.method == "GET":
-        response = format_options(large_pearson_timeframes, "list")
+        response = format_options(large_correlations_timeframes, "list")
 
         return JsonResponse(response, safe=False)
 
