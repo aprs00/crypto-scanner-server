@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
     db:
-        container_name: crypto-scanner-db
+        container_name: cs-db
         image: postgres:15.3-alpine3.18
         volumes:
             - pgdata:/var/lib/postgresql/data
@@ -15,7 +15,7 @@ services:
             - "${POSTGRES_PORT}:5432"
 
     app:
-        container_name: crypto-scanner-app
+        container_name: cs-app
         build: .
         restart: always
         command: python manage.py runserver 0.0.0.0:8000
@@ -34,7 +34,7 @@ services:
             - redis
 
     binance_websocket:
-        container_name: crypto-scanner-binance-websocket
+        container_name: cs-binance-websocket
         build: .
         command: python binance_websocket.py
         volumes:
@@ -49,7 +49,7 @@ services:
             - redis
 
     redis:
-        container_name: crypto-scanner-redis
+        container_name: cs-redis
         image: "redis/redis-stack-server:latest"
         volumes:
             - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
@@ -57,7 +57,7 @@ services:
             - "6378:6379"
 
     celery:
-        container_name: crypto-scanner-celery
+        container_name: cs-celery
         build: .
         command: celery -A core worker -l INFO
         volumes:
@@ -72,7 +72,7 @@ services:
             - redis
 
     celery-beat:
-        container_name: crypto-scanner-celery-beat
+        container_name: cs-celery-beat
         build: .
         command: celery -A core beat -l INFO
         volumes:
@@ -86,5 +86,20 @@ services:
             - app
             - redis
 
+    grafana:
+        container_name: cs-grafana
+        image: grafana/grafana-enterprise
+        ports:
+            - "3000:3000"
+        environment:
+            - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+            - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+            - GF_SERVER_ROOT_URL=https://grafana.crypto-scanner.xyz/
+            - GF_INSTALL_PLUGINS=grafana-clock-panel
+        restart: unless-stopped
+        volumes:
+            - grafana-storage:/var/lib/grafana
+
 volumes:
+    grafana-storage: {}
     pgdata:

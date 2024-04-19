@@ -12,7 +12,7 @@ class RedisManager:
     def __init__(self):
         self.r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
-    def create_keys(self, retention="900000"):
+    def initialize_keys(self, retention="900000"):
         for symbol in test_socket_symbols:
             if not self.r.exists(f"1s:volume:{symbol}"):
                 self.r.execute_command(
@@ -27,7 +27,7 @@ class RedisManager:
                     f"TS.CREATE 1s:trades:{symbol} LABELS value_type trades type binance_1s_data symbol {symbol} RETENTION {retention}"
                 )
 
-    def store_data(self, symbol, timestamp, price, quote_volume, num_of_trades):
+    def store_symbol_data(self, symbol, timestamp, price, quote_volume, num_of_trades):
         self.r.execute_command(f"ts.add 1s:price:{symbol} {timestamp} {price}")
         self.r.execute_command(f"ts.add 1s:volume:{symbol} {timestamp} {quote_volume}")
         self.r.execute_command(f"ts.add 1s:trades:{symbol} {timestamp} {num_of_trades}")
@@ -75,10 +75,10 @@ class KlinesSocketManager:
             self.extract_message_data(msg)
         )
 
-        self.r.store_data(symbol, timestamp, price, quote_volume, num_of_trades)
+        self.r.store_symbol_data(symbol, timestamp, price, quote_volume, num_of_trades)
 
     def main(self):
-        self.r.create_keys()
+        self.r.initialize_keys()
         self.initialize()
         self.start()
 

@@ -5,6 +5,7 @@ from django.db.models import FloatField, F
 from django.db.models.functions import Cast
 from django.utils import timezone
 from datetime import timedelta
+from scipy import stats
 import redis
 import time
 
@@ -28,7 +29,7 @@ from crypto_scanner.models import BinanceSpotKline5m
 from crypto_scanner.api.utils import get_min_length
 
 
-def calculate_large_pearson_correlation(tf, type):
+def extract_timeseries(tf, data_type):
     current_time_ms = int(time.time() * 1000)
     tf = int(tf[:-1])
 
@@ -41,42 +42,61 @@ def calculate_large_pearson_correlation(tf, type):
         price_data_to_skip = 14
 
     for symbol in test_socket_symbols:
-        redis_data = r.execute_command(f"TS.RANGE 1s:{type}:{symbol} {ago_ms} +")
+        redis_data = r.execute_command(f"TS.RANGE 1s:{data_type}:{symbol} {ago_ms} +")
         symbol_type_data = np.array(
             [float(x[1]) for x in redis_data][::price_data_to_skip]
         )
 
         data[symbol] = symbol_type_data
 
+    return data
+
+
+def calculate_correlations(data, symbols, type="pearson"):
     correlations = {}
+    correlation = None
 
-    for symbol1 in test_socket_symbols:
-        for symbol2 in test_socket_symbols:
-            correlation_coefficient = np.corrcoef(data[symbol1], data[symbol2])[0, 1]
-            correlations[f"{symbol1} - {symbol2}"] = correlation_coefficient
+    for symbol1 in symbols:
+        for symbol2 in symbols:
+            if type == "pearson":
+                correlation = np.corrcoef(data[symbol1], data[symbol2])[0, 1]
+            elif type == "spearman":
+                correlation = stats.spearmanr(data[symbol1], data[symbol2])[0]
 
-    formatted_tickers = [ticker[:-4] for ticker in test_socket_symbols]
+            correlations[f"{symbol1} - {symbol2}"] = correlation
 
-    response = {
-        "xAxis": formatted_tickers,
-        "yAxis": formatted_tickers,
-        "data": [
-            [
-                i,
-                j,
-                round(
-                    correlations[
-                        f"{test_socket_symbols[i]} - {test_socket_symbols[j]}"
-                    ],
-                    2,
-                ),
-            ]
-            for i in range(len(test_socket_symbols))
-            for j in range(i + 1, len(test_socket_symbols))
-        ],
-    }
+    return correlations
 
-    return response
+
+def convert_array_to_matrix(symbols, correlations, is_matrix_upper_triangle=True):
+    return [
+        [
+            i,
+            j,
+            round(
+                correlations[f"{symbols[i]} - {symbols[j]}"],
+                2,
+            ),
+        ]
+        for i in range(len(symbols))
+        for j in (range(i + 1, len(symbols)) if is_matrix_upper_triangle else range(i))
+    ]
+
+
+def calculate_large_pearson_correlation(tf, data_type):
+    data = extract_timeseries(tf, data_type)
+    correlations = calculate_correlations(data, test_socket_symbols, type="pearson")
+
+    return convert_array_to_matrix(test_socket_symbols, correlations)
+
+
+def calculate_large_spearman_correlation(tf, data_type):
+    data = extract_timeseries(tf, data_type)
+    correlations = calculate_correlations(data, test_socket_symbols, type="spearman")
+
+    return convert_array_to_matrix(
+        test_socket_symbols, correlations, is_matrix_upper_triangle=False
+    )
 
 
 def get_tickers_data(duration, nth_element=1):
@@ -158,11 +178,24 @@ def get_large_pearson_correlation(request):
     if tf not in large_pearson_timeframes or type not in large_pearson_types:
         return JsonResponse(invalid_params_error, status=400)
 
-    response = cache.get(f"pearson_correlation_large_{type}_{tf}")
+    formatted_tickers = [ticker[:-4] for ticker in test_socket_symbols]
 
-    if response is None:
-        response = calculate_large_pearson_correlation(tf, type)
-        cache.set(f"pearson_correlation_large_{type}_{tf}", response)
+    pearson_correlations = cache.get(f"pearson_correlation_large_{type}_{tf}")
+    spearman_correlations = cache.get(f"spearman_correlation_large_{type}_{tf}")
+
+    if pearson_correlations is None:
+        pearson_correlations = calculate_large_pearson_correlation(tf, type)
+        cache.set(f"pearson_correlation_large_{type}_{tf}", pearson_correlations)
+
+    if spearman_correlations is None:
+        spearman_correlations = calculate_large_spearman_correlation(tf, type)
+        cache.set(f"spearman_correlation_large_{type}_{tf}", spearman_correlations)
+
+    response = {
+        "xAxis": formatted_tickers,
+        "yAxis": formatted_tickers,
+        "data": pearson_correlations + spearman_correlations,
+    }
 
     return JsonResponse(response, safe=False)
 

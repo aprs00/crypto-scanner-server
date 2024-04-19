@@ -53,7 +53,7 @@ def calculate_options_z_score_matrix(calculate_ltf=False):
 
 @shared_task
 def calculate_options_large_z_score_matrix():
-    time.sleep(11)
+    time.sleep(2)
 
     z_score.calculate_large_z_score_matrix()
 
