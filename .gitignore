@@ -1,3 +1,5 @@
 .env
 celerybeat-schedule
 data/
+bin
+lib
