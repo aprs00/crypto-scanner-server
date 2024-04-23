@@ -5,16 +5,15 @@ from django.db.models import FloatField, F
 from django.db.models.functions import Cast
 from django.utils import timezone
 from datetime import timedelta
-from scipy import stats
+
+# from scipy import stats
+
 import redis
 import time
 
 import numpy as np
 
 from crypto_scanner.constants import test_socket_symbols
-
-
-r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
 from crypto_scanner.constants import (
     stats_select_options_all,
@@ -24,9 +23,14 @@ from crypto_scanner.constants import (
     large_correlations_timeframes,
 )
 
+from crypto_scanner.api.spearman import calculate_spearman_correlation
+
 from crypto_scanner.models import BinanceSpotKline5m
 
 from crypto_scanner.api.utils import get_min_length
+
+
+r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
 
 def extract_timeseries(tf, data_type):
@@ -56,12 +60,16 @@ def calculate_correlations(data, symbols, type="pearson"):
     correlations = {}
     correlation = None
 
+    rank_cache = {}
+
     for symbol1 in symbols:
         for symbol2 in symbols:
             if type == "pearson":
                 correlation = np.corrcoef(data[symbol1], data[symbol2])[0, 1]
             elif type == "spearman":
-                correlation = stats.spearmanr(data[symbol1], data[symbol2])[0]
+                correlation = calculate_spearman_correlation(
+                    data[symbol1], data[symbol2], rank_cache
+                )
 
             correlations[f"{symbol1} - {symbol2}"] = correlation
 

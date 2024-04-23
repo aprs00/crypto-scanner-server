@@ -6,7 +6,7 @@
     <option name="pathToExecutable" value="C:\Users\User\AppData\Local\Programs\Python\Python312\Scripts\black.exe" />
     <option name="sdkName" value="/usr/bin/python3.10" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="/usr/bin/python3.10" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.10.12 WSL (Ubuntu): (/home/ploutos/crypto-scanner-server/bin/python)" project-jdk-type="Python SDK" />
   <component name="PythonCompatibilityInspectionAdvertiser">
     <option name="version" value="3" />
   </component>
