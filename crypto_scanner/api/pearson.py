@@ -40,16 +40,14 @@ def extract_timeseries(tf, data_type):
     ago_ms = current_time_ms - tf * 60 * 1000
     data = {}
 
-    price_data_to_skip = 2
-
-    if tf == 15:
-        price_data_to_skip = 5
+    # price_data_to_skip = 2
+    #
+    # if tf == 15:
+    #     price_data_to_skip = 5
 
     for symbol in test_socket_symbols:
         redis_data = r.execute_command(f"TS.RANGE 1s:{data_type}:{symbol} {ago_ms} +")
-        symbol_type_data = np.array(
-            [float(x[1]) for x in redis_data][::price_data_to_skip]
-        )
+        symbol_type_data = np.array([float(x[1]) for x in redis_data])
 
         data[symbol] = symbol_type_data
 
