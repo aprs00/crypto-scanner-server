@@ -16,7 +16,7 @@ from crypto_scanner.constants import (
     large_correlation_types,
 )
 from crypto_scanner.api import (
-    pearson,
+    correlations,
     z_score,
 )
 from crypto_scanner.utils import create_kline_object
@@ -83,7 +83,7 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
         time.sleep(25)
 
     for duration in durations.keys():
-        response = pearson.calculate_pearson_correlation(duration)
+        response = correlations.calculate_pearson_correlation(duration)
 
         cache.set(f"pearson_correlation_{duration}", response)
 
@@ -93,19 +93,22 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
 @shared_task
 def calculate_all_large_correlations():
     for correlation_type in large_correlation_types:
-        calculate_correlation_func = None
-
-        if correlation_type == "pearson":
-            calculate_correlation_func = pearson.calculate_large_pearson_correlation
-        elif correlation_type == "spearman":
-            calculate_correlation_func = pearson.calculate_large_spearman_correlation
-
         for tf in large_correlations_timeframes:
             for data_type in large_correlation_data_types:
-                response = calculate_correlation_func(tf, data_type)
+                correlation = None
+
+                if correlation_type == "pearson":
+                    correlation = correlations.format_large_pearson_response(
+                        tf, data_type, correlation_type, tickers
+                    )
+                elif correlation_type == "spearman":
+                    correlation = correlations.format_large_pearson_response(
+                        tf, data_type, correlation_type, tickers, False
+                    )
 
                 cache.set(
-                    f"{correlation_type}_correlation_large_{data_type}_{tf}", response
+                    f"{correlation_type}_correlation_large_{data_type}_{tf}",
+                    correlation,
                 )
 
     return "DONE"

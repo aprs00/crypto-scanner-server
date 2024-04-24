@@ -6,8 +6,6 @@ from django.db.models.functions import Cast
 from django.utils import timezone
 from datetime import timedelta
 
-# from scipy import stats
-
 import redis
 import time
 
@@ -34,47 +32,35 @@ from crypto_scanner.api.utils import get_min_length
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
 
-def extract_timeseries(tf, data_type):
+def extract_timeseries(tf, symbols, data_type):
     current_time_ms = int(time.time() * 1000)
     tf = int(tf[:-1])
 
     ago_ms = current_time_ms - tf * 60 * 1000
     data = {}
 
-    # price_data_to_skip = 2
-    #
-    # if tf == 15:
-    #     price_data_to_skip = 5
-
-    for symbol in test_socket_symbols:
+    for symbol in symbols:
         redis_data = r.execute_command(f"TS.RANGE 1s:{data_type}:{symbol} {ago_ms} +")
-        symbol_type_data = np.array([float(x[1]) for x in redis_data])
-
-        data[symbol] = symbol_type_data
+        data[symbol] = np.array([float(x[1]) for x in redis_data])
 
     return data
 
 
-def calculate_correlations(data, symbols, type="pearson"):
+def calculate_correlations(data, symbols, type):
     correlations = {}
-    correlation = None
-
     rank_cache = {}
     pearson_cache = {}
 
     for symbol1 in symbols:
         for symbol2 in symbols:
             if type == "pearson":
-                # correlation = np.corrcoef(data[symbol1], data[symbol2])[0, 1]
-                correlation = calculate_pearson_correlation(
+                correlations[f"{symbol1} - {symbol2}"] = calculate_pearson_correlation(
                     data[symbol1], data[symbol2], symbol1, symbol2, pearson_cache
                 )
             elif type == "spearman":
-                correlation = calculate_spearman_correlation(
+                correlations[f"{symbol1} - {symbol2}"] = calculate_spearman_correlation(
                     data[symbol1], data[symbol2], rank_cache
                 )
-
-            correlations[f"{symbol1} - {symbol2}"] = correlation
 
     return correlations
 
@@ -94,20 +80,13 @@ def convert_array_to_matrix(symbols, correlations, is_matrix_upper_triangle=True
     ]
 
 
-def calculate_large_pearson_correlation(tf, data_type):
-    data = extract_timeseries(tf, data_type)
-    correlations = calculate_correlations(data, test_socket_symbols, type="pearson")
+def format_large_pearson_response(
+    tf, data_type, correlation_type, symbols, is_matrix_upper_triangle=True
+):
+    data = extract_timeseries(tf, symbols, data_type)
+    correlations = calculate_correlations(data, symbols, correlation_type)
 
-    return convert_array_to_matrix(test_socket_symbols, correlations)
-
-
-def calculate_large_spearman_correlation(tf, data_type):
-    data = extract_timeseries(tf, data_type)
-    correlations = calculate_correlations(data, test_socket_symbols, type="spearman")
-
-    return convert_array_to_matrix(
-        test_socket_symbols, correlations, is_matrix_upper_triangle=False
-    )
+    return convert_array_to_matrix(symbols, correlations, is_matrix_upper_triangle)
 
 
 def get_tickers_data(duration, nth_element=1):
@@ -184,26 +163,33 @@ def get_large_pearson_correlation(request):
         return HttpResponse(status=405)
 
     tf = request.GET.get("duration", None)
-    type = request.GET.get("type", None)
+    data_type = request.GET.get("type", None)
 
     if (
         tf not in large_correlations_timeframes
-        or type not in large_correlation_data_types
+        or data_type not in large_correlation_data_types
     ):
         return JsonResponse(invalid_params_error, status=400)
 
     formatted_tickers = [ticker[:-4] for ticker in test_socket_symbols]
 
-    pearson_correlations = cache.get(f"pearson_correlation_large_{type}_{tf}")
-    spearman_correlations = cache.get(f"spearman_correlation_large_{type}_{tf}")
+    pearson_correlations = cache.get(f"pearson_correlation_large_{data_type}_{tf}")
+    spearman_correlations = cache.get(f"spearman_correlation_large_{data_type}_{tf}")
 
     if pearson_correlations is None:
-        pearson_correlations = calculate_large_pearson_correlation(tf, type)
-        cache.set(f"pearson_correlation_large_{type}_{tf}", pearson_correlations)
+        pearson_correlations = format_large_pearson_response(
+            tf,
+            data_type,
+            "pearson",
+            test_socket_symbols,
+        )
+        cache.set(f"pearson_correlation_large_{data_type}_{tf}", pearson_correlations)
 
     if spearman_correlations is None:
-        spearman_correlations = calculate_large_spearman_correlation(tf, type)
-        cache.set(f"spearman_correlation_large_{type}_{tf}", spearman_correlations)
+        spearman_correlations = format_large_pearson_response(
+            tf, data_type, "spearman", test_socket_symbols, False
+        )
+        cache.set(f"spearman_correlation_large_{data_type}_{tf}", spearman_correlations)
 
     response = {
         "xAxis": formatted_tickers,

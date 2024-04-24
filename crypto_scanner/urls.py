@@ -2,7 +2,7 @@ from django.urls import path
 
 from crypto_scanner.api import (
     average_price,
-    pearson,
+    correlations,
     z_score,
     options,
 )
@@ -20,7 +20,7 @@ urlpatterns = [
     ),
     path(
         "pearson-correlation",
-        pearson.get_pearson_correlation,
+        correlations.get_pearson_correlation,
         name="pearson-correlation",
     ),
     path(
@@ -40,7 +40,7 @@ urlpatterns = [
     ),
     path(
         "large-pearson-correlation",
-        pearson.get_large_pearson_correlation,
+        correlations.get_large_pearson_correlation,
         name="large-pearson-correlation",
     ),
 ]
