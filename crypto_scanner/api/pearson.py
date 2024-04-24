@@ -1,7 +1,7 @@
 from django.http import HttpResponse, JsonResponse
 from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt
-from django.db.models import FloatField, F
+from django.db.models import FloatField
 from django.db.models.functions import Cast
 from django.utils import timezone
 from datetime import timedelta
@@ -23,7 +23,8 @@ from crypto_scanner.constants import (
     large_correlations_timeframes,
 )
 
-from crypto_scanner.api.spearman import calculate_spearman_correlation
+from crypto_scanner.formulas.spearman import calculate_spearman_correlation
+from crypto_scanner.formulas.pearson import calculate_pearson_correlation
 
 from crypto_scanner.models import BinanceSpotKline5m
 
@@ -59,11 +60,15 @@ def calculate_correlations(data, symbols, type="pearson"):
     correlation = None
 
     rank_cache = {}
+    pearson_cache = {}
 
     for symbol1 in symbols:
         for symbol2 in symbols:
             if type == "pearson":
-                correlation = np.corrcoef(data[symbol1], data[symbol2])[0, 1]
+                # correlation = np.corrcoef(data[symbol1], data[symbol2])[0, 1]
+                correlation = calculate_pearson_correlation(
+                    data[symbol1], data[symbol2], symbol1, symbol2, pearson_cache
+                )
             elif type == "spearman":
                 correlation = calculate_spearman_correlation(
                     data[symbol1], data[symbol2], rank_cache
@@ -132,7 +137,7 @@ def get_tickers_data(duration, nth_element=1):
     return query_tickers_data
 
 
-def calculate_pearson_correlation(duration):
+def calculate_pearson_correlation_high_tf(duration):
     correlation_results = {}
     every_x_elements = 1
 
@@ -220,7 +225,7 @@ def get_pearson_correlation(request):
         response = cache.get(f"pearson_correlation_{duration}")
 
         if response is None:
-            response = calculate_pearson_correlation(duration)
+            response = calculate_pearson_correlation_high_tf(duration)
             cache.set(f"pearson_correlation_{duration}", response)
 
         return JsonResponse(response, safe=False)
