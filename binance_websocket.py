@@ -3,16 +3,14 @@ from binance import ThreadedWebsocketManager
 import time
 import redis
 
-from crypto_scanner.constants import (
-    test_socket_symbols,
-)
+from crypto_scanner.constants import test_socket_symbols, redis_time_series_retention
 
 
 class RedisManager:
     def __init__(self):
         self.r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
-    def initialize_keys(self, retention="900000"):
+    def initialize_keys(self, retention=redis_time_series_retention):
         for symbol in test_socket_symbols:
             if not self.r.exists(f"1s:volume:{symbol}"):
                 self.r.execute_command(

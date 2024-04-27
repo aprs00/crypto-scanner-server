@@ -22,6 +22,8 @@ large_correlation_data_types = ["price", "volume", "trades"]
 
 large_correlation_types = ["pearson", "spearman"]
 
+redis_time_series_retention = str(30 * 60 * 1000)  # 30 minutes
+
 stats_select_options_all = {**stats_select_options_ltf, **stats_select_options_htf}
 
 socket_symbols = [
