@@ -9,6 +9,7 @@ import redis
 
 from crypto_scanner.constants import (
     tickers,
+    test_socket_symbols,
     stats_select_options_htf,
     stats_select_options_ltf,
     large_correlations_timeframes,
@@ -99,11 +100,11 @@ def calculate_all_large_correlations():
 
                 if correlation_type == "pearson":
                     correlation = correlations.format_large_pearson_response(
-                        tf, data_type, correlation_type, tickers
+                        tf, data_type, correlation_type, test_socket_symbols
                     )
                 elif correlation_type == "spearman":
                     correlation = correlations.format_large_pearson_response(
-                        tf, data_type, correlation_type, tickers, False
+                        tf, data_type, correlation_type, test_socket_symbols, False
                     )
 
                 cache.set(
