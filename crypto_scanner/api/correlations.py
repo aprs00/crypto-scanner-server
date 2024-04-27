@@ -11,11 +11,10 @@ import time
 
 import numpy as np
 
-from crypto_scanner.constants import test_socket_symbols
-
 from crypto_scanner.constants import (
     stats_select_options_all,
     tickers,
+    test_socket_symbols,
     invalid_params_error,
     large_correlation_data_types,
     large_correlations_timeframes,
@@ -43,7 +42,9 @@ def extract_timeseries(tf, symbols, data_type):
         redis_data = r.execute_command(f"TS.RANGE 1s:{data_type}:{symbol} {ago_ms} +")
         data[symbol] = np.array([float(x[1]) for x in redis_data])
 
-    return data
+    equalized_data = get_min_length(data, symbols)
+
+    return equalized_data
 
 
 def calculate_correlations(data, symbols, type):
@@ -111,7 +112,7 @@ def get_tickers_data(duration, nth_element=1):
             .order_by("start_time")
         )[::nth_element]
 
-    query_tickers_data = get_min_length(query_tickers_data)
+    query_tickers_data = get_min_length(query_tickers_data, tickers)
 
     return query_tickers_data
 
