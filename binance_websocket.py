@@ -26,9 +26,35 @@ class RedisManager:
                 )
 
     def store_symbol_data(self, symbol, timestamp, price, quote_volume, num_of_trades):
-        self.r.execute_command(f"ts.add 1s:price:{symbol} {timestamp} {price}")
-        self.r.execute_command(f"ts.add 1s:volume:{symbol} {timestamp} {quote_volume}")
-        self.r.execute_command(f"ts.add 1s:trades:{symbol} {timestamp} {num_of_trades}")
+        try:
+            self.r.execute_command(
+                f"TS.MADD "
+                f"1s:price:{symbol} {timestamp} {price} "
+                f"1s:volume:{symbol} {timestamp} {quote_volume} "
+                f"1s:trades:{symbol} {timestamp} {num_of_trades}"
+            )
+        except Exception as e:
+            self.store_error(str(e))
+
+        # self.store_data_counter += 1
+        #
+        # try:
+        #     pipe = self.r.ts().pipeline()
+        #
+        #     pipe.execute_command(
+        #         f"TS.MADD "
+        #         f"1s:price:{symbol} {timestamp} {price} "
+        #         f"1s:volume:{symbol} {timestamp} {quote_volume} "
+        #         f"1s:trades:{symbol} {timestamp} {num_of_trades}"
+        #     )
+        #
+        #     if self.store_data_counter >= len(test_socket_symbols):
+        #         print(self.store_data_counter)
+        #         pipe.execute()
+        #         self.store_data_counter = 0
+        #
+        # except Exception as e:
+        #     self.store_error(str(e))
 
     def store_error(self, error):
         self.r.execute_command(f"LPUSH error_log {str(error)}")
@@ -38,13 +64,13 @@ class KlinesSocketManager:
     def __init__(self):
         self.twm = ThreadedWebsocketManager()
         self.r = RedisManager()
-        self.socket_name = None
+        self.stream_name = None
 
     def initialize(self):
         self.twm.start()
 
     def stop(self):
-        self.twm.stop_socket(self.socket_name)
+        self.twm.stop_socket(self.stream_name)
 
     def reconnect(self):
         self.stop()
@@ -55,14 +81,11 @@ class KlinesSocketManager:
         streams = [f"{symbol.lower()}@kline_1s" for symbol in test_socket_symbols]
 
         try:
-            self.socket_name = self.twm.start_multiplex_socket(
+            self.stream_name = self.twm.start_multiplex_socket(
                 callback=self.handle_message, streams=streams
             )
-            self.twm.join()
         except Exception as e:
             self.r.store_error(str(e))
-            time.sleep(10)
-            self.start()
 
     def handle_message(self, msg):
         if self.is_message_error(msg):
@@ -79,6 +102,7 @@ class KlinesSocketManager:
         self.r.initialize_keys()
         self.initialize()
         self.start()
+        self.twm.join()
 
     @staticmethod
     def is_message_error(msg):
