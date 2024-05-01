@@ -206,7 +206,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     "calculate-htf-pearson-correlations": {
         "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
-        "schedule": crontab(minute=34, hour="*/2"),
+        "schedule": crontab(minute="34", hour="*/2"),
     },
     "calculate-large-pearson-correlations": {
         "task": "crypto_scanner.tasks.calculate_all_large_correlations",
@@ -223,7 +223,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     "calculate-htf-z-scores": {
         "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-        "schedule": crontab(minute=34, hour="*/2"),
+        "schedule": crontab(minute="34", hour="*/2"),
     },
     "calculate-z-score-history": {
         "task": "crypto_scanner.tasks.calculate_z_score_history",

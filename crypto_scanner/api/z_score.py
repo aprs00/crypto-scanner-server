@@ -212,6 +212,7 @@ def get_z_score_matrix(request):
 def calculate_z_score_history(duration):
     tickers_data_z_score = get_tickers_data_z_score(duration)
     z_scores = {}
+    start_time_values = None
 
     for ticker, data in tickers_data_z_score.items():
         volume_values, price_values, trades_values, start_time_values = zip(*data)
