@@ -22,13 +22,11 @@ def rank_data(data):
 
 
 def calculate_spearman_correlation(x, y, rank_cache=None):
-    """Calculate Spearman's correlation coefficient between two lists x and y."""
     n = len(x)
 
     if rank_cache is None:
         rank_cache = {}
 
-    # Calculate ranks for x and y if not already cached
     if tuple(x) not in rank_cache:
         ranked_x = rank_data(x)
         rank_cache[tuple(x)] = ranked_x
@@ -41,16 +39,13 @@ def calculate_spearman_correlation(x, y, rank_cache=None):
     else:
         ranked_y = rank_cache[tuple(y)]
 
-    # Calculate means of ranks
     mean_rank_x = calculate_mean(ranked_x)
     mean_rank_y = calculate_mean(ranked_y)
 
-    # Calculate sum of (XRa - Mx) * (YRa - My)
     sum_diffs = sum(
         (ranked_x[i] - mean_rank_x) * (ranked_y[i] - mean_rank_y) for i in range(n)
     )
 
-    # Calculate standard deviations of ranked X and Y values
     std_dev_rank_x = (
         sum((ranked_x[i] - mean_rank_x) ** 2 for i in range(n)) / n
     ) ** 0.5
@@ -61,10 +56,8 @@ def calculate_spearman_correlation(x, y, rank_cache=None):
     if std_dev_rank_x == 0 or std_dev_rank_y == 0:
         return 0  # If standard deviation is zero, return 0 to avoid division by zero
 
-    # Calculate covariance
     covariance = sum_diffs / n
 
-    # Calculate Spearman's correlation coefficient
     rho = covariance / (std_dev_rank_x * std_dev_rank_y)
     return rho
 
