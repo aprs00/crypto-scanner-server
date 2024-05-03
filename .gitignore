@@ -3,3 +3,5 @@ celerybeat-schedule
 data/
 bin
 lib
+.idea/
+venv/
