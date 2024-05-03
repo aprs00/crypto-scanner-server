@@ -26,38 +26,12 @@ redis_time_series_retention = str(30 * 60 * 1000)  # 30 minutes
 
 stats_select_options_all = {**stats_select_options_ltf, **stats_select_options_htf}
 
-# deprecated
-socket_symbols = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "XRPUSDT",
-    "BNBUSDT",
-    "SOLUSDT",
-    "DOTUSDT",
-    "AVAXUSDT",
-    "ADAUSDT",
-    "MATICUSDT",
-    "DOGEUSDT",
-    "LTCUSDT",
-    "TRXUSDT",
-    "LINKUSDT",
-    "BCHUSDT",
-    "LOOMUSDT",
-    "STORJUSDT",
-    "RUNEUSDT",
-    "CYBERUSDT",
-    "TRBUSDT",
-    "OPUSDT",
-    "STRAXUSDT",
-    "LEVERUSDT",
-    "FRONTUSDT",
-    "ALPACAUSDT",
-    "LQTYUSDT",
-    "ZRXUSDT",
-    "RNDRUSDT",
-    "MASKUSDT",
-    "GLMRUSDT",
-]
+timeseries_agg_types = ["avg", "sum", "std.p", "std.s", "var.p", "var.s", "twa"]
+
+invalid_params_error = {
+    "error": "Invalid parameters",
+    "code": "INVALID_PARAMS",
+}
 
 test_socket_symbols = [
     "BTCUSDT",
@@ -436,10 +410,3 @@ ticker_colors = [
     "#dce77a",
     "#77ecca",
 ]
-
-timeseries_agg_types = ["avg", "sum", "std.p", "std.s", "var.p", "var.s", "twa"]
-
-invalid_params_error = {
-    "error": "Invalid parameters",
-    "code": "INVALID_PARAMS",
-}

@@ -9,7 +9,7 @@ import redis
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 
-from .constants import socket_symbols
+from .constants import test_socket_symbols
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
@@ -33,7 +33,7 @@ class TableConsumer(AsyncWebsocketConsumer):
 
                     response = []
 
-                    for symbol in socket_symbols:
+                    for symbol in test_socket_symbols:
                         redis_response = r.execute_command(
                             f"HMGET aggregation:timestamps:{symbol} {joined_agg_keys}"
                         )
