@@ -9,6 +9,7 @@ from crypto_scanner.constants import test_socket_symbols, redis_time_series_rete
 class RedisManager:
     def __init__(self):
         self.r = redis.Redis(host="redis", port=6379, decode_responses=True)
+        self.pipeline = self.r.pipeline()
 
     def initialize_keys(self, retention=redis_time_series_retention):
         for symbol in test_socket_symbols:
@@ -25,36 +26,22 @@ class RedisManager:
                     f"TS.CREATE 1s:trades:{symbol} LABELS value_type trades type binance_1s_data symbol {symbol} RETENTION {retention}"
                 )
 
-    def store_symbol_data(self, symbol, timestamp, price, quote_volume, num_of_trades):
+    def store_symbol_data(
+        self, symbol, timestamp, price, quote_volume, num_of_trades, should_store
+    ):
         try:
-            self.r.execute_command(
+            self.pipeline.execute_command(
                 f"TS.MADD "
                 f"1s:price:{symbol} {timestamp} {price} "
                 f"1s:volume:{symbol} {timestamp} {quote_volume} "
                 f"1s:trades:{symbol} {timestamp} {num_of_trades}"
             )
+
+            if should_store:
+                self.pipeline.execute()
+
         except Exception as e:
             self.store_error(str(e))
-
-        # self.store_data_counter += 1
-        #
-        # try:
-        #     pipe = self.r.ts().pipeline()
-        #
-        #     pipe.execute_command(
-        #         f"TS.MADD "
-        #         f"1s:price:{symbol} {timestamp} {price} "
-        #         f"1s:volume:{symbol} {timestamp} {quote_volume} "
-        #         f"1s:trades:{symbol} {timestamp} {num_of_trades}"
-        #     )
-        #
-        #     if self.store_data_counter >= len(test_socket_symbols):
-        #         print(self.store_data_counter)
-        #         pipe.execute()
-        #         self.store_data_counter = 0
-        #
-        # except Exception as e:
-        #     self.store_error(str(e))
 
     def store_error(self, error):
         self.r.execute_command(f"LPUSH error_log {str(error)}")
@@ -65,6 +52,7 @@ class KlinesSocketManager:
         self.twm = ThreadedWebsocketManager()
         self.r = RedisManager()
         self.stream_name = None
+        self.symbols_executed = set()
 
     def initialize(self):
         self.twm.start()
@@ -96,7 +84,14 @@ class KlinesSocketManager:
             self.extract_message_data(msg)
         )
 
-        self.r.store_symbol_data(symbol, timestamp, price, quote_volume, num_of_trades)
+        self.symbols_executed.add(symbol)
+        all_symbols_executed = len(self.symbols_executed) >= len(test_socket_symbols)
+        if all_symbols_executed:
+            self.symbols_executed = set()
+
+        self.r.store_symbol_data(
+            symbol, timestamp, price, quote_volume, num_of_trades, all_symbols_executed
+        )
 
     def main(self):
         self.r.initialize_keys()
