@@ -1,11 +1,5 @@
 from rest_framework import serializers
-from crypto_scanner.models import BtcPrice, BinanceSpotKline5m
-
-
-class BtcPriceSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = BtcPrice
-        fields = ["id", "created", "price"]
+from crypto_scanner.models import BinanceSpotKline5m
 
 
 class BinanceSpotKline5mSerializer(serializers.ModelSerializer):
