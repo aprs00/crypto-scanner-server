@@ -186,41 +186,41 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 
 CELERY_BEAT_SCHEDULE = {
-    # "fetch-all-1m-klines": {
-    #     "task": "crypto_scanner.tasks.fetch_all_klines",
-    #     "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
-    #     "args": (4,),
-    # },
-    # "calculate-ltf-pearson-correlations": {
-    #     "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
-    #     "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
-    #     "args": (True,),
-    # },
-    # "calculate-htf-pearson-correlations": {
-    #     "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
-    #     "schedule": crontab(minute="34", hour="*/2"),
-    # },
-    # "calculate-ltf-z-scores": {
-    #     "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-    #     "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
-    #     "args": (True,),
-    # },
-    # "calculate-htf-z-scores": {
-    #     "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-    #     "schedule": crontab(minute="34", hour="*/2"),
-    # },
-    # "calculate-z-score-history": {
-    #     "task": "crypto_scanner.tasks.calculate_z_score_history",
-    #     # "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
-    # },
-    # "calculate-large-pearson-correlations": {
-    #     "task": "crypto_scanner.tasks.calculate_all_large_correlations",
-    #     "schedule": timedelta(seconds=6),
-    # },
-    # "calculate-large-z-score-matrix": {
-    #     "task": "crypto_scanner.tasks.calculate_options_large_z_score_matrix",
-    #     "schedule": timedelta(seconds=6),
-    # },
+    "fetch-all-1m-klines": {
+        "task": "crypto_scanner.tasks.fetch_all_klines",
+        "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
+        "args": (4,),
+    },
+    "calculate-ltf-pearson-correlations": {
+        "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
+        "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
+        "args": (True,),
+    },
+    "calculate-htf-pearson-correlations": {
+        "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
+        "schedule": crontab(minute="34", hour="*/2"),
+    },
+    "calculate-ltf-z-scores": {
+        "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
+        "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
+        "args": (True,),
+    },
+    "calculate-htf-z-scores": {
+        "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
+        "schedule": crontab(minute="34", hour="*/2"),
+    },
+    "calculate-z-score-history": {
+        "task": "crypto_scanner.tasks.calculate_z_score_history",
+        "schedule": crontab(minute="1,11,21,31,41,51", hour="*"),
+    },
+    "calculate-large-pearson-correlations": {
+        "task": "crypto_scanner.tasks.calculate_all_large_correlations",
+        "schedule": timedelta(seconds=6),
+    },
+    "calculate-large-z-score-matrix": {
+        "task": "crypto_scanner.tasks.calculate_options_large_z_score_matrix",
+        "schedule": timedelta(seconds=6),
+    },
 }
 
 CORS_ALLOW_ALL_ORIGINS = False
