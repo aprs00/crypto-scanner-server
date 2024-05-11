@@ -32,21 +32,21 @@ services:
         depends_on:
             - db
             - redis
-#
-#    binance_websocket:
-#        container_name: cs-binance-websocket
-#        build: .
-#        command: python binance_websocket.py
-#        volumes:
-#            - .:/code
-#        environment:
-#            - POSTGRES_NAME=${POSTGRES_NAME}
-#            - POSTGRES_USER=${POSTGRES_USER}
-#            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-#            - CELERY_BACKEND=${CELERY_BACKEND}
-#            - CELERY_BROKER=${CELERY_BROKER}
-#        depends_on:
-#            - redis
+
+    binance_websocket:
+        container_name: cs-binance-websocket
+        build: .
+        command: python binance_websocket.py
+        volumes:
+            - .:/code
+        environment:
+            - POSTGRES_NAME=${POSTGRES_NAME}
+            - POSTGRES_USER=${POSTGRES_USER}
+            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+            - CELERY_BACKEND=${CELERY_BACKEND}
+            - CELERY_BROKER=${CELERY_BROKER}
+        depends_on:
+            - redis
 
     redis:
         container_name: cs-redis

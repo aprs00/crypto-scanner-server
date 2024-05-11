@@ -13,5 +13,5 @@ class ExchangeConnectionsConfig(AppConfig):
         global _is_ready_called
 
         if not _is_ready_called:
-            print("READY CALLED")
-            start_binance_klines()
+            # start_binance_klines()
+            print("fewpoihfewpoih")
