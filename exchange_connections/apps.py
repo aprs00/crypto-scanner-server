@@ -14,3 +14,4 @@ class ExchangeConnectionsConfig(AppConfig):
 
         if not _is_ready_called:
             # start_binance_klines()
+            print("fewpoihfewpoih")
