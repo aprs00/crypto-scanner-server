@@ -118,7 +118,6 @@ class KlinesSocketManager:
 
 
 def main():
-    print("START BINANCE KLINES")
     ksm = KlinesSocketManager()
     ksm.main()
 
