@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "corsheaders",
     "crypto_scanner",
+    "exchange_connections",
     "rest_framework",
 ]
 
