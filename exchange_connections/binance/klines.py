@@ -122,9 +122,6 @@ def main():
     ksm.main()
 
 
-if __name__ == "__main__":
-    main()
-
 """
 ts.range 1s:BTCUSDT:sum - + +
 TS.MRANGE - + FILTER symbol=BTCUSDT
