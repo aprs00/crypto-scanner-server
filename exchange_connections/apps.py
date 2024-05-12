@@ -1,3 +1,4 @@
+import time
 import redis
 
 from django.apps import AppConfig
@@ -14,3 +15,10 @@ class ExchangeConnectionsConfig(AppConfig):
     def ready(self):
         if r.set("my_lock", "True", nx=True):
             start_binance_klines()
+
+        self.toggle_lock_after_delay()
+
+    @staticmethod
+    def toggle_lock_after_delay():
+        time.sleep(1200)  # 20 minutes
+        r.set("my_lock", "False")
