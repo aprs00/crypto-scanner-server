@@ -20,5 +20,5 @@ class ExchangeConnectionsConfig(AppConfig):
 
     @staticmethod
     def toggle_lock_after_delay():
-        time.sleep(1200)  # 20 minutes
+        time.sleep(20)  # 20 minutes
         r.set("my_lock", "False")
