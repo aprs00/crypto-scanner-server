@@ -16,7 +16,7 @@ class ExchangeConnectionsConfig(AppConfig):
         if r.set("my_lock", "True", nx=True):
             start_binance_klines()
 
-        self.toggle_lock_after_delay()
+        # self.toggle_lock_after_delay()
 
     @staticmethod
     def toggle_lock_after_delay():

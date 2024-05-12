@@ -10,6 +10,7 @@ class RedisManager:
     def __init__(self):
         self.r = redis.Redis(host="redis", port=6379, decode_responses=True)
         self.pipeline = self.r.pipeline()
+        self.r.set("my_lock", "False")
 
     def initialize_keys(self, retention=redis_time_series_retention):
         for symbol in test_socket_symbols:
