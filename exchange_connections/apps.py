@@ -1,3 +1,5 @@
+import threading
+
 from django.apps import AppConfig
 
 from exchange_connections.binance.klines import main as start_binance_klines
@@ -8,4 +10,5 @@ class ExchangeConnectionsConfig(AppConfig):
     name = "exchange_connections"
 
     def ready(self):
-        start_binance_klines()
+        thread = threading.Thread(target=start_binance_klines, daemon=True)
+        thread.start()
