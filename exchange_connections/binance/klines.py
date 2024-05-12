@@ -10,7 +10,6 @@ class RedisManager:
     def __init__(self):
         self.r = redis.Redis(host="redis", port=6379, decode_responses=True)
         self.pipeline = self.r.pipeline()
-        self.r.set("my_lock", "False")
 
     def initialize_keys(self, retention=redis_time_series_retention):
         for symbol in test_socket_symbols:
@@ -46,6 +45,12 @@ class RedisManager:
 
     def store_error(self, error):
         self.r.execute_command(f"LPUSH error_log {str(error)}")
+
+    def lock(self):
+        self.r.set("my_lock", "False")
+
+    def is_locked(self):
+        return self.r.get("my_lock") == "True"
 
 
 class KlinesSocketManager:
@@ -95,6 +100,10 @@ class KlinesSocketManager:
         )
 
     def main(self):
+        if self.r.is_locked():
+            return
+
+        self.r.lock()
         self.r.initialize_keys()
         self.initialize()
         self.start()
