@@ -23,11 +23,6 @@ def get_average_prices(request):
     duration_hours = stats_select_options_htf[duration]
     start_time_utc = timezone.now() - timedelta(hours=duration_hours)
 
-    response = None
-
-    if type == "day":
-        response = average_price_change(duration, symbol, start_time_utc, "day")
-    elif type == "hour":
-        response = average_price_change(duration, symbol, start_time_utc, "hour")
+    response = average_price_change(duration, symbol, start_time_utc, type)
 
     return JsonResponse(response, safe=False)

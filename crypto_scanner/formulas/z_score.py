@@ -4,7 +4,12 @@ import numpy as np
 def calculate_current_z_score(data):
     mean = np.mean(data)
     std_dev = np.std(data)
-    return (data[-1] - mean) / std_dev
+    z_score = (data[-1] - mean) / std_dev
+
+    if np.isnan(z_score):
+        return 0
+
+    return z_score
 
 
 def calculate_z_scores(values):
