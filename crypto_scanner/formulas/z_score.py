@@ -2,12 +2,13 @@ import numpy as np
 
 
 def calculate_current_z_score(data):
+    data = np.array(data, dtype=np.float64)
+    data = data[~np.isnan(data)]
+
     mean = np.mean(data)
     std_dev = np.std(data)
-    z_score = (data[-1] - mean) / std_dev
 
-    if np.isnan(z_score):
-        return 0
+    z_score = (data[-1] - mean) / std_dev
 
     return z_score
 
