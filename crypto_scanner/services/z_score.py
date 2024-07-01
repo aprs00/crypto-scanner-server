@@ -56,7 +56,7 @@ def calculate_large_z_score_matrix():
                 )
                 skipped_data = [float(x[1]) for x in redis_data][::data_to_skip]
 
-                z_scores[symbol][type] = calculate_current_z_score(skipped_data, symbol)
+                z_scores[symbol][type] = calculate_current_z_score(skipped_data)
 
         cache.set(f"z_score_matrix_large_{tf}", z_scores)
 
