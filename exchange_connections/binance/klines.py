@@ -37,9 +37,8 @@ class RedisManager:
                 f"1s:trades:{symbol} {timestamp} {num_of_trades}"
             )
 
-            # if should_store:
-            #     print("SHOULD STORE")
-            self.pipeline.execute()
+            if should_store:
+                self.pipeline.execute()
 
         except Exception as e:
             self.store_error(str(e))
