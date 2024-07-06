@@ -40,11 +40,6 @@ def calculate_large_z_score_matrix():
 
         ago_ms = current_time_ms - parsed_tf * 60 * 1000
 
-        data_to_skip = 4
-
-        if parsed_tf == 15:
-            data_to_skip = 14
-
         z_scores = {}
 
         for symbol in test_socket_symbols:
@@ -54,7 +49,7 @@ def calculate_large_z_score_matrix():
                 redis_data = r.execute_command(
                     f"TS.RANGE 1s:{type}:{symbol} {ago_ms} +"
                 )
-                skipped_data = [float(x[1]) for x in redis_data][::data_to_skip]
+                skipped_data = [float(x[1]) for x in redis_data]
 
                 z_scores[symbol][type] = calculate_current_z_score(skipped_data)
 
