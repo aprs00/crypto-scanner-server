@@ -7,7 +7,7 @@ from crypto_scanner.constants import (
     stats_select_options_ltf,
     stats_select_options_all,
     tickers,
-    large_correlation_data_types,
+    redis_ts_data_types,
     large_correlations_timeframes,
 )
 from crypto_scanner.utils import format_options
@@ -42,7 +42,7 @@ def get_large_pearson_types(request):
     if request.method != "GET":
         return HttpResponse(status=405)
 
-    response = format_options(large_correlation_data_types, "list", True)
+    response = format_options(redis_ts_data_types, "list", True)
 
     return JsonResponse(response, safe=False)
 

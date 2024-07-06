@@ -13,7 +13,7 @@ from crypto_scanner.constants import (
     stats_select_options_htf,
     stats_select_options_ltf,
     large_correlations_timeframes,
-    large_correlation_data_types,
+    redis_ts_data_types,
     large_correlation_types,
 )
 from crypto_scanner.api import (
@@ -72,7 +72,7 @@ def calculate_options_pearson_correlation(calculate_ltf=False):
 def calculate_all_large_correlations():
     for correlation_type in large_correlation_types:
         for tf in large_correlations_timeframes:
-            for data_type in large_correlation_data_types:
+            for data_type in redis_ts_data_types:
                 correlation = None
 
                 if correlation_type == "pearson":

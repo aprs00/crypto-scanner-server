@@ -18,7 +18,7 @@ stats_select_options_ltf = {
 
 large_correlations_timeframes = ["5m", "15m"]
 
-large_correlation_data_types = ["price", "volume", "trades"]
+redis_ts_data_types = ["price", "volume", "trades"]
 
 large_correlation_types = ["pearson", "spearman"]
 

@@ -11,7 +11,7 @@ from crypto_scanner.constants import (
     ticker_colors,
     test_socket_symbols,
     large_correlations_timeframes,
-    large_correlation_data_types,
+    redis_ts_data_types,
 )
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
@@ -50,7 +50,7 @@ def calculate_large_z_score_matrix():
         for symbol in test_socket_symbols:
             z_scores[symbol] = {}
 
-            for type in large_correlation_data_types:
+            for type in redis_ts_data_types:
                 redis_data = r.execute_command(
                     f"TS.RANGE 1s:{type}:{symbol} {ago_ms} +"
                 )

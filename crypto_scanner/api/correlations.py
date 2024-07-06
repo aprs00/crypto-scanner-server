@@ -8,7 +8,7 @@ import redis
 from crypto_scanner.constants import (
     test_socket_symbols,
     invalid_params_error,
-    large_correlation_data_types,
+    redis_ts_data_types,
     large_correlations_timeframes,
 )
 from crypto_scanner.services.correlations import (
@@ -28,10 +28,7 @@ def get_large_pearson_correlation(request):
     tf = request.GET.get("duration", None)
     data_type = request.GET.get("type", None)
 
-    if (
-        tf not in large_correlations_timeframes
-        or data_type not in large_correlation_data_types
-    ):
+    if tf not in large_correlations_timeframes or data_type not in redis_ts_data_types:
         return JsonResponse(invalid_params_error, status=400)
 
     formatted_tickers = [ticker[:-4] for ticker in test_socket_symbols]
