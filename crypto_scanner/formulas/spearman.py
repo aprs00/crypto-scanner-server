@@ -32,4 +32,5 @@ def calculate_spearman_correlation(x, y, rank_cache=None):
     covariance = np.cov(ranked_x, ranked_y)[0, 1]
 
     rho = covariance / (std_dev_rank_x * std_dev_rank_y)
-    return rho
+
+    return 0 if np.isnan(rho) else rho

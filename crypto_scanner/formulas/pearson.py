@@ -26,4 +26,6 @@ def calculate_pearson_correlation(x, y, x_symbol, y_symbol, cache=None):
     # Calculate sum of (X - Mx)(Y - My)
     sum_diffs = np.dot(x - mean_x, y - mean_y)
 
-    return sum_diffs / (sum_sq_diffs_x * sum_sq_diffs_y) ** 0.5
+    pearson_correlation = sum_diffs / (sum_sq_diffs_x * sum_sq_diffs_y) ** 0.5
+
+    return 0 if np.isnan(pearson_correlation) else pearson_correlation

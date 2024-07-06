@@ -10,10 +10,7 @@ def calculate_current_z_score(data):
 
     z_score = (data[-1] - mean) / std_dev
 
-    if z_score == np.nan:
-        return 0
-
-    return z_score
+    return 0 if np.isnan(z_score) else z_score
 
 
 def calculate_z_scores(values):
