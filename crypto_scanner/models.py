@@ -1,8 +1,10 @@
 from django.db import models
 from django.db.models import UniqueConstraint
 
+# class ZScoreHistorical(models.Model):
 
-class BinanceSpotTickers(models.Model):
+
+class Ticker(models.Model):
     name = models.CharField(max_length=20, null=True)
     color = models.CharField(max_length=20, default="#000000")
 
@@ -15,7 +17,10 @@ class BinanceSpotTickers(models.Model):
 
 class BinanceSpotKline5m(models.Model):
     ticker = models.CharField(max_length=10)
-    # ticker_id = models.ForeignKey(BinanceSpotTickers, on_delete=models.CASCADE)
+    ticker_name = models.ForeignKey(Ticker, on_delete=models.CASCADE)
+    ticker_quote = models.ForeignKey(
+        Ticker, on_delete=models.CASCADE, related_name="quote_ticker"
+    )
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
     open = models.DecimalField(max_digits=24, decimal_places=10)
