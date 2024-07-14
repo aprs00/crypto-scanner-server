@@ -17,9 +17,9 @@ class Ticker(models.Model):
 
 class BinanceSpotKline5m(models.Model):
     ticker = models.CharField(max_length=10)
-    ticker_name = models.ForeignKey(Ticker, on_delete=models.CASCADE)
+    ticker_name = models.ForeignKey(Ticker, on_delete=models.CASCADE, default=1)
     ticker_quote = models.ForeignKey(
-        Ticker, on_delete=models.CASCADE, related_name="quote_ticker"
+        Ticker, on_delete=models.CASCADE, related_name="quote_ticker", default=1
     )
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
