@@ -66,7 +66,6 @@ test_socket_symbols = [
     "ARKMUSDT",
     "ATOMUSDT",
     "GMTUSDT",
-    # "AGIXUSDT",
     "THETAUSDT",
     "AXSUSDT",
     "EOSUSDT",
