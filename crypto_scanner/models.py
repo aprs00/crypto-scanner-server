@@ -29,7 +29,7 @@ class ZScoreHistorical(models.Model):
         constraints = [
             UniqueConstraint(
                 fields=["ticker_name", "ticker_quote", "calculated_at"],
-                name="unique_ticker_start_time",
+                name="unique_zscore_ticker_start_time",
             ),
         ]
 
