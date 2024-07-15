@@ -16,7 +16,7 @@ class Ticker(models.Model):
 class ZScoreHistorical(models.Model):
     ticker_name = models.ForeignKey(Ticker, on_delete=models.CASCADE, default=1)
     ticker_quote = models.ForeignKey(
-        Ticker, on_delete=models.CASCADE, related_name="quote_ticker", default=1
+        Ticker, on_delete=models.CASCADE, related_name="zscore_quote_ticker", default=1
     )
     volume_z_score = models.FloatField()
     price_z_score = models.FloatField()
