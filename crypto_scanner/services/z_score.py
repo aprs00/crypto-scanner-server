@@ -1,7 +1,9 @@
 from django.core.cache import cache
+from django.utils import timezone
 import redis
 import time
 
+from crypto_scanner.models import ZScoreHistorical, Ticker
 from crypto_scanner.selectors.z_score import get_tickers_data_z_score
 from crypto_scanner.formulas.z_score import (
     calculate_current_z_score,
@@ -41,6 +43,7 @@ def calculate_large_z_score_matrix():
         ago_ms = current_time_ms - parsed_tf * 60 * 1000
 
         z_scores = {}
+        z_scores_to_insert = []
 
         for symbol in test_socket_symbols:
             z_scores[symbol] = {}
@@ -52,6 +55,29 @@ def calculate_large_z_score_matrix():
                 data = [float(x[1]) for x in redis_data]
 
                 z_scores[symbol][type] = calculate_current_z_score(data)
+
+        current_time = timezone.now()
+
+        if tf == "15m":
+            for symbol, val in z_scores.items():
+                base = symbol[:-4]
+                quote = symbol[-4:]
+
+                base_ticker, created = Ticker.objects.get_or_create(name=base)
+                quote_ticker, created = Ticker.objects.get_or_create(name=quote)
+
+                z_scores_to_insert.append(
+                    ZScoreHistorical(
+                        ticker_name=base_ticker,
+                        ticker_quote=quote_ticker,
+                        volume_z_score=val["volume"],
+                        price_z_score=val["price"],
+                        trades_z_score=val["trades"],
+                        calculated_at=current_time,
+                    )
+                )
+
+        ZScoreHistorical.objects.bulk_create(z_scores_to_insert)
 
         cache.set(f"z_score_matrix_large_{tf}", z_scores)
 
