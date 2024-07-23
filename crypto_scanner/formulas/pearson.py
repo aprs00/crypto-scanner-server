@@ -4,6 +4,11 @@ import numpy as np
 def calculate_pearson_correlation(x, y, x_symbol, y_symbol, cache=None):
     """Calculate Pearson's correlation coefficient between two lists x and y."""
 
+    if len(x) == 0 or len(y) == 0:
+        print("LENGTH IS 0")
+        print(len(x), x_symbol)
+        print(len(y), y_symbol)
+
     if f"mean_{x_symbol}" not in cache:
         cache[f"mean_{x_symbol}"] = np.mean(x)
 
