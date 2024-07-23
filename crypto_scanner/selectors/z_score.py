@@ -45,9 +45,15 @@ def get_tickers_data_z_score(duration):
     return trades_volume_price_tickers_data
 
 
-def get_all_tickers_data_z_score(duration):
+def get_all_tickers_data_z_score(duration, type):
     now = timezone.now()
     last_24_hours = now - timezone.timedelta(hours=duration)
+
+    type_mapper = {
+        "price": "price_z_score",
+        "volume": "volume_z_score",
+        "trades": "trades_z_score",
+    }
 
     z_score_data = (
         ZScoreHistorical.objects.select_related("ticker_name", "ticker_quote")
@@ -63,8 +69,9 @@ def get_all_tickers_data_z_score(duration):
         .values(
             base=F("ticker_name__name"),
             quote=F("ticker_quote__name"),
-            price=F("price_z_score"),
             time=F("time_string"),
+            z_score=F(type_mapper[type]),
+            # price=F("price_z_score"),
             # volume=F("volume_z_score"),
             # trades=F("trades_z_score"),
         )

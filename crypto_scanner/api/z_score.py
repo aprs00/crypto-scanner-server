@@ -103,7 +103,12 @@ def get_z_score_heatmap(request):
     if request.method != "GET":
         return HttpResponse(status=405)
 
-    z_score_data = get_all_tickers_data_z_score(1)
+    type = request.GET.get("type", None)
+
+    if type is None:
+        return JsonResponse(invalid_params_error, status=400)
+
+    z_score_data = get_all_tickers_data_z_score(1, type)
 
     transformed_z_score_data = {}
     time = []
@@ -115,7 +120,7 @@ def get_z_score_heatmap(request):
         if name not in transformed_z_score_data:
             transformed_z_score_data[name] = []
 
-        transformed_z_score_data[name].append(coin["price"])
+        transformed_z_score_data[name].append(coin["z_score"])
 
         if name == "BTC":
             time.append(coin["time"])
