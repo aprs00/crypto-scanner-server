@@ -89,7 +89,6 @@ test_socket_symbols = [
     "YGGUSDT",
     "SUIUSDT",
     "OPUSDT",
-    "RNDRUSDT",
     "INJUSDT",
 ]
 
