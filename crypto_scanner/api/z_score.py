@@ -3,6 +3,7 @@ from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt
 import redis
 
+from crypto_scanner.selectors.z_score import get_all_tickers_data_z_score
 from crypto_scanner.services.z_score import (
     calculate_large_z_score_matrix,
     calculate_z_score_history,
@@ -95,3 +96,38 @@ def get_z_score_history(request):
         return JsonResponse(response, safe=False)
 
     return HttpResponse(status=405)
+
+
+@csrf_exempt
+def get_z_score_heatmap(request):
+    if request.method != "GET":
+        return HttpResponse(status=405)
+
+    z_score_data = get_all_tickers_data_z_score(1)
+
+    transformed_z_score_data = {}
+    time = []
+    matrix = []
+
+    for coin in z_score_data:
+        name = coin["base"]
+
+        if name not in transformed_z_score_data:
+            transformed_z_score_data[name] = []
+
+        transformed_z_score_data[name].append(coin["price"])
+
+        if name == "BTC":
+            time.append(coin["time"])
+
+    for row, (key, values) in enumerate(transformed_z_score_data.items()):
+        for col, price in enumerate(values):
+            matrix.append([col, row, round(price, 2)])
+
+    response = {
+        "data": matrix,
+        "yAxis": list(transformed_z_score_data.keys()),
+        "xAxis": time,
+    }
+
+    return JsonResponse(response, safe=False)

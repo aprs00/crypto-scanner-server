@@ -1,3 +1,6 @@
+from django.db.models import F, CharField, Func, Value
+from crypto_scanner.models import ZScoreHistorical
+
 from django.utils import timezone
 from datetime import timedelta
 
@@ -40,3 +43,32 @@ def get_tickers_data_z_score(duration):
     )
 
     return trades_volume_price_tickers_data
+
+
+def get_all_tickers_data_z_score(duration):
+    now = timezone.now()
+    last_24_hours = now - timezone.timedelta(hours=duration)
+
+    z_score_data = (
+        ZScoreHistorical.objects.select_related("ticker_name", "ticker_quote")
+        .filter(calculated_at__gte=last_24_hours)
+        .annotate(
+            time_string=Func(
+                F("calculated_at"),
+                Value("HH24:MI:SS"),
+                function="to_char",
+                output_field=CharField(),
+            )
+        )
+        .values(
+            base=F("ticker_name__name"),
+            quote=F("ticker_quote__name"),
+            price=F("price_z_score"),
+            time=F("time_string"),
+            # volume=F("volume_z_score"),
+            # trades=F("trades_z_score"),
+        )
+        .order_by("calculated_at")
+    )
+
+    return list(z_score_data)

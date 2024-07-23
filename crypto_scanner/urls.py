@@ -39,6 +39,11 @@ urlpatterns = [
         name="z-score-history",
     ),
     path(
+        "z-score-heatmap",
+        z_score.get_z_score_heatmap,
+        name="z-score-heatmap",
+    ),
+    path(
         "large-pearson-correlation",
         correlations.get_large_pearson_correlation,
         name="large-pearson-correlation",
