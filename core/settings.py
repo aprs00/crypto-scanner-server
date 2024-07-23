@@ -208,11 +208,11 @@ CELERY_BEAT_SCHEDULE = {
     },
     "calculate-large-pearson-correlations": {
         "task": "crypto_scanner.tasks.calculate_all_large_correlations",
-        "schedule": timedelta(seconds=6),
+        "schedule": timedelta(seconds=10),
     },
     "calculate-large-z-score-matrix": {
         "task": "crypto_scanner.tasks.calculate_options_large_z_score_matrix",
-        "schedule": timedelta(seconds=6),
+        "schedule": timedelta(seconds=10),
     },
 }
 
