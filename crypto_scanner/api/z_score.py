@@ -108,7 +108,7 @@ def get_z_score_heatmap(request):
     if type is None:
         return JsonResponse(invalid_params_error, status=400)
 
-    z_score_data = get_all_tickers_data_z_score(1, type)
+    z_score_data = get_all_tickers_data_z_score(2, type)
 
     transformed_z_score_data = {}
     time = []
