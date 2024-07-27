@@ -21,7 +21,7 @@ class ZScoreHistorical(models.Model):
     volume_z_score = models.FloatField()
     price_z_score = models.FloatField()
     trades_z_score = models.FloatField()
-    calculated_at = models.DateTimeField(auto_now_add=True)
+    calculated_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         ordering = ["calculated_at"]
