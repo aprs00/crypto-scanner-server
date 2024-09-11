@@ -13,6 +13,11 @@ services:
             - POSTGRES_HOST=${POSTGRES_HOST}
         ports:
             - "${POSTGRES_PORT}:5432"
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "10m"   # Maximum size for each log file
+                max-file: "3"     # Maximum number of log files to retain
 
     app:
         container_name: cs-app
@@ -32,6 +37,11 @@ services:
         depends_on:
             - db
             - redis
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "10m"   # Maximum size for each log file
+                max-file: "3"     # Maximum number of log files to retain
 
     redis:
         container_name: cs-redis
@@ -40,6 +50,11 @@ services:
             - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
         ports:
             - "6378:6379"
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "10m"   # Maximum size for each log file
+                max-file: "3"     # Maximum number of log files to retain
 
     celery:
         container_name: cs-celery
@@ -70,6 +85,11 @@ services:
         depends_on:
             - app
             - redis
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "10m"   # Maximum size for each log file
+                max-file: "3"     # Maximum number of log files to retain
 
     grafana:
         container_name: cs-grafana
@@ -84,6 +104,11 @@ services:
         restart: unless-stopped
         volumes:
             - grafana-storage:/var/lib/grafana
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "10m"   # Maximum size for each log file
+                max-file: "3"     # Maximum number of log files to retain
 
 volumes:
     grafana-storage: {}
