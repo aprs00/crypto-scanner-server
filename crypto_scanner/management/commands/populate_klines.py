@@ -49,8 +49,8 @@ def populate_kline(tf, ticker, start_date, end_date=None, batch=40000):
 # utils.populate_all_klines("5m", "06 Aug 2023", "08 Feb 2024")
 # crypto_scanner.tasks.fetch_all_klines(450)
 # utils.populate_kline("5m", "SHIBUSDT", "23 Apr 2023", "23 Oct 2023")
-(
-    crypto_scanner.management.commands.populate_klines.populate_all_klines(
-        "5m", "15 Mar 2024", "13 Sep 2024"
-    )
-)
+# (
+#     crypto_scanner.management.commands.populate_klines.populate_all_klines(
+#         "5m", "15 Mar 2024", "13 Sep 2024"
+#     )
+# )
