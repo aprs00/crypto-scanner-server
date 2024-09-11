@@ -82,13 +82,11 @@ test_socket_symbols = [
     "AAVEUSDT",
     "GRTUSDT",
     "ENAUSDT",
-    "WIFUSDT",
     "PEPEUSDT",
     "ICPUSDT",
     "PENDLEUSDT",
     "COSUSDT",
     "YGGUSDT",
-    "SUIUSDT",
     "OPUSDT",
     "INJUSDT",
 ]
