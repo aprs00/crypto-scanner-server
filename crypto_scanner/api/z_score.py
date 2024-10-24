@@ -25,8 +25,8 @@ def get_large_z_score_matrix(request):
     if request.method != "GET":
         return HttpResponse(status=405)
 
-    x_axis = request.GET.get("x_axis", None)
-    y_axis = request.GET.get("y_axis", None)
+    x_axis = request.GET.get("xAxis", None)
+    y_axis = request.GET.get("yAxis", None)
     tf = request.GET.get("tf", None)
 
     if x_axis is None or y_axis is None or tf is None:
@@ -48,8 +48,8 @@ def get_large_z_score_matrix(request):
 @csrf_exempt
 def get_z_score_matrix(request):
     if request.method == "GET":
-        x_axis = request.GET.get("x_axis", None)
-        y_axis = request.GET.get("y_axis", None)
+        x_axis = request.GET.get("xAxis", None)
+        y_axis = request.GET.get("yAxis", None)
         duration = request.GET.get("duration", None)
 
         if x_axis is None or y_axis is None or duration is None:
