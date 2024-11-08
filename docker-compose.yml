@@ -16,8 +16,8 @@ services:
         logging:
             driver: "json-file"
             options:
-                max-size: "10m"   # Maximum size for each log file
-                max-file: "3"     # Maximum number of log files to retain
+                max-size: "10m"
+                max-file: "3"
 
     app:
         container_name: cs-app
@@ -40,8 +40,8 @@ services:
         logging:
             driver: "json-file"
             options:
-                max-size: "10m"   # Maximum size for each log file
-                max-file: "3"     # Maximum number of log files to retain
+                max-size: "10m"
+                max-file: "3"
 
     redis:
         container_name: cs-redis
@@ -53,8 +53,8 @@ services:
         logging:
             driver: "json-file"
             options:
-                max-size: "10m"   # Maximum size for each log file
-                max-file: "3"     # Maximum number of log files to retain
+                max-size: "10m"
+                max-file: "3"
 
     celery:
         container_name: cs-celery
@@ -70,6 +70,11 @@ services:
         depends_on:
             - app
             - redis
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "10m"
+                max-file: "3"
 
     celery-beat:
         container_name: cs-celery-beat
@@ -88,8 +93,8 @@ services:
         logging:
             driver: "json-file"
             options:
-                max-size: "10m"   # Maximum size for each log file
-                max-file: "3"     # Maximum number of log files to retain
+                max-size: "10m"
+                max-file: "3"
 
     grafana:
         container_name: cs-grafana
@@ -107,8 +112,8 @@ services:
         logging:
             driver: "json-file"
             options:
-                max-size: "10m"   # Maximum size for each log file
-                max-file: "3"     # Maximum number of log files to retain
+                max-size: "10m"
+                max-file: "3"
 
 volumes:
     grafana-storage: {}
