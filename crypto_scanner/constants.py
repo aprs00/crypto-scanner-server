@@ -56,7 +56,6 @@ test_socket_symbols = [
     "APTUSDT",
     "FETUSDT",
     "UNIUSDT",
-    "FTMUSDT",
     "TIAUSDT",
     "SEIUSDT",
     "STXUSDT",
