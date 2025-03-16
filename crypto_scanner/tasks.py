@@ -60,7 +60,7 @@ def calculate_options_pearson_correlation():
 
 @shared_task
 def calculate_options_z_score_matrix():
-    time.sleep(20)
+    time.sleep(25)
     durations = stats_select_options_ltf | stats_select_options_htf
 
     for duration in durations:
