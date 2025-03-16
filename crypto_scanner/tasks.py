@@ -48,6 +48,7 @@ def calculate_all_large_correlations():
 
 @shared_task
 def calculate_options_pearson_correlation():
+    time.sleep(20)
     durations = stats_select_options_ltf | stats_select_options_htf
 
     for duration in durations.keys():
@@ -59,6 +60,7 @@ def calculate_options_pearson_correlation():
 
 @shared_task
 def calculate_options_z_score_matrix():
+    time.sleep(20)
     durations = stats_select_options_ltf | stats_select_options_htf
 
     for duration in durations:
@@ -98,4 +100,4 @@ def fetch_all_klines(limit=25):
                 print("IntegrityError:", str(e))
                 pass
 
-        time.sleep(2)
+        time.sleep(1)
