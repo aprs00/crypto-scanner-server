@@ -16,13 +16,13 @@ stats_select_options_ltf = {
     "1d": 24,
 }
 
-large_correlations_timeframes = ["5m", "15m"]
+large_correlations_timeframes = ["5m", "15m", "30m", "60m"]
+
+redis_time_series_retention = str(65 * 60 * 1000)  # 65 minutes
 
 redis_ts_data_types = ["price", "volume", "trades"]
 
 large_correlation_types = ["pearson", "spearman"]
-
-redis_time_series_retention = str(30 * 60 * 1000)  # 30 minutes
 
 stats_select_options_all = {**stats_select_options_ltf, **stats_select_options_htf}
 
