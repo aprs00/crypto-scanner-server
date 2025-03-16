@@ -30,45 +30,6 @@ r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
 
 @shared_task
-def calculate_options_z_score_matrix(calculate_ltf=False):
-    if calculate_ltf:
-        durations = stats_select_options_ltf
-    else:
-        durations = stats_select_options_htf
-
-    for duration in durations:
-        response = z_score.calculate_z_score_matrix(duration)
-
-        cache.set(f"z_score_{duration}", response)
-
-
-@shared_task
-def calculate_options_large_z_score_matrix():
-    time.sleep(2)
-
-    z_score.calculate_large_z_score_matrix()
-
-
-@shared_task
-def calculate_z_score_history():
-    duration = "12h"
-
-    response = z_score.calculate_z_score_history(duration)
-
-    cache.set(f"z_score_history_{duration}", response)
-
-
-@shared_task
-def calculate_options_pearson_correlation(calculate_ltf=False):
-    durations = stats_select_options_ltf if calculate_ltf else stats_select_options_htf
-
-    for duration in durations.keys():
-        response = calculate_pearson_correlation_high_tf(duration)
-
-        cache.set(f"pearson_correlation_{duration}", response)
-
-
-@shared_task
 def calculate_all_large_correlations():
     for correlation_type in large_correlation_types:
         for tf in large_correlations_timeframes:
@@ -83,6 +44,37 @@ def calculate_all_large_correlations():
                         correlation_type == "pearson",
                     ),
                 )
+
+
+@shared_task
+def calculate_options_pearson_correlation():
+    durations = stats_select_options_ltf | stats_select_options_htf
+
+    for duration in durations.keys():
+        cache.set(
+            f"pearson_correlation_{duration}",
+            calculate_pearson_correlation_high_tf(duration),
+        )
+
+
+@shared_task
+def calculate_options_z_score_matrix():
+    durations = stats_select_options_ltf | stats_select_options_htf
+
+    for duration in durations:
+        cache.set(f"z_score_{duration}", z_score.calculate_z_score_matrix(duration))
+
+
+@shared_task
+def calculate_options_large_z_score_matrix():
+    z_score.calculate_large_z_score_matrix()
+
+
+@shared_task
+def calculate_z_score_history(duration="12h"):
+    cache.set(
+        f"z_score_history_{duration}", z_score.calculate_z_score_history(duration)
+    )
 
 
 @shared_task
