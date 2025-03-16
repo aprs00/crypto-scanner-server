@@ -16,7 +16,7 @@ stats_select_options_ltf = {
     "1d": 24,
 }
 
-large_correlations_timeframes = ["5m", "15m", "30m", "60m"]
+large_correlations_timeframes = ["5m", "15m", "30m"]
 
 redis_time_series_retention = str(65 * 60 * 1000)  # 65 minutes
 
