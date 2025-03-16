@@ -1,4 +1,5 @@
 import redis
+from itertools import product
 
 from crypto_scanner.constants import (
     tickers,
@@ -10,22 +11,25 @@ from crypto_scanner.selectors.correlations import get_tickers_data, extract_time
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
+correlation_functions = {
+    "pearson": calculate_pearson_correlation,
+    "spearman": calculate_spearman_correlation,
+}
+
 
 def calculate_correlations(data, symbols, type):
     correlations = {}
     rank_cache = {}
     pearson_cache = {}
 
-    for symbol1 in symbols:
-        for symbol2 in symbols:
-            if type == "pearson":
-                correlations[f"{symbol1} - {symbol2}"] = calculate_pearson_correlation(
-                    data[symbol1], data[symbol2], symbol1, symbol2, pearson_cache
-                )
-            elif type == "spearman":
-                correlations[f"{symbol1} - {symbol2}"] = calculate_spearman_correlation(
-                    data[symbol1], data[symbol2], symbol1, symbol2, rank_cache
-                )
+    for symbol1, symbol2 in product(symbols, repeat=2):
+        correlations[f"{symbol1} - {symbol2}"] = correlation_functions[type](
+            data[symbol1],
+            data[symbol2],
+            symbol1,
+            symbol2,
+            pearson_cache if type == "pearson" else rank_cache,
+        )
 
     return correlations
 

@@ -73,20 +73,15 @@ def calculate_all_large_correlations():
     for correlation_type in large_correlation_types:
         for tf in large_correlations_timeframes:
             for data_type in redis_ts_data_types:
-                correlation = None
-
-                if correlation_type == "pearson":
-                    correlation = correlations.format_large_pearson_response(
-                        tf, data_type, correlation_type, test_socket_symbols
-                    )
-                elif correlation_type == "spearman":
-                    correlation = correlations.format_large_pearson_response(
-                        tf, data_type, correlation_type, test_socket_symbols, False
-                    )
-
                 cache.set(
                     f"{correlation_type}_correlation_large_{data_type}_{tf}",
-                    correlation,
+                    correlations.format_large_pearson_response(
+                        tf,
+                        data_type,
+                        correlation_type,
+                        test_socket_symbols,
+                        correlation_type == "pearson",
+                    ),
                 )
 
 
