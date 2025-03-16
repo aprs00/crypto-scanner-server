@@ -1,5 +1,4 @@
 import redis
-import numpy as np
 
 from crypto_scanner.constants import (
     tickers,
