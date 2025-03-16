@@ -1,36 +1,29 @@
 import numpy as np
 
 
-def calculate_pearson_correlation(x, y, x_symbol, y_symbol, cache=None):
+def calculate_pearson_correlation(A, B, a_key, b_key, cache):
     """Calculate Pearson's correlation coefficient between two lists x and y."""
 
-    if len(x) == 0 or len(y) == 0:
+    if len(A) == 0 or len(B) == 0:
         print("LENGTH IS 0")
-        print(len(x), x_symbol)
-        print(len(y), y_symbol)
+        print(len(A), a_key)
+        print(len(B), b_key)
 
-    if f"mean_{x_symbol}" not in cache:
-        cache[f"mean_{x_symbol}"] = np.mean(x)
+    mean_a = cache.setdefault(f"mean_{a_key}", np.mean(A))
+    mean_b = cache.setdefault(f"mean_{b_key}", np.mean(B))
 
-    if f"mean_{y_symbol}" not in cache:
-        cache[f"mean_{y_symbol}"] = np.mean(y)
+    centered_a = cache.setdefault(f"centered_{a_key}", A - mean_a)
+    centered_b = cache.setdefault(f"centered_{b_key}", B - mean_b)
 
-    mean_x = cache[f"mean_{x_symbol}"]
-    mean_y = cache[f"mean_{y_symbol}"]
+    sum_sq_diffs_a = cache.setdefault(
+        f"sum_sq_diffs{a_key}", np.sum(centered_a * centered_a)
+    )
+    sum_sq_diffs_b = cache.setdefault(
+        f"sum_sq_diffs{b_key}", np.sum(centered_b * centered_b)
+    )
 
-    # Calculate sum of (X - Mx)^2 and (Y - My)^2
-    if f"sum_sq_diffs_x_{x_symbol}" not in cache:
-        cache[f"sum_sq_diffs_x_{x_symbol}"] = np.sum((x - mean_x) ** 2)
+    sum_diffs = np.dot(centered_a, centered_b)
 
-    if f"sum_sq_diffs_y_{y_symbol}" not in cache:
-        cache[f"sum_sq_diffs_y_{y_symbol}"] = np.sum((y - mean_y) ** 2)
-
-    sum_sq_diffs_x = cache[f"sum_sq_diffs_x_{x_symbol}"]
-    sum_sq_diffs_y = cache[f"sum_sq_diffs_y_{y_symbol}"]
-
-    # Calculate sum of (X - Mx)(Y - My)
-    sum_diffs = np.dot(x - mean_x, y - mean_y)
-
-    pearson_correlation = sum_diffs / (sum_sq_diffs_x * sum_sq_diffs_y) ** 0.5
+    pearson_correlation = sum_diffs / np.sqrt(sum_sq_diffs_a * sum_sq_diffs_b)
 
     return 0 if np.isnan(pearson_correlation) else pearson_correlation
