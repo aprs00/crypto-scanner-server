@@ -3,7 +3,7 @@ from django.core.cache import cache
 from celery import shared_task
 from binance.client import Client
 from django.db import IntegrityError
-
+import os
 import time
 import redis
 
@@ -104,7 +104,7 @@ def fetch_all_klines(limit=25):
             if kline_object:
                 kline_objects.append(kline_object)
 
-        if kline_objects:
+        if kline_objects and os.getenv("MODE") != "dev":
             try:
                 model.objects.bulk_create(kline_objects, ignore_conflicts=True)
             except IntegrityError as e:

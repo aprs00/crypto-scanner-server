@@ -2,6 +2,7 @@ from django.core.cache import cache
 from django.utils import timezone
 import redis
 import time
+import os
 
 from crypto_scanner.models import ZScoreHistorical, Ticker
 from crypto_scanner.selectors.z_score import get_tickers_data_z_score
@@ -77,7 +78,8 @@ def calculate_large_z_score_matrix():
                     )
                 )
 
-        ZScoreHistorical.objects.bulk_create(z_scores_to_insert)
+        if os.getenv("MODE") != "dev":
+            ZScoreHistorical.objects.bulk_create(z_scores_to_insert)
 
         cache.set(f"z_score_matrix_large_{tf}", z_scores)
 
