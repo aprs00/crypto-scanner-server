@@ -24,7 +24,7 @@ def calculate_correlations(data, symbols, type):
                 )
             elif type == "spearman":
                 correlations[f"{symbol1} - {symbol2}"] = calculate_spearman_correlation(
-                    data[symbol1], data[symbol2], rank_cache
+                    data[symbol1], data[symbol2], symbol1, symbol2, rank_cache
                 )
 
     return correlations

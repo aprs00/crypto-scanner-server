@@ -1,3 +1,4 @@
+from scipy.stats import spearmanr
 import numpy as np
 import time
 import json
@@ -12,14 +13,22 @@ from crypto_scanner.formulas.spearman import (
 # A = [7, 8, 1, 28, 9, 1, -2, 8, 2]
 # B = [9, 0, 100, 29, 18, 8, 12, 88, 9]
 
-A = np.random.rand(10000000)
-B = np.random.rand(10000000)
+A = np.random.rand(1000000)
+B = np.random.rand(1000000)
 
 cache = {}
 cache2 = {}
+spearman_cache = {}
 
+print("PEARSON:")
 print(calculate_pearson_correlation(A, B, "BTC", "ETH", cache))
 print(np.corrcoef(A, B)[0][1])
+print("---------------------")
+
+print("SPEARMAN:")
+print(calculate_spearman_correlation(A, B, "BTC", "ETH", spearman_cache))
+print(spearmanr(A, B)[0])
+print("---------------------")
 
 
 def calculate_correlations(data, symbols, type):
@@ -30,16 +39,18 @@ def calculate_correlations(data, symbols, type):
     for symbol1 in symbols:
         for symbol2 in symbols:
             if type == "pearson":
-
                 correlations[f"{symbol1} - {symbol2}"] = calculate_pearson_correlation(
                     data[symbol1], data[symbol2], symbol1, symbol2, pearson_cache
                 )
             elif type == "spearman":
-                correlations[f"{symbol1} - {symbol2}"] = calculate_spearman_correlation(
-                    data[symbol1], data[symbol2], rank_cache
-                )
+                correlations[f"{symbol1} - {symbol2}"] = {
+                    "custom": calculate_spearman_correlation(
+                        data[symbol1], data[symbol2], symbol1, symbol2, rank_cache
+                    ),
+                    "scipy": spearmanr(data[symbol1], data[symbol2])[0],
+                }
 
-    return correlations
+    # print(correlations)
 
 
 def run_performance_test(num_iterations, num_symbols, data_size, corr_type):
@@ -86,8 +97,8 @@ def run_performance_test(num_iterations, num_symbols, data_size, corr_type):
 if __name__ == "__main__":
     # Test configuration
     configs = [
-        {"iterations": 1, "symbols": 120, "data_size": 180000, "type": "pearson"},
-        # {"iterations": 1000, "symbols": 5, "data_size": 10000, "type": "spearman"},
+        # {"iterations": 1, "symbols": 120, "data_size": 180000, "type": "pearson"},
+        {"iterations": 1, "symbols": 1, "data_size": 180000, "type": "spearman"},
     ]
 
     results = []
