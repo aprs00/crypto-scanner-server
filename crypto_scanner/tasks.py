@@ -47,9 +47,9 @@ def calculate_all_large_correlations():
 
 
 @shared_task
-def calculate_options_pearson_correlation():
+def calculate_options_pearson_correlation(htf=False):
     time.sleep(20)
-    durations = stats_select_options_ltf | stats_select_options_htf
+    durations = stats_select_options_htf if htf else stats_select_options_ltf
 
     for duration in durations.keys():
         cache.set(
@@ -59,9 +59,9 @@ def calculate_options_pearson_correlation():
 
 
 @shared_task
-def calculate_options_z_score_matrix():
-    time.sleep(25)
-    durations = stats_select_options_ltf | stats_select_options_htf
+def calculate_options_z_score_matrix(htf=False):
+    time.sleep(30)
+    durations = stats_select_options_htf if htf else stats_select_options_ltf
 
     for duration in durations:
         cache.set(f"z_score_{duration}", z_score.calculate_z_score_matrix(duration))
