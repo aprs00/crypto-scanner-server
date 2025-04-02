@@ -6,7 +6,7 @@ from crypto_scanner.constants import (
 )
 from crypto_scanner.formulas.spearman import calculate_spearman_correlation
 from crypto_scanner.formulas.pearson import calculate_pearson_correlation
-from crypto_scanner.selectors.correlations import get_tickers_data, extract_timeseries
+from crypto_scanner.selectors.correlations import get_tickers_data
 
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
@@ -50,27 +50,3 @@ def calculate_pearson_correlation_high_tf(duration):
     }
 
     return response
-
-
-def convert_array_to_matrix(symbols, correlations, is_matrix_upper_triangle=True):
-    return [
-        [
-            i,
-            j,
-            round(
-                correlations[f"{symbols[i]} - {symbols[j]}"],
-                2,
-            ),
-        ]
-        for i in range(len(symbols))
-        for j in (range(i + 1, len(symbols)) if is_matrix_upper_triangle else range(i))
-    ]
-
-
-def format_large_pearson_response(
-    tf, data_type, correlation_type, symbols, is_matrix_upper_triangle=True
-):
-    data = extract_timeseries(tf, symbols, data_type)
-    correlations = calculate_correlations(data, symbols, correlation_type)
-
-    return convert_array_to_matrix(symbols, correlations, is_matrix_upper_triangle)

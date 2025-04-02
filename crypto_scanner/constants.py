@@ -2,8 +2,8 @@ stats_select_options_htf = {
     "1w": 7 * 24,
     "2w": 14 * 24,
     "1m": 30 * 24,
-    "3m": 90 * 24,
-    "6m": 180 * 24,
+    "3M": 90 * 24,
+    "6M": 180 * 24,
 }
 
 stats_select_options_ltf = {
@@ -16,17 +16,16 @@ stats_select_options_ltf = {
     "1d": 24,
 }
 
-large_correlations_timeframes = ["5m", "15m", "30m"]
+large_correlations_timeframes = ["5m", "15m", "30m", "1h", "4h"]
 
 redis_time_series_retention = str(65 * 60 * 1000)  # 65 minutes
 
 redis_ts_data_types = ["price", "volume", "trades"]
 
-large_correlation_types = ["pearson", "spearman"]
+# large_correlation_types = ["pearson", "spearman"]
+large_correlation_types = ["pearson"]
 
 stats_select_options_all = {**stats_select_options_ltf, **stats_select_options_htf}
-
-timeseries_agg_types = ["avg", "sum", "std.p", "std.s", "var.p", "var.s", "twa"]
 
 invalid_params_error = {
     "error": "Invalid parameters",

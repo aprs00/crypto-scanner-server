@@ -36,6 +36,7 @@ def calculate_z_score_matrix(duration):
     return z_scores
 
 
+# TODO: delete
 def calculate_large_z_score_matrix():
     for tf in large_correlations_timeframes:
         current_time_ms = int(time.time() * 1000)
@@ -84,15 +85,15 @@ def calculate_large_z_score_matrix():
         cache.set(f"z_score_matrix_large_{tf}", z_scores)
 
 
-def format_z_score_matrix_response(data, tickers, x_axis, y_axis, round_by):
+def format_z_score_matrix_response(data, tickers, x_axis, y_axis):
     return [
         {
             "type": "scatter",
             "name": ticker,
             "data": [
                 [
-                    round(data[ticker][x_axis], round_by),
-                    round(data[ticker][y_axis], round_by),
+                    round(data[ticker][x_axis], 2),
+                    round(data[ticker][y_axis], 2),
                 ]
             ],
             "color": ticker_colors[i],

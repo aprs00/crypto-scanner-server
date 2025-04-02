@@ -18,6 +18,7 @@ from crypto_scanner.utils import get_min_length
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
 
+# TODO delete
 def extract_timeseries(tf, symbols, data_type):
     current_time_ms = int(time.time() * 1000)
     tf = int(tf[:-1])

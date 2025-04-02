@@ -2,10 +2,10 @@ from django.http import HttpResponse, JsonResponse
 from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt
 import redis
+import msgpack
 
 from crypto_scanner.selectors.z_score import get_all_tickers_data_z_score
 from crypto_scanner.services.z_score import (
-    calculate_large_z_score_matrix,
     calculate_z_score_history,
     format_z_score_matrix_response,
     calculate_z_score_matrix,
@@ -17,7 +17,7 @@ from crypto_scanner.constants import (
     test_socket_symbols,
 )
 
-r = redis.Redis(host="redis", port=6379, decode_responses=True)
+r = redis.Redis(host="redis")
 
 
 @csrf_exempt
@@ -32,14 +32,13 @@ def get_large_z_score_matrix(request):
     if x_axis is None or y_axis is None or tf is None:
         return JsonResponse(invalid_params_error, status=400)
 
-    response = cache.get(f"z_score_matrix_large_{tf}")
-
-    if response is None:
-        calculate_large_z_score_matrix()
-        response = cache.get(f"z_score_matrix_large_{tf}")
+    z_scores = msgpack.unpackb(r.execute_command("GET", f"z_score_matrix_large_{tf}"))
 
     response = format_z_score_matrix_response(
-        response, test_socket_symbols, x_axis, y_axis, 2
+        z_scores,
+        test_socket_symbols,
+        x_axis,
+        y_axis,
     )
 
     return JsonResponse(response, safe=False)
@@ -63,7 +62,7 @@ def get_z_score_matrix(request):
             response = calculate_z_score_matrix(duration)
             cache.set(f"z_score_{duration}", response)
 
-        response = format_z_score_matrix_response(response, tickers, x_axis, y_axis, 2)
+        response = format_z_score_matrix_response(response, tickers, x_axis, y_axis)
 
         return JsonResponse(response, safe=False)
 
