@@ -15,25 +15,13 @@ from crypto_scanner.constants import (
 from crypto_scanner.api import (
     z_score,
 )
-from crypto_scanner.services.correlations import calculate_pearson_correlation_high_tf
+
 from crypto_scanner.utils import create_kline_object
 from crypto_scanner.models import BinanceSpotKline5m
 
 client = Client()
 
 r = redis.Redis(host="redis")
-
-
-@shared_task
-def calculate_options_pearson_correlation(htf=False):
-    time.sleep(20)
-    durations = stats_select_options_htf if htf else stats_select_options_ltf
-
-    for duration in durations.keys():
-        cache.set(
-            f"pearson_correlation_{duration}",
-            calculate_pearson_correlation_high_tf(duration),
-        )
 
 
 @shared_task

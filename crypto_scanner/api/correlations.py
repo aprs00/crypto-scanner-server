@@ -1,5 +1,4 @@
 from django.http import HttpResponse, JsonResponse
-from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt
 
 import redis
@@ -12,13 +11,13 @@ from crypto_scanner.constants import (
     redis_ts_data_types,
     large_correlations_timeframes,
     large_correlation_types,
+    tickers,
+    stats_select_options_all,
 )
-from crypto_scanner.services.correlations import (
-    calculate_pearson_correlation_high_tf,
-)
+from crypto_scanner.utils import convert_timeframe_to_seconds
 
 
-r = redis.Redis(host="redis", port=6379)
+r = redis.Redis(host="redis")
 
 
 @csrf_exempt
@@ -32,14 +31,14 @@ def get_large_pearson_correlation(request):
     if tf not in large_correlations_timeframes or data_type not in redis_ts_data_types:
         return JsonResponse(invalid_params_error, status=400)
 
+    tf = convert_timeframe_to_seconds(tf)
+
     pearson_correlations = msgpack.unpackb(
-        r.execute_command("GET", f"pearson_correlation_large_{data_type}_{tf}")
+        r.execute_command("GET", f"pearson:{data_type}:{tf}:REDIS")
     )
 
     spearman_correlations = (
-        msgpack.unpackb(
-            r.execute_command("GET", f"spearman_correlation_large_{data_type}_{tf}")
-        )
+        msgpack.unpackb(r.execute_command("GET", f"spearman:{data_type}:{tf}:REDIS"))
         if "spearman" in large_correlation_types
         else []
     )
@@ -65,10 +64,24 @@ def get_pearson_correlation(request):
     if tf is None:
         return JsonResponse(invalid_params_error, status=400)
 
-    response = cache.get(f"pearson_correlation_{tf}")
+    tf = stats_select_options_all[tf]
 
-    if response is None:
-        response = calculate_pearson_correlation_high_tf(tf)
-        cache.set(f"pearson_correlation_{tf}", response)
+    formatted_tickers = [ticker[:-4] for ticker in tickers]
+
+    pearson_correlations = msgpack.unpackb(
+        r.execute_command("GET", f"pearson:price:{tf}:DB")
+    )
+
+    spearman_correlations = (
+        msgpack.unpackb(r.execute_command("GET", f"spearman:price:{tf}:DB"))
+        if "spearman" in large_correlation_types
+        else []
+    )
+
+    response = {
+        "xAxis": formatted_tickers,
+        "yAxis": formatted_tickers,
+        "data": pearson_correlations + spearman_correlations,
+    }
 
     return JsonResponse(response, safe=False)
