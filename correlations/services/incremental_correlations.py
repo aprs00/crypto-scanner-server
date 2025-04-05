@@ -127,8 +127,6 @@ def get_symbol_data(data_type, symbols, data_origin):
 
             return result
 
-    return {}
-
 
 def update_correlations(
     incremental_correlations,
@@ -214,9 +212,6 @@ def initialize_incremental_correlations():
     )
     db_timeframes = stats_select_options_all.values()
 
-    # redis_timeframes = [300]
-    # db_timeframes = [4, 12]
-
     redis_correlations = initialize_correlation_objects(
         test_socket_symbols, "REDIS", redis_timeframes
     )
@@ -230,12 +225,18 @@ def initialize_incremental_correlations():
             print("MESSAGE", message["channel"])
             if message["channel"] == b"test_socket_symbols_stored":
                 handle_redis_pubsub_message(
-                    "REDIS", redis_correlations, redis_timeframes, test_socket_symbols
+                    data_origin="REDIS",
+                    correlations=redis_correlations,
+                    timeframes=redis_timeframes,
+                    symbols=test_socket_symbols,
                 )
 
             elif message["channel"] == b"klines_fetched":
                 handle_redis_pubsub_message(
-                    "DB", db_correlations, db_timeframes, tickers
+                    data_origin="DB",
+                    correlations=db_correlations,
+                    timeframes=db_timeframes,
+                    symbols=tickers,
                 )
 
         print("DONE")
@@ -244,30 +245,33 @@ def initialize_incremental_correlations():
 def handle_redis_pubsub_message(data_origin, correlations, timeframes, symbols):
     set_pipeline = r.pipeline()
 
-    for correlation_type in large_correlation_types:
-        for timeframe in timeframes:
-            for data_type in redis_ts_data_types:
-                latest_data = get_symbol_data(
-                    data_type=data_type, symbols=symbols, data_origin=data_origin
-                )
+    for data_type in redis_ts_data_types:
+        latest_data = get_symbol_data(
+            data_type=data_type, symbols=symbols, data_origin=data_origin
+        )
 
+        if not latest_data:
+            continue
+
+        for timeframe in timeframes:
+            for correlation_type in large_correlation_types:
                 update_correlations(
-                    correlations,
-                    correlation_type,
-                    data_origin,
-                    timeframe,
-                    data_type,
-                    latest_data,
-                    symbols,
+                    incremental_correlations=correlations,
+                    correlation_type=correlation_type,
+                    data_origin=data_origin,
+                    timeframe=timeframe,
+                    data_type=data_type,
+                    symbol_data=latest_data,
+                    symbols=symbols,
                 )
 
                 correlation_matrix = create_correlation_matrix(
-                    correlation_type,
-                    data_origin,
-                    timeframe,
-                    data_type,
-                    correlations,
-                    symbols,
+                    correlation_type=correlation_type,
+                    data_origin=data_origin,
+                    timeframe=timeframe,
+                    data_type=data_type,
+                    incremental_correlations=correlations,
+                    symbols=symbols,
                 )
 
                 set_pipeline.execute_command(
