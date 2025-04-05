@@ -1,6 +1,8 @@
 import redis
 import msgpack
+import time
 from itertools import combinations
+import concurrent.futures
 
 from crypto_scanner.models import BinanceSpotKline5m
 from correlations.models.pearson import IncrementalPearsonCorrelation
@@ -38,7 +40,7 @@ def initialize_correlation_objects(symbols, data_origin, timeframes):
             match data_origin:
                 case "DB":
                     symbol_data = get_tickers_data(
-                        duration_hours=tf, data_type=data_type
+                        duration_hours=tf, data_type=data_type, symbols=tickers
                     )
                     window_size = tf * 12
                 case "REDIS":
@@ -212,10 +214,17 @@ def initialize_incremental_correlations():
     )
     db_timeframes = stats_select_options_all.values()
 
-    redis_correlations = initialize_correlation_objects(
-        test_socket_symbols, "REDIS", redis_timeframes
-    )
-    db_correlations = initialize_correlation_objects(tickers, "DB", db_timeframes)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        redis_correlations = executor.submit(
+            initialize_correlation_objects,
+            test_socket_symbols,
+            "REDIS",
+            redis_timeframes,
+        ).result()
+
+        db_correlations = executor.submit(
+            initialize_correlation_objects, tickers, "DB", db_timeframes
+        ).result()
 
     pubsub = r.pubsub()
     pubsub.subscribe("test_socket_symbols_stored", "klines_fetched")

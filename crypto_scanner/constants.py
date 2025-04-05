@@ -22,7 +22,7 @@ stats_select_options_all = {**stats_select_options_ltf, **stats_select_options_h
 
 large_correlations_timeframes = ["5m", "15m", "30m", "1h", "4h"]
 
-redis_time_series_retention = str(65 * 60 * 1000)  # 65 minutes
+redis_time_series_retention = str(4 * 60 * 60 * 1000)  # 4h in milisecond
 
 redis_ts_data_types = ["price", "volume", "trades"]
 

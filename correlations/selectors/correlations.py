@@ -8,15 +8,12 @@ from django.db.models import FloatField
 from django.db.models.functions import Cast
 
 from correlations.utils import get_min_length
-from crypto_scanner.constants import (
-    tickers,
-)
 from crypto_scanner.models import BinanceSpotKline5m
 
 r = redis.Redis(host="redis")
 
 
-def get_tickers_data(duration_hours, data_type):
+def get_tickers_data(duration_hours, data_type, symbols):
     """
     Get historical ticker data from the database.
 
@@ -25,7 +22,7 @@ def get_tickers_data(duration_hours, data_type):
         data_type: The type of data to retrieve (price, volume, trades)
 
     Returns:
-        Dict mapping tickers to their historical data
+        Dict mapping symbols to their historical data
     """
     field_mapping = {
         "price": "close",
@@ -45,7 +42,7 @@ def get_tickers_data(duration_hours, data_type):
     # Get all data in a single query
     all_data = (
         BinanceSpotKline5m.objects.filter(
-            ticker__in=tickers,
+            ticker__in=symbols,
             start_time__gte=start_time_utc,
             start_time__lte=end_time_utc,
         )
@@ -55,14 +52,14 @@ def get_tickers_data(duration_hours, data_type):
     )
 
     # Process the results and organize by ticker
-    query_tickers_data = {ticker: [] for ticker in tickers}
+    query_tickers_data = {ticker: [] for ticker in symbols}
     for item in all_data:
         ticker = item["ticker"]
         if ticker in query_tickers_data:
             query_tickers_data[ticker].append(item[annotated_field])
 
-    # Ensure all tickers have the same length of data
-    query_tickers_data = get_min_length(query_tickers_data, tickers)
+    # Ensure all symbols have the same length of data
+    query_tickers_data = get_min_length(query_tickers_data, symbols)
     query_tickers_data = {k: np.array(v) for k, v in query_tickers_data.items()}
 
     return query_tickers_data
