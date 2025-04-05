@@ -213,9 +213,11 @@ def initialize_incremental_correlations():
     db_timeframes = stats_select_options_all.values()
 
     redis_correlations = initialize_correlation_objects(
-        test_socket_symbols, "REDIS", redis_timeframes
+        symbols=test_socket_symbols, data_origin="REDIS", timeframes=redis_timeframes
     )
-    db_correlations = initialize_correlation_objects(tickers, "DB", db_timeframes)
+    db_correlations = initialize_correlation_objects(
+        symbols=tickers, data_origin="DB", timeframes=db_timeframes
+    )
 
     pubsub = r.pubsub()
     pubsub.subscribe("test_socket_symbols_stored", "klines_fetched")
