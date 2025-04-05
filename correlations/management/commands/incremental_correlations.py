@@ -1,10 +1,12 @@
 from django.core.management.base import BaseCommand
-from correlations.services.rolling_correlations import initialize_rolling_correlations
+from correlations.services.incremental_correlations import (
+    initialize_incremental_correlations,
+)
 
 
 class Command(BaseCommand):
-    help = "Runs the rolling correlations calculations"
+    help = "Runs the incremental correlations calculations"
 
     def handle(self, *args, **options):
         self.stdout.write(self.style.SUCCESS("Starting correlations calculations..."))
-        initialize_rolling_correlations()
+        initialize_incremental_correlations()

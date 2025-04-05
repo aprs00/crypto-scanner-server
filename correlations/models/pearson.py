@@ -2,9 +2,9 @@ import numpy as np
 from collections import deque
 
 
-class RollingPearsonCorrelation:
+class IncrementalPearsonCorrelation:
     """
-    Calculates Pearson correlation coefficient over a rolling window of data points.
+    Calculates Pearson correlation coefficient over a incremental window of data points.
     """
 
     def __init__(self, window_size, x_initial=None, y_initial=None):

@@ -13,9 +13,9 @@ from crypto_scanner.utils import convert_timeframe_to_seconds
 r = redis.Redis(host="redis")
 
 
-class RollingZScore:
+class IncrementalZScore:
     """
-    Calculates Z-score over a rolling window of data points.
+    Calculates Z-score over a incremental window of data points.
     Z-score = (current_value - mean) / standard_deviation
     """
 
@@ -64,9 +64,9 @@ class RollingZScore:
 
 
 def initialize_z_score_objects(symbols, timeframes, data_types):
-    """Initialize rolling Z-score objects for all combinations of timeframes, data types, and symbols."""
+    """Initialize incremental Z-score objects for all combinations of timeframes, data types, and symbols."""
     return {
-        (tf, data_type, symbol): RollingZScore(convert_timeframe_to_seconds(tf))
+        (tf, data_type, symbol): IncrementalZScore(convert_timeframe_to_seconds(tf))
         for tf in timeframes
         for data_type in data_types
         for symbol in symbols
@@ -84,15 +84,15 @@ def get_symbol_data(data_type, symbols):
     return {symbol: result for symbol, result in zip(symbols, results) if result}
 
 
-def update_z_scores(rolling_z_scores, timeframe, data_type, symbol_data):
-    """Update rolling Z-scores with the latest data points."""
+def update_z_scores(incremental_zscores, timeframe, data_type, symbol_data):
+    """Update incremental Z-scores with the latest data points."""
     for symbol, value_data in symbol_data.items():
         if value_data:
             value = float(value_data[1])
-            rolling_z_scores[(timeframe, data_type, symbol)].add_data_point(value)
+            incremental_zscores[(timeframe, data_type, symbol)].add_data_point(value)
 
 
-def create_z_score_matrix(timeframe, data_type, rolling_z_scores, symbols):
+def create_z_score_matrix(timeframe, data_type, incremental_zscores, symbols):
     """
     Creates a Z-score matrix for all symbols.
 
@@ -100,16 +100,18 @@ def create_z_score_matrix(timeframe, data_type, rolling_z_scores, symbols):
         Dictionary with symbols as keys and their Z-scores as values
     """
     return {
-        symbol: round(rolling_z_scores[(timeframe, data_type, symbol)].get_z_score(), 2)
+        symbol: round(
+            incremental_zscores[(timeframe, data_type, symbol)].get_z_score(), 2
+        )
         for symbol in symbols
     }
 
 
-def initialize_rolling_z_score():
+def initialize_incremental_zscore():
     """
     Calculate and cache Z-scores for all combinations of timeframes, data types, and symbols.
     """
-    rolling_z_scores = initialize_z_score_objects(
+    incremental_zscores = initialize_z_score_objects(
         test_socket_symbols, large_correlations_timeframes, redis_ts_data_types
     )
 
@@ -126,10 +128,12 @@ def initialize_rolling_z_score():
                 for data_type in redis_ts_data_types:
                     symbol_data = get_symbol_data(data_type, test_socket_symbols)
 
-                    update_z_scores(rolling_z_scores, timeframe, data_type, symbol_data)
+                    update_z_scores(
+                        incremental_zscores, timeframe, data_type, symbol_data
+                    )
 
                     z_score_matrix = create_z_score_matrix(
-                        timeframe, data_type, rolling_z_scores, test_socket_symbols
+                        timeframe, data_type, incremental_zscores, test_socket_symbols
                     )
 
                     for symbol, z_score in z_score_matrix.items():

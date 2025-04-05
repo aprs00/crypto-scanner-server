@@ -99,7 +99,7 @@ services:
     correlations:
         container_name: cs-correlations
         build: .
-        command: python manage.py rolling_correlations
+        command: python manage.py incremental_correlations
         volumes:
             - .:/code
         depends_on:
@@ -114,7 +114,7 @@ services:
     zscore:
         container_name: cs-zscore
         build: .
-        command: python manage.py rolling_zscore
+        command: python manage.py incremental_zscore
         volumes:
             - .:/code
         environment:
@@ -133,7 +133,7 @@ services:
     exchange-connections:
         container_name: cs-exchange-connections
         build: .
-        command: python manage.py start_binance_klines
+        command: python manage.py klines
         volumes:
             - .:/code
         environment:

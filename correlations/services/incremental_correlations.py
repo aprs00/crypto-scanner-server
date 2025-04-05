@@ -1,13 +1,10 @@
 import redis
 import msgpack
 from itertools import combinations
-from django.utils import timezone
-import numpy as np
-import time
 
 from crypto_scanner.models import BinanceSpotKline5m
-from correlations.models.pearson import RollingPearsonCorrelation
-from correlations.models.spearman import RollingSpearmanCorrelation
+from correlations.models.pearson import IncrementalPearsonCorrelation
+from correlations.models.spearman import IncrementalSpearmanCorrelation
 from correlations.selectors.correlations import (
     get_tickers_data,
     extract_time_series_data,
@@ -28,12 +25,12 @@ last_end_time_tickers = {}
 
 
 def initialize_correlation_objects(symbols, data_origin, timeframes):
-    """Initialize rolling correlation objects for all combinations of timeframes, data types, and symbol pairs."""
+    """Initialize incremental correlation objects for all combinations of timeframes, data types, and symbol pairs."""
     correlations = {}
 
-    rolling_correlation_models = {
-        "pearson": RollingPearsonCorrelation,
-        "spearman": RollingSpearmanCorrelation,
+    incremental_correlation_models = {
+        "pearson": IncrementalPearsonCorrelation,
+        "spearman": IncrementalSpearmanCorrelation,
     }
 
     for tf in timeframes:
@@ -62,7 +59,7 @@ def initialize_correlation_objects(symbols, data_origin, timeframes):
                     symbol_a_data = symbol_data[symbol_a]
                     symbol_b_data = symbol_data[symbol_b]
 
-                    correlations[dict_tuple] = rolling_correlation_models[
+                    correlations[dict_tuple] = incremental_correlation_models[
                         correlation_type
                     ](
                         window_size=window_size,
@@ -134,7 +131,7 @@ def get_symbol_data(data_type, symbols, data_origin):
 
 
 def update_correlations(
-    rolling_correlations,
+    incremental_correlations,
     correlation_type,
     data_origin,
     timeframe,
@@ -142,7 +139,7 @@ def update_correlations(
     symbol_data,
     symbols,
 ):
-    """Update rolling correlations with the latest data points."""
+    """Update incremental correlations with the latest data points."""
     for symbol_a, symbol_b in combinations(symbols, 2):
         value_data_a = symbol_data.get(symbol_a)
         value_data_b = symbol_data.get(symbol_b)
@@ -151,7 +148,7 @@ def update_correlations(
             value_a = float(value_data_a[1])
             value_b = float(value_data_b[1])
 
-            rolling_correlations[
+            incremental_correlations[
                 (
                     correlation_type,
                     timeframe,
@@ -168,23 +165,23 @@ def create_correlation_matrix(
     data_origin,
     timeframe,
     data_type,
-    rolling_correlations,
+    incremental_correlations,
     symbols,
 ):
     """
-    Creates a correlation matrix from rolling correlation objects and converts it to a matrix representation.
+    Creates a correlation matrix from incremental correlation objects and converts it to a matrix representation.
 
     Args:
         timeframe: The timeframe for the correlations
         data_type: The type of data being correlated
-        rolling_correlations: Dictionary containing RollingPearsonCorrelation objects
+        incremental_correlations: Dictionary containing IncrementalPearsonCorrelation objects
         symbols: List of symbols defining the matrix dimensions
 
     Returns:
         List of [i, j, value] entries representing the specified triangle of the correlation matrix
     """
     correlations = {
-        (symbol_a, symbol_b): rolling_correlations[
+        (symbol_a, symbol_b): incremental_correlations[
             (correlation_type, timeframe, data_origin, data_type, symbol_a, symbol_b)
         ]
         for symbol_a, symbol_b in combinations(symbols, 2)
@@ -206,7 +203,7 @@ def create_correlation_matrix(
     ]
 
 
-def initialize_rolling_correlations():
+def initialize_incremental_correlations():
     """
     Calculate and cache large correlations for all combinations of correlation types,
     timeframes, and data types.

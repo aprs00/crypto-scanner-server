@@ -2,9 +2,9 @@ from collections import deque
 from sortedcontainers import SortedList
 
 
-class RollingSpearmanCorrelation:
+class IncrementalSpearmanCorrelation:
     """
-    Calculates Spearman correlation coefficient over a rolling window of data points.
+    Calculates Spearman correlation coefficient over a incremental window of data points.
     """
 
     def __init__(self, window_size):
