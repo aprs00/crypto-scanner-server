@@ -96,19 +96,53 @@ services:
                 max-size: "10m"
                 max-file: "3"
 
-    grafana:
-        container_name: cs-grafana
-        image: grafana/grafana-enterprise
-        ports:
-            - "3000:3000"
-        environment:
-            - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
-            - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
-            - GF_SERVER_ROOT_URL=https://grafana.crypto-scanner.xyz/
-            - GF_INSTALL_PLUGINS=grafana-clock-panel
-        restart: unless-stopped
+    correlations:
+        container_name: cs-correlations
+        build: .
+        command: python manage.py incremental_correlations
         volumes:
-            - grafana-storage:/var/lib/grafana
+            - .:/code
+        depends_on:
+            - db
+            - redis
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "10m"
+                max-file: "3"
+
+    zscore:
+        container_name: cs-zscore
+        build: .
+        command: python manage.py incremental_zscore
+        volumes:
+            - .:/code
+        environment:
+            - POSTGRES_NAME=${POSTGRES_NAME}
+            - POSTGRES_USER=${POSTGRES_USER}
+            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+        depends_on:
+            - db
+            - redis
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "10m"
+                max-file: "3"
+
+    exchange-connections:
+        container_name: cs-exchange-connections
+        build: .
+        command: python manage.py klines
+        volumes:
+            - .:/code
+        environment:
+            - POSTGRES_NAME=${POSTGRES_NAME}
+            - POSTGRES_USER=${POSTGRES_USER}
+            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+        depends_on:
+            - db
+            - redis
         logging:
             driver: "json-file"
             options:
@@ -116,5 +150,4 @@ services:
                 max-file: "3"
 
 volumes:
-    grafana-storage: {}
     pgdata:

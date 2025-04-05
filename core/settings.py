@@ -47,6 +47,8 @@ INSTALLED_APPS = [
     "corsheaders",
     "crypto_scanner",
     "exchange_connections",
+    "correlations",
+    "zscore",
     "rest_framework",
 ]
 
@@ -184,36 +186,36 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="*", hour="*"),
         "args": (4,),
     },
-    "calculate-pearson-correlations": {
-        "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
-        "schedule": crontab(minute="*", hour="*"),
-    },
-    "calculate-pearson-correlations-htf": {
-        "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
-        "schedule": crontab(minute="*/5", hour="*"),
-        "args": (True,),
-    },
-    "calculate-z-scores": {
-        "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-        "schedule": crontab(minute="*", hour="*"),
-    },
-    "calculate-z-scores-htf": {
-        "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-        "schedule": crontab(minute="*/5", hour="*"),
-        "args": (True,),
-    },
-    "calculate-z-score-history": {
-        "task": "crypto_scanner.tasks.calculate_z_score_history",
-        "schedule": crontab(minute="*", hour="*"),
-    },
-    "calculate-large-pearson-correlations": {
-        "task": "crypto_scanner.tasks.calculate_all_large_correlations",
-        "schedule": timedelta(seconds=10),
-    },
-    "calculate-large-z-score-matrix": {
-        "task": "crypto_scanner.tasks.calculate_options_large_z_score_matrix",
-        "schedule": timedelta(seconds=10),
-    },
+    # "calculate-pearson-correlations": {
+    #     "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
+    #     "schedule": crontab(minute="*", hour="*"),
+    # },
+    # "calculate-pearson-correlations-htf": {
+    #     "task": "crypto_scanner.tasks.calculate_options_pearson_correlation",
+    #     "schedule": crontab(minute="*/5", hour="*"),
+    #     "args": (True,),
+    # },
+    # "calculate-z-scores": {
+    #     "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
+    #     "schedule": crontab(minute="*", hour="*"),
+    # },
+    # "calculate-z-scores-htf": {
+    #     "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
+    #     "schedule": crontab(minute="*/5", hour="*"),
+    #     "args": (True,),
+    # },
+    # "calculate-z-score-history": {
+    #     "task": "crypto_scanner.tasks.calculate_z_score_history",
+    #     "schedule": crontab(minute="*", hour="*"),
+    # },
+    # "calculate-large-pearson-correlations": {
+    #     "task": "crypto_scanner.tasks.calculate_all_large_correlations",
+    #     "schedule": timedelta(seconds=10),
+    # },
+    # "calculate-large-z-score-matrix": {
+    #     "task": "crypto_scanner.tasks.calculate_options_large_z_score_matrix",
+    #     "schedule": timedelta(seconds=10),
+    # },
 }
 
 CORS_ALLOW_ALL_ORIGINS = False

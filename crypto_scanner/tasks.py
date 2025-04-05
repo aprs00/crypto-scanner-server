@@ -9,53 +9,19 @@ import redis
 
 from crypto_scanner.constants import (
     tickers,
-    test_socket_symbols,
     stats_select_options_htf,
     stats_select_options_ltf,
-    large_correlations_timeframes,
-    redis_ts_data_types,
-    large_correlation_types,
 )
 from crypto_scanner.api import (
-    correlations,
     z_score,
 )
-from crypto_scanner.services.correlations import calculate_pearson_correlation_high_tf
+
 from crypto_scanner.utils import create_kline_object
 from crypto_scanner.models import BinanceSpotKline5m
 
 client = Client()
 
-r = redis.Redis(host="redis", port=6379, decode_responses=True)
-
-
-@shared_task
-def calculate_all_large_correlations():
-    for correlation_type in large_correlation_types:
-        for tf in large_correlations_timeframes:
-            for data_type in redis_ts_data_types:
-                cache.set(
-                    f"{correlation_type}_correlation_large_{data_type}_{tf}",
-                    correlations.format_large_pearson_response(
-                        tf,
-                        data_type,
-                        correlation_type,
-                        test_socket_symbols,
-                        correlation_type == "pearson",
-                    ),
-                )
-
-
-@shared_task
-def calculate_options_pearson_correlation(htf=False):
-    time.sleep(20)
-    durations = stats_select_options_htf if htf else stats_select_options_ltf
-
-    for duration in durations.keys():
-        cache.set(
-            f"pearson_correlation_{duration}",
-            calculate_pearson_correlation_high_tf(duration),
-        )
+r = redis.Redis(host="redis")
 
 
 @shared_task
@@ -65,11 +31,6 @@ def calculate_options_z_score_matrix(htf=False):
 
     for duration in durations:
         cache.set(f"z_score_{duration}", z_score.calculate_z_score_matrix(duration))
-
-
-@shared_task
-def calculate_options_large_z_score_matrix():
-    z_score.calculate_large_z_score_matrix()
 
 
 @shared_task
@@ -101,3 +62,5 @@ def fetch_all_klines(limit=25):
                 pass
 
         time.sleep(1)
+
+    r.publish("klines_fetched", "")
