@@ -37,11 +37,6 @@ class RedisManager:
                 f"1s:trades:{symbol} {timestamp} {num_of_trades}"
             )
 
-            self.r.publish(
-                "symbol_data_updates",
-                f"{symbol}:{timestamp}:{price}:{quote_volume}:{num_of_trades}",
-            )
-
             if should_store:
                 self.pipeline.execute()
                 self.r.publish("test_socket_symbols_stored", "")
