@@ -1,3 +1,5 @@
+import os
+
 stats_select_options_htf = {
     "1w": 7 * 24,
     "2w": 14 * 24,
@@ -30,6 +32,14 @@ large_correlation_types = ["pearson"]
 invalid_params_error = {
     "error": "Invalid parameters",
     "code": "INVALID_PARAMS",
+}
+
+db_config = {
+    "host": os.getenv("POSTGRES_HOST"),
+    "dbname": os.getenv("POSTGRES_NAME"),
+    "user": os.getenv("POSTGRES_USER"),
+    "password": os.getenv("POSTGRES_PASSWORD"),
+    "port": os.getenv("POSTGRES_PORT"),
 }
 
 test_socket_symbols = [
