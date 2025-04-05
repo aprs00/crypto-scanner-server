@@ -23,7 +23,7 @@ from crypto_scanner.constants import (
 
 r = redis.Redis(host="redis")
 
-last_end_time_tickers = {}
+last_end_time_tickers = {symbol: None for symbol in test_socket_symbols}
 
 
 def initialize_correlation_objects(symbols, data_origin, timeframes):
@@ -94,7 +94,7 @@ def get_symbol_data(data_type, symbols, data_origin):
             results = pipeline.execute()
 
             return {
-                symbol: result for symbol, result in zip(symbols, results) if result
+                symbol: result[1] for symbol, result in zip(symbols, results) if result
             }
 
         case "DB":
@@ -107,13 +107,7 @@ def get_symbol_data(data_type, symbols, data_origin):
                     .first()
                 )
 
-                if symbol not in last_end_time_tickers:
-                    last_end_time_tickers[symbol] = None
-
-                if (
-                    latest_kline
-                    and last_end_time_tickers[symbol] != latest_kline.end_time
-                ):
+                if last_end_time_tickers[symbol] != latest_kline.end_time:
                     last_end_time_tickers[symbol] = latest_kline.end_time
 
                     match data_type:
@@ -124,8 +118,7 @@ def get_symbol_data(data_type, symbols, data_origin):
                         case "trades":
                             value = float(latest_kline.number_of_trades)
 
-                    timestamp = int(latest_kline.end_time.timestamp() * 1000)
-                    result[symbol] = [timestamp, value]
+                    result[symbol] = value
 
             return result
 
@@ -145,9 +138,6 @@ def update_correlations(
         value_data_b = symbol_data.get(symbol_b)
 
         if value_data_a and value_data_b:
-            value_a = float(value_data_a[1])
-            value_b = float(value_data_b[1])
-
             incremental_correlations[
                 (
                     correlation_type,
@@ -157,7 +147,7 @@ def update_correlations(
                     symbol_a,
                     symbol_b,
                 )
-            ].add_data_point(value_a, value_b)
+            ].add_data_point(float(value_data_a), float(value_data_b))
 
 
 def create_correlation_matrix(

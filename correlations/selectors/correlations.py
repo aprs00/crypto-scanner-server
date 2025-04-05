@@ -36,29 +36,23 @@ def get_tickers_data(duration_hours, data_type, symbols):
     end_time = timezone.now()
     start_time = end_time - timedelta(hours=duration_hours)
 
-    start_time_utc = start_time.astimezone(timezone.utc)
-    end_time_utc = end_time.astimezone(timezone.utc)
-
-    # Get all data in a single query
     all_data = (
         BinanceSpotKline5m.objects.filter(
             ticker__in=symbols,
-            start_time__gte=start_time_utc,
-            start_time__lte=end_time_utc,
+            start_time__gte=start_time.astimezone(timezone.utc),
+            start_time__lte=end_time.astimezone(timezone.utc),
         )
         .annotate(**{annotated_field: Cast(field_name, FloatField())})
         .values("ticker", "start_time", annotated_field)
         .order_by("ticker", "start_time")
     )
 
-    # Process the results and organize by ticker
     query_tickers_data = {ticker: [] for ticker in symbols}
     for item in all_data:
         ticker = item["ticker"]
         if ticker in query_tickers_data:
             query_tickers_data[ticker].append(item[annotated_field])
 
-    # Ensure all symbols have the same length of data
     query_tickers_data = get_min_length(query_tickers_data, symbols)
     query_tickers_data = {k: np.array(v) for k, v in query_tickers_data.items()}
 
