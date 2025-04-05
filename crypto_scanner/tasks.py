@@ -26,7 +26,7 @@ r = redis.Redis(host="redis")
 
 @shared_task
 def calculate_options_z_score_matrix(htf=False):
-    time.sleep(30)
+    time.sleep(50)
     durations = stats_select_options_htf if htf else stats_select_options_ltf
 
     for duration in durations:
@@ -61,6 +61,6 @@ def fetch_all_klines(limit=25):
                 print("IntegrityError:", str(e))
                 pass
 
-        time.sleep(1)
+        time.sleep(2)
 
     r.publish("klines_fetched", "")
