@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "exchange_connections",
     "correlations",
     "zscore",
+    "filters",
     "rest_framework",
 ]
 
@@ -182,7 +183,7 @@ CELERY_TIMEZONE = "UTC"
 
 CELERY_BEAT_SCHEDULE = {
     "fetch-all-1m-klines": {
-        "task": "crypto_scanner.tasks.fetch_all_klines",
+        "task": "exchange_connections.tasks.fetch_all_klines",
         "schedule": crontab(minute="*/2", hour="*"),
         "args": (4,),
     },

@@ -4,4 +4,5 @@ urlpatterns = [
     path("", include("crypto_scanner.urls")),
     path("", include("correlations.urls")),
     path("", include("zscore.urls")),
+    path("", include("filters.urls")),
 ]

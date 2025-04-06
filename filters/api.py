@@ -10,7 +10,7 @@ from crypto_scanner.constants import (
     redis_ts_data_types,
     large_correlations_timeframes,
 )
-from crypto_scanner.utils import format_options
+from filters.utils import format_options
 
 
 @csrf_exempt

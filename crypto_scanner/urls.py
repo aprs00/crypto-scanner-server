@@ -2,15 +2,10 @@ from django.urls import path
 
 from crypto_scanner.api import (
     average_price,
-    options,
 )
 
 
 urlpatterns = [
-    path("stats-select-options", options.get_stats_select_options),
-    path("tickers-options", options.get_tickers_options),
-    path("pearson-type-options", options.get_large_pearson_types),
-    path("pearson-time-frame-options", options.get_large_pearson_timeframes),
     path(
         "average-prices",
         average_price.get_average_prices,
