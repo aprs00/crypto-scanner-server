@@ -1,4 +1,4 @@
-from crypto_scanner.models import BinanceSpotKline5m
+from exchange_connections.models import BinanceSpotKline5m
 
 
 def get_market_data(symbol, start_time_utc, group_by):

@@ -1,12 +1,12 @@
 from django.db.models import F, CharField, Func, Value
-from crypto_scanner.models import ZScoreHistorical
+from zscore.models import ZScoreHistorical
 
 from django.utils import timezone
 from datetime import timedelta
 
 import redis
 
-from crypto_scanner.models import BinanceSpotKline5m
+from exchange_connections.models import BinanceSpotKline5m
 
 from utils.lists import get_min_length
 from crypto_scanner.constants import (

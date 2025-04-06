@@ -10,8 +10,8 @@ from crypto_scanner.constants import (
     tickers,
 )
 
-from crypto_scanner.utils import create_kline_object
-from crypto_scanner.models import BinanceSpotKline5m
+from exchange_connections.utils import create_kline_object
+from exchange_connections.models import BinanceSpotKline5m
 
 client = Client()
 

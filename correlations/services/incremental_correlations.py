@@ -1,10 +1,9 @@
 import redis
 import msgpack
-import time
 from itertools import combinations
 import concurrent.futures
 
-from crypto_scanner.models import BinanceSpotKline5m
+from exchange_connections.models import BinanceSpotKline5m
 from correlations.models.pearson import IncrementalPearsonCorrelation
 from correlations.models.spearman import IncrementalSpearmanCorrelation
 from correlations.selectors.correlations import (
