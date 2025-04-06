@@ -105,6 +105,11 @@ services:
         depends_on:
             - db
             - redis
+        healthcheck:
+            test: ["CMD-SHELL", "pgrep -f incremental_correlations || exit 1"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
         logging:
             driver: "json-file"
             options:
@@ -124,6 +129,11 @@ services:
         depends_on:
             - db
             - redis
+        healthcheck:
+            test: ["CMD-SHELL", "pgrep -f incremental_zscore || exit 1"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
         logging:
             driver: "json-file"
             options:
@@ -143,6 +153,11 @@ services:
         depends_on:
             - db
             - redis
+        healthcheck:
+            test: ["CMD-SHELL", "pgrep -f klines || exit 1"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
         logging:
             driver: "json-file"
             options:

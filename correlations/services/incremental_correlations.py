@@ -1,5 +1,6 @@
 import redis
 import msgpack
+import time
 from itertools import combinations
 import concurrent.futures
 
@@ -194,54 +195,6 @@ def create_correlation_matrix(
     ]
 
 
-def initialize_incremental_correlations():
-    """
-    Calculate and cache large correlations for all combinations of correlation types,
-    timeframes, and data types.
-    """
-
-    redis_timeframes = list(
-        map(convert_timeframe_to_seconds, large_correlations_timeframes)
-    )
-    db_timeframes = stats_select_options_all.values()
-
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        redis_correlations = executor.submit(
-            initialize_correlation_objects,
-            test_socket_symbols,
-            "REDIS",
-            redis_timeframes,
-        ).result()
-
-        db_correlations = executor.submit(
-            initialize_correlation_objects, tickers, "DB", db_timeframes
-        ).result()
-
-    pubsub = r.pubsub()
-    pubsub.subscribe("test_socket_symbols_stored", "klines_fetched")
-
-    for message in pubsub.listen():
-        if message["type"] == "message":
-            print("MESSAGE", message["channel"])
-            if message["channel"] == b"test_socket_symbols_stored":
-                handle_redis_pubsub_message(
-                    data_origin="REDIS",
-                    correlations=redis_correlations,
-                    timeframes=redis_timeframes,
-                    symbols=test_socket_symbols,
-                )
-
-            elif message["channel"] == b"klines_fetched":
-                handle_redis_pubsub_message(
-                    data_origin="DB",
-                    correlations=db_correlations,
-                    timeframes=db_timeframes,
-                    symbols=tickers,
-                )
-
-        print("DONE")
-
-
 def handle_redis_pubsub_message(data_origin, correlations, timeframes, symbols):
     set_pipeline = r.pipeline()
 
@@ -281,3 +234,84 @@ def handle_redis_pubsub_message(data_origin, correlations, timeframes, symbols):
                 )
 
     set_pipeline.execute()
+
+
+def start_pubsub_listener(
+    redis_correlations, redis_timeframes, db_correlations, db_timeframes
+):
+    retries = 0
+
+    while True:
+        try:
+            print("Subscribing to Redis channels...")
+            pubsub = r.pubsub()
+            pubsub.subscribe("test_socket_symbols_stored", "klines_fetched")
+
+            for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+
+                print("MESSAGE", message["channel"])
+
+                if message["channel"] == b"test_socket_symbols_stored":
+                    handle_redis_pubsub_message(
+                        data_origin="REDIS",
+                        correlations=redis_correlations,
+                        timeframes=redis_timeframes,
+                        symbols=test_socket_symbols,
+                    )
+
+                elif message["channel"] == b"klines_fetched":
+                    handle_redis_pubsub_message(
+                        data_origin="DB",
+                        correlations=db_correlations,
+                        timeframes=db_timeframes,
+                        symbols=tickers,
+                    )
+
+                print("DONE")
+
+            retries = 0
+
+        except (redis.ConnectionError, redis.TimeoutError) as e:
+            retries += 1
+            wait = min(2**retries, 60)
+            print(
+                f"[Redis Listener] Disconnected from Redis: {e}. Retrying in {wait}s..."
+            )
+            time.sleep(wait)
+
+        except Exception as e:
+            print(f"[Redis Listener] Unexpected error: {e}")
+            time.sleep(5)
+
+
+def initialize_incremental_correlations():
+    """
+    Calculate and cache large correlations for all combinations of correlation types,
+    timeframes, and data types, and listen for Redis pubsub messages with reconnection logic.
+    """
+
+    redis_timeframes = list(
+        map(convert_timeframe_to_seconds, large_correlations_timeframes)
+    )
+    db_timeframes = stats_select_options_all.values()
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        redis_correlations = executor.submit(
+            initialize_correlation_objects,
+            test_socket_symbols,
+            "REDIS",
+            redis_timeframes,
+        ).result()
+
+        db_correlations = executor.submit(
+            initialize_correlation_objects, tickers, "DB", db_timeframes
+        ).result()
+
+    start_pubsub_listener(
+        redis_correlations=redis_correlations,
+        redis_timeframes=redis_timeframes,
+        db_correlations=db_correlations,
+        db_timeframes=db_timeframes,
+    )
