@@ -8,7 +8,7 @@ from crypto_scanner.constants import (
     large_correlations_timeframes,
     redis_ts_data_types,
 )
-from crypto_scanner.utils import convert_timeframe_to_seconds
+from utils.time import convert_timeframe_to_seconds
 
 r = redis.Redis(host="redis")
 

@@ -1,16 +1,13 @@
 from django.http import HttpResponse, JsonResponse
-from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt
 import redis
 import msgpack
 
-from crypto_scanner.selectors.z_score import get_all_tickers_data_z_score
-from crypto_scanner.services.z_score import (
-    calculate_z_score_history,
-    format_z_score_matrix_response,
-    calculate_z_score_matrix,
+from zscore.selectors.zscore import get_all_tickers_data_z_score
+from zscore.utils import (
     format_z_score_history_response,
 )
+from zscore.utils import format_z_score_matrix_response
 from crypto_scanner.constants import (
     tickers,
     invalid_params_error,
@@ -56,13 +53,9 @@ def get_z_score_matrix(request):
                 {"error": "Invalid axis", "code": "INVALID_AXIS"}, status=400
             )
 
-        response = cache.get(f"z_score_{duration}")
-
-        if response is None:
-            response = calculate_z_score_matrix(duration)
-            cache.set(f"z_score_{duration}", response)
-
-        response = format_z_score_matrix_response(response, tickers, x_axis, y_axis)
+        response = format_z_score_matrix_response(
+            r.execute_command("GET", f"z_score_{duration}"), tickers, x_axis, y_axis
+        )
 
         return JsonResponse(response, safe=False)
 
@@ -78,13 +71,9 @@ def get_z_score_history(request):
         if duration is None or type is None:
             return JsonResponse(invalid_params_error, status=400)
 
-        response = cache.get(f"z_score_history_{duration}")
-
-        if response is None:
-            response = calculate_z_score_history(duration)
-            cache.set(f"z_score_history_{duration}", response)
-
-        formatted_response = format_z_score_history_response(response, type)
+        formatted_response = format_z_score_history_response(
+            r.execute_command("GET", f"z_score_history_{duration}"), type
+        )
 
         response = {
             "legend": tickers,

@@ -8,7 +8,7 @@ import redis
 
 from crypto_scanner.models import BinanceSpotKline5m
 
-from crypto_scanner.utils import get_min_length
+from utils.lists import get_min_length
 from crypto_scanner.constants import (
     stats_select_options_all,
     tickers,

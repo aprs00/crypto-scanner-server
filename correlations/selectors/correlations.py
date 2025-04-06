@@ -7,7 +7,7 @@ from datetime import timedelta
 from django.db.models import FloatField
 from django.db.models.functions import Cast
 
-from correlations.utils import get_min_length
+from utils.lists import get_min_length
 from crypto_scanner.models import BinanceSpotKline5m
 
 r = redis.Redis(host="redis")

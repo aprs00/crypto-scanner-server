@@ -2,8 +2,6 @@ from django.urls import path
 
 from crypto_scanner.api import (
     average_price,
-    correlations,
-    z_score,
     options,
 )
 
@@ -17,35 +15,5 @@ urlpatterns = [
         "average-prices",
         average_price.get_average_prices,
         name="average-price-change-per-week",
-    ),
-    path(
-        "pearson-correlation",
-        correlations.get_pearson_correlation,
-        name="pearson-correlation",
-    ),
-    path(
-        "z-score-matrix",
-        z_score.get_z_score_matrix,
-        name="z-score-matrix",
-    ),
-    path(
-        "z-score-matrix-large",
-        z_score.get_large_z_score_matrix,
-        name="z-score-matrix-large",
-    ),
-    path(
-        "z-score-history",
-        z_score.get_z_score_history,
-        name="z-score-history",
-    ),
-    path(
-        "z-score-heatmap",
-        z_score.get_z_score_heatmap,
-        name="z-score-heatmap",
-    ),
-    path(
-        "large-pearson-correlation",
-        correlations.get_large_pearson_correlation,
-        name="large-pearson-correlation",
     ),
 ]

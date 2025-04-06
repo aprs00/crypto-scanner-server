@@ -14,7 +14,7 @@ from crypto_scanner.constants import (
     tickers,
     stats_select_options_all,
 )
-from crypto_scanner.utils import convert_timeframe_to_seconds
+from utils.time import convert_timeframe_to_seconds
 
 
 r = redis.Redis(host="redis")

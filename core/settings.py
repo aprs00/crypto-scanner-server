@@ -186,19 +186,6 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="*/2", hour="*"),
         "args": (4,),
     },
-    "calculate-z-scores": {
-        "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-        "schedule": crontab(minute="*", hour="*"),
-    },
-    "calculate-z-scores-htf": {
-        "task": "crypto_scanner.tasks.calculate_options_z_score_matrix",
-        "schedule": crontab(minute="*/5", hour="*"),
-        "args": (True,),
-    },
-    "calculate-z-score-history": {
-        "task": "crypto_scanner.tasks.calculate_z_score_history",
-        "schedule": crontab(minute="*", hour="*"),
-    },
 }
 
 CORS_ALLOW_ALL_ORIGINS = False

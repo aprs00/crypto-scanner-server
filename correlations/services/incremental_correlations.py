@@ -11,7 +11,7 @@ from correlations.selectors.correlations import (
     get_tickers_data,
     extract_time_series_data,
 )
-from crypto_scanner.utils import convert_timeframe_to_seconds
+from utils.time import convert_timeframe_to_seconds
 from crypto_scanner.constants import (
     test_socket_symbols,
     large_correlations_timeframes,
@@ -23,7 +23,7 @@ from crypto_scanner.constants import (
 
 r = redis.Redis(host="redis")
 
-last_end_time_tickers = {symbol: None for symbol in test_socket_symbols}
+last_end_time_tickers = {symbol: None for symbol in tickers}
 
 
 def initialize_correlation_objects(symbols, data_origin, timeframes):
