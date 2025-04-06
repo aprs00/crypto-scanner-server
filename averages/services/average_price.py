@@ -1,8 +1,8 @@
 from django.http import JsonResponse
 import numpy as np
 
-from crypto_scanner.constants import invalid_params_error
-from crypto_scanner.selectors.average_price import get_market_data
+from core.constants import invalid_params_error
+from averages.selectors.average_price import get_market_data
 
 
 def format_data(data):

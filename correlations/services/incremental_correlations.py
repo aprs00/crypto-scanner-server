@@ -11,13 +11,15 @@ from correlations.selectors.correlations import (
     extract_time_series_data,
 )
 from utils.time import convert_timeframe_to_seconds
-from crypto_scanner.constants import (
-    test_socket_symbols,
+from correlations.constants import (
     large_correlations_timeframes,
-    redis_ts_data_types,
     large_correlation_types,
-    stats_select_options_all,
+)
+from filters.constants import stats_select_options_all
+from exchange_connections.constants import (
+    test_socket_symbols,
     tickers,
+    redis_time_series_data_types,
 )
 
 r = redis.Redis(host="redis")
@@ -35,7 +37,7 @@ def initialize_correlation_objects(symbols, data_origin, timeframes):
     }
 
     for tf in timeframes:
-        for data_type in redis_ts_data_types:
+        for data_type in redis_time_series_data_types:
             match data_origin:
                 case "DB":
                     symbol_data = get_tickers_data(
@@ -243,7 +245,7 @@ def initialize_incremental_correlations():
 def handle_redis_pubsub_message(data_origin, correlations, timeframes, symbols):
     set_pipeline = r.pipeline()
 
-    for data_type in redis_ts_data_types:
+    for data_type in redis_time_series_data_types:
         latest_data = get_symbol_data(
             data_type=data_type, symbols=symbols, data_origin=data_origin
         )

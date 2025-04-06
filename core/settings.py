@@ -45,7 +45,6 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "corsheaders",
-    "crypto_scanner",
     "exchange_connections",
     "correlations",
     "zscore",

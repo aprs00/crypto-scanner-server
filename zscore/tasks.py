@@ -1,8 +1,6 @@
 import redis
 
-from crypto_scanner.constants import (
-    stats_select_options_all,
-)
+from filters.constants import stats_select_options_all
 from zscore.utils import calculate_z_score_matrix, calculate_z_score_history
 
 

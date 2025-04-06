@@ -1,14 +1,14 @@
 from django.urls import path
 
-from crypto_scanner.api import (
-    average_price,
+from averages.api import (
+    get_average_prices,
 )
 
 
 urlpatterns = [
     path(
         "average-prices",
-        average_price.get_average_prices,
+        get_average_prices,
         name="average-price-change-per-week",
     ),
 ]

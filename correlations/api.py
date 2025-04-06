@@ -5,14 +5,16 @@ import redis
 import msgpack
 
 
-from crypto_scanner.constants import (
-    test_socket_symbols,
-    invalid_params_error,
-    redis_ts_data_types,
+from core.constants import invalid_params_error
+from correlations.constants import (
     large_correlations_timeframes,
     large_correlation_types,
+)
+from filters.constants import stats_select_options_all
+from exchange_connections.constants import (
+    test_socket_symbols,
     tickers,
-    stats_select_options_all,
+    redis_time_series_data_types,
 )
 from utils.time import convert_timeframe_to_seconds
 
@@ -28,7 +30,10 @@ def get_large_pearson_correlation(request):
     tf = request.GET.get("duration", None)
     data_type = request.GET.get("type", None)
 
-    if tf not in large_correlations_timeframes or data_type not in redis_ts_data_types:
+    if (
+        tf not in large_correlations_timeframes
+        or data_type not in redis_time_series_data_types
+    ):
         return JsonResponse(invalid_params_error, status=400)
 
     tf = convert_timeframe_to_seconds(tf)

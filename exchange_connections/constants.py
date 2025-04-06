@@ -1,46 +1,5 @@
-import os
+redis_time_series_data_types = ["price", "volume", "trades"]
 
-stats_select_options_htf = {
-    "1w": 7 * 24,
-    "2w": 14 * 24,
-    "1m": 30 * 24,
-    "3M": 90 * 24,
-    "6M": 180 * 24,
-}
-
-stats_select_options_ltf = {
-    "1h": 1,
-    "2h": 2,
-    "4h": 4,
-    "6h": 6,
-    "8h": 8,
-    "12h": 12,
-    "1d": 24,
-}
-
-stats_select_options_all = {**stats_select_options_ltf, **stats_select_options_htf}
-
-large_correlations_timeframes = ["5m", "15m", "30m", "1h", "4h"]
-
-redis_time_series_retention = str(4 * 60 * 60 * 1000)  # 4h in milisecond
-
-redis_ts_data_types = ["price", "volume", "trades"]
-
-# large_correlation_types = ["pearson", "spearman"]
-large_correlation_types = ["pearson"]
-
-invalid_params_error = {
-    "error": "Invalid parameters",
-    "code": "INVALID_PARAMS",
-}
-
-db_config = {
-    "host": os.getenv("POSTGRES_HOST"),
-    "dbname": os.getenv("POSTGRES_NAME"),
-    "user": os.getenv("POSTGRES_USER"),
-    "password": os.getenv("POSTGRES_PASSWORD"),
-    "port": os.getenv("POSTGRES_PORT"),
-}
 
 test_socket_symbols = [
     "BTCUSDT",

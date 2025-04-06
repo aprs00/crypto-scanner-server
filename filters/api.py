@@ -2,14 +2,13 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
 
-from crypto_scanner.constants import (
+from filters.constants import (
     stats_select_options_htf,
     stats_select_options_ltf,
     stats_select_options_all,
-    tickers,
-    redis_ts_data_types,
-    large_correlations_timeframes,
 )
+from correlations.constants import large_correlations_timeframes
+from exchange_connections.constants import tickers, redis_time_series_data_types
 from filters.utils import format_options
 
 
@@ -42,7 +41,7 @@ def get_large_pearson_types(request):
     if request.method != "GET":
         return HttpResponse(status=405)
 
-    response = format_options(redis_ts_data_types, "list", True)
+    response = format_options(redis_time_series_data_types, "list", True)
 
     return JsonResponse(response, safe=False)
 

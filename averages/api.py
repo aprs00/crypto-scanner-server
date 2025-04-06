@@ -4,8 +4,9 @@ from django.utils import timezone
 from datetime import timedelta
 
 
-from crypto_scanner.constants import stats_select_options_htf, invalid_params_error
-from crypto_scanner.services.average_price import average_price_change
+from core.constants import invalid_params_error
+from filters.constants import stats_select_options_htf
+from averages.services.average_price import average_price_change
 
 
 @csrf_exempt

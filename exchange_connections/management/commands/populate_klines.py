@@ -4,7 +4,7 @@ from django.db import IntegrityError
 
 import time
 
-from crypto_scanner.constants import tickers
+from exchange_connections.constants import tickers
 from exchange_connections.models import BinanceSpotKline5m
 from exchange_connections.utils import create_kline_object
 

@@ -8,11 +8,8 @@ from zscore.utils import (
     format_z_score_history_response,
 )
 from zscore.utils import format_z_score_matrix_response
-from crypto_scanner.constants import (
-    tickers,
-    invalid_params_error,
-    test_socket_symbols,
-)
+from core.constants import invalid_params_error
+from exchange_connections.constants import test_socket_symbols, tickers
 
 r = redis.Redis(host="redis")
 

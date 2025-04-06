@@ -6,10 +6,7 @@ import os
 import time
 import redis
 
-from crypto_scanner.constants import (
-    tickers,
-)
-
+from exchange_connections.constants import tickers
 from exchange_connections.utils import create_kline_object
 from exchange_connections.models import BinanceSpotKline5m
 

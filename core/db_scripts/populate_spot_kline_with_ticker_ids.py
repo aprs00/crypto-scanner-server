@@ -1,9 +1,18 @@
+import os
 import psycopg2
 import dotenv
 
 dotenv.load_dotenv()
 
-from crypto_scanner.constants import test_socket_symbols, ticker_colors, db_config
+from exchange_connections.constants import test_socket_symbols, ticker_colors
+
+db_config = {
+    "host": os.getenv("POSTGRES_HOST"),
+    "dbname": os.getenv("POSTGRES_NAME"),
+    "user": os.getenv("POSTGRES_USER"),
+    "password": os.getenv("POSTGRES_PASSWORD"),
+    "port": os.getenv("POSTGRES_PORT"),
+}
 
 
 def insert_data(tickers, colors):

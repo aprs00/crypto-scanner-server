@@ -9,12 +9,10 @@ import redis
 from exchange_connections.models import BinanceSpotKline5m
 
 from utils.lists import get_min_length
-from crypto_scanner.constants import (
-    stats_select_options_all,
-    tickers,
-)
+from filters.constants import stats_select_options_all
+from exchange_connections.constants import tickers
 
-r = redis.Redis(host="redis", port=6379, decode_responses=True)
+r = redis.Redis(host="redis")
 
 
 def get_tickers_data_z_score(duration):

@@ -3,10 +3,11 @@ import numpy as np
 import msgpack
 from collections import deque
 
-from crypto_scanner.constants import (
+
+from correlations.constants import large_correlations_timeframes
+from exchange_connections.constants import (
     test_socket_symbols,
-    large_correlations_timeframes,
-    redis_ts_data_types,
+    redis_time_series_data_types,
 )
 from utils.time import convert_timeframe_to_seconds
 
@@ -112,7 +113,7 @@ def initialize_incremental_zscore():
     Calculate and cache Z-scores for all combinations of timeframes, data types, and symbols.
     """
     incremental_zscores = initialize_z_score_objects(
-        test_socket_symbols, large_correlations_timeframes, redis_ts_data_types
+        test_socket_symbols, large_correlations_timeframes, redis_time_series_data_types
     )
 
     pubsub = r.pubsub()
@@ -125,7 +126,7 @@ def initialize_incremental_zscore():
             for timeframe in large_correlations_timeframes:
                 z_scores_by_tf = {}
 
-                for data_type in redis_ts_data_types:
+                for data_type in redis_time_series_data_types:
                     symbol_data = get_symbol_data(data_type, test_socket_symbols)
 
                     update_z_scores(
