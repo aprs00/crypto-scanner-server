@@ -7,35 +7,13 @@ from zscore.selectors.zscore import get_all_tickers_data_z_score
 from zscore.utils import (
     format_z_score_history_response,
 )
+from filters.constants import tf_options
 from zscore.utils import format_z_score_matrix_response
 from core.constants import invalid_params_error
 from exchange_connections.constants import test_socket_symbols, tickers
+from exchange_connections.selectors import get_exchange_symbols
 
 r = redis.Redis(host="redis")
-
-
-@csrf_exempt
-def get_large_z_score_matrix(request):
-    if request.method != "GET":
-        return HttpResponse(status=405)
-
-    x_axis = request.GET.get("xAxis", None)
-    y_axis = request.GET.get("yAxis", None)
-    tf = request.GET.get("tf", None)
-
-    if x_axis is None or y_axis is None or tf is None:
-        return JsonResponse(invalid_params_error, status=400)
-
-    z_scores = msgpack.unpackb(r.execute_command("GET", f"z_score_matrix_large_{tf}"))
-
-    response = format_z_score_matrix_response(
-        z_scores,
-        test_socket_symbols,
-        x_axis,
-        y_axis,
-    )
-
-    return JsonResponse(response, safe=False)
 
 
 @csrf_exempt
@@ -50,8 +28,16 @@ def get_z_score_matrix(request):
                 {"error": "Invalid axis", "code": "INVALID_AXIS"}, status=400
             )
 
+        tf = tf_options[duration]
+        symbols = get_exchange_symbols()
+
+        print(msgpack.unpackb(r.execute_command("GET", f"zscore:{tf}")))
+
         response = format_z_score_matrix_response(
-            r.execute_command("GET", f"z_score_{duration}"), tickers, x_axis, y_axis
+            msgpack.unpackb(r.execute_command("GET", f"zscore:{tf}")),
+            symbols,
+            x_axis,
+            y_axis,
         )
 
         return JsonResponse(response, safe=False)

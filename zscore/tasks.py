@@ -1,20 +1,13 @@
 import redis
 
-from filters.constants import stats_select_options_all
-from zscore.utils import calculate_z_score_matrix, calculate_z_score_history
+from zscore.utils import calculate_z_score_history
+from core.constants import RedisPubMessages
 
 
 r = redis.Redis(host="redis")
 
 
-def calculate_options_matrix():
-    for duration in stats_select_options_all:
-        r.execute_command(
-            "SET", f"z_score_{duration}", calculate_z_score_matrix(duration)
-        )
-
-
-def calculate_history(duration="12h"):
+def calculate_history(duration):
     r.execute_command(
         "SET", f"z_score_history_{duration}", calculate_z_score_history(duration)
     )
@@ -27,9 +20,8 @@ def subscribe_to_klines_updates():
     """
 
     pubsub = r.pubsub()
-    pubsub.subscribe("klines_fetched")
+    pubsub.subscribe(RedisPubMessages.KLINE_SAVED_TO_DB.value)
 
-    for message in pubsub.listen():
-        if message["type"] == "message":
-            calculate_options_matrix()
-            calculate_history(duration="12h")
+    # for message in pubsub.listen():
+    #     if message["type"] == "message":
+    #         calculate_history(duration="4h")

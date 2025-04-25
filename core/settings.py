@@ -180,13 +180,7 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 
-CELERY_BEAT_SCHEDULE = {
-    "fetch-all-1m-klines": {
-        "task": "exchange_connections.tasks.fetch_all_klines",
-        "schedule": crontab(minute="*/2", hour="*"),
-        "args": (4,),
-    },
-}
+CELERY_BEAT_SCHEDULE = {}
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_HEADERS = (

@@ -1,22 +1,19 @@
 from django.db.models import F, CharField, Func, Value
 from zscore.models import ZScoreHistorical
-
 from django.utils import timezone
 from datetime import timedelta
-
 import redis
 
-from exchange_connections.models import BinanceSpotKline5m
-
+from exchange_connections.models import Kline1m
 from utils.lists import get_min_length
-from filters.constants import stats_select_options_all
+from filters.constants import tf_options
 from exchange_connections.constants import tickers
 
 r = redis.Redis(host="redis")
 
 
 def get_tickers_data_z_score(duration):
-    duration_hours = stats_select_options_all[duration]
+    duration_hours = tf_options[duration]
 
     end_time = timezone.now()
     start_time = end_time - timedelta(hours=duration_hours)
@@ -27,8 +24,8 @@ def get_tickers_data_z_score(duration):
 
     for ticker in tickers:
         trades_volume_price_tickers_data[ticker] = (
-            BinanceSpotKline5m.objects.filter(
-                ticker=ticker,
+            Kline1m.objects.filter(
+                symbol=ticker,
                 start_time__gte=start_time_utc,
                 start_time__lte=end_time_utc,
             )

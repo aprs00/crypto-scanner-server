@@ -5,7 +5,7 @@ from datetime import timedelta
 
 
 from core.constants import invalid_params_error
-from filters.constants import stats_select_options_htf
+from filters.constants import tf_options
 from averages.services.average_price import average_price_change
 
 
@@ -21,7 +21,9 @@ def get_average_prices(request):
     if duration is None or symbol is None or type is None:
         return JsonResponse(invalid_params_error, status=400)
 
-    duration_hours = stats_select_options_htf[duration]
+    # TODO fix tf options, it should start from 1d
+
+    duration_hours = tf_options[duration]
     start_time_utc = timezone.now() - timedelta(hours=duration_hours)
 
     response = average_price_change(duration, symbol, start_time_utc, type)
