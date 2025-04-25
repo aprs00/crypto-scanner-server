@@ -25,23 +25,7 @@ def calculate_z_score_history(duration):
     return {"data": z_scores, "start_time_values": start_time_values}
 
 
-def calculate_z_score_matrix(duration):
-    tickers_data_z_scores = get_tickers_data_z_score(duration)
-    z_scores = {}
-
-    for ticker, data in tickers_data_z_scores.items():
-        volume_values, price_values, trades_values, _ = zip(*data)
-
-        z_scores[ticker] = {
-            "volume": calculate_current_z_score(volume_values),
-            "price": calculate_current_z_score(price_values),
-            "trades": calculate_current_z_score(trades_values),
-        }
-
-    return z_scores
-
-
-def format_z_score_matrix_response(data, tickers, x_axis, y_axis):
+def format_z_score_matrix_response(data, symbols, x_axis, y_axis):
     return [
         {
             "type": "scatter",
@@ -56,7 +40,7 @@ def format_z_score_matrix_response(data, tickers, x_axis, y_axis):
             "symbolSize": 20,
             "emphasis": {"scale": 1.6},
         }
-        for i, ticker in enumerate(tickers)
+        for i, ticker in enumerate(symbols)
     ]
 
 

@@ -2,14 +2,14 @@ import redis
 import numpy as np
 import msgpack
 from collections import deque
+from datetime import timedelta
+from django.utils import timezone
 
-
-from correlations.constants import large_correlations_timeframes
-from exchange_connections.constants import (
-    test_socket_symbols,
-    redis_time_series_data_types,
-)
-from utils.time import convert_timeframe_to_seconds
+from filters.constants import tf_options
+from zscore.constants import zscore_data_types
+from exchange_connections.selectors import get_exchange_symbols, get_latest_kline_values
+from exchange_connections.models import Kline1m
+from core.constants import RedisPubMessages
 
 r = redis.Redis(host="redis")
 
@@ -17,16 +17,26 @@ r = redis.Redis(host="redis")
 class IncrementalZScore:
     """
     Calculates Z-score over a incremental window of data points.
-    Z-score = (current_value - mean) / standard_deviation
     """
 
-    def __init__(self, window_size):
+    def __init__(self, window_size, initial_data):
         self.window_size = window_size
-        self.values = deque(maxlen=window_size)
 
-        self.sum = 0
-        self.sum_squared = 0
-        self.count = 0
+        if initial_data:
+            data = (
+                initial_data[-window_size:]
+                if len(initial_data) > window_size
+                else initial_data
+            )
+            self.values = deque(data, maxlen=window_size)
+            self.count = len(self.values)
+            self.sum = sum(self.values)
+            self.sum_squared = sum(x * x for x in self.values)
+        else:
+            self.values = deque(maxlen=window_size)
+            self.sum = 0
+            self.sum_squared = 0
+            self.count = 0
 
     def add_data_point(self, value):
         if self.count == self.window_size:
@@ -64,36 +74,75 @@ class IncrementalZScore:
         return (current_value - mean) / std_dev
 
 
-def initialize_z_score_objects(symbols, timeframes, data_types):
-    """Initialize incremental Z-score objects for all combinations of timeframes, data types, and symbols."""
-    return {
-        (tf, data_type, symbol): IncrementalZScore(convert_timeframe_to_seconds(tf))
-        for tf in timeframes
-        for data_type in data_types
-        for symbol in symbols
-    }
+def initialize_z_score_objects(symbols, timeframes, zscore_data_types):
+    """
+    Initialize Z-score objects with historical data from the database.
+    Each timeframe gets its own window of historical data.
+    """
+    z_score_dict = {}
+
+    for tf in timeframes:
+        start_time = timezone.now() - timedelta(hours=tf)
+
+        historical_klines = (
+            Kline1m.objects.filter(symbol__in=symbols, start_time__gte=start_time)
+            .values("symbol", "start_time", "close", "base_volume", "number_of_trades")
+            .order_by("symbol", "start_time")
+        )
+
+        data_by_symbol = {
+            symbol: {data_type: [] for data_type in zscore_data_types}
+            for symbol in symbols
+        }
+
+        for kline in historical_klines:
+            data_by_symbol[kline["symbol"]]["price"].append(float(kline["close"]))
+            data_by_symbol[kline["symbol"]]["volume"].append(
+                float(kline["base_volume"])
+            )
+            data_by_symbol[kline["symbol"]]["trades"].append(
+                float(kline["number_of_trades"])
+            )
+
+        for data_type in zscore_data_types:
+            for symbol in symbols:
+                z_score_dict[(tf, data_type, symbol)] = IncrementalZScore(
+                    tf, data_by_symbol[symbol][data_type]
+                )
+
+    return z_score_dict
 
 
-def get_symbol_data(data_type, symbols):
-    """Get the latest data for all symbols of the specified data type from Redis."""
-    pipeline = r.pipeline()
+def get_symbol_data(symbols):
+    """
+    Get the latest data for all symbols and all data types from the database.
+    Returns:
+        {symbol: {data_type: value, ...}, ...}
+    """
+    result = {symbol: {} for symbol in symbols}
+    latest_klines = get_latest_kline_values()
 
-    for symbol in symbols:
-        pipeline.execute_command(f"TS.GET 1s:{data_type}:{symbol}")
-    results = pipeline.execute()
+    for kline in latest_klines:
+        result[kline.symbol]["price"] = float(kline.close)
+        result[kline.symbol]["volume"] = float(kline.base_volume)
+        result[kline.symbol]["trades"] = float(kline.number_of_trades)
 
-    return {symbol: result for symbol, result in zip(symbols, results) if result}
-
-
-def update_z_scores(incremental_zscores, timeframe, data_type, symbol_data):
-    """Update incremental Z-scores with the latest data points."""
-    for symbol, value_data in symbol_data.items():
-        if value_data:
-            value = float(value_data[1])
-            incremental_zscores[(timeframe, data_type, symbol)].add_data_point(value)
+    return result
 
 
-def create_z_score_matrix(timeframe, data_type, incremental_zscores, symbols):
+def update_z_scores(incremental_zscores, tf, symbol_data):
+    """Update incremental Z-scores with the latest data points for all data types."""
+    for symbol, data_dict in symbol_data.items():
+        for data_type, value in data_dict.items():
+            dict_tuple = (tf, data_type, symbol)
+
+            if tuple in incremental_zscores:
+                incremental_zscores[dict_tuple].add_data_point(float(value))
+            else:
+                print(f"[Warning] Correlation object not found for {dict_tuple}")
+
+
+def create_z_score_matrix(tf, data_type, incremental_zscores, symbols):
     """
     Creates a Z-score matrix for all symbols.
 
@@ -101,9 +150,7 @@ def create_z_score_matrix(timeframe, data_type, incremental_zscores, symbols):
         Dictionary with symbols as keys and their Z-scores as values
     """
     return {
-        symbol: round(
-            incremental_zscores[(timeframe, data_type, symbol)].get_z_score(), 2
-        )
+        symbol: round(incremental_zscores[(tf, data_type, symbol)].get_z_score(), 2)
         for symbol in symbols
     }
 
@@ -112,29 +159,28 @@ def initialize_incremental_zscore():
     """
     Calculate and cache Z-scores for all combinations of timeframes, data types, and symbols.
     """
+    symbols = get_exchange_symbols()
+    timeframes = tf_options.values()
     incremental_zscores = initialize_z_score_objects(
-        test_socket_symbols, large_correlations_timeframes, redis_time_series_data_types
+        symbols, timeframes, zscore_data_types
     )
 
     pubsub = r.pubsub()
-    pubsub.subscribe("test_socket_symbols_stored")
+    pubsub.subscribe(RedisPubMessages.KLINE_SAVED_TO_DB.value)
 
     for message in pubsub.listen():
-        if message["type"] == "message":
+        if message["channel"] == RedisPubMessages.KLINE_SAVED_TO_DB.value:
             set_pipeline = r.pipeline()
+            symbol_data = get_symbol_data(symbols)
 
-            for timeframe in large_correlations_timeframes:
+            for tf in timeframes:
                 z_scores_by_tf = {}
 
-                for data_type in redis_time_series_data_types:
-                    symbol_data = get_symbol_data(data_type, test_socket_symbols)
+                update_z_scores(incremental_zscores, tf, symbol_data)
 
-                    update_z_scores(
-                        incremental_zscores, timeframe, data_type, symbol_data
-                    )
-
+                for data_type in zscore_data_types:
                     z_score_matrix = create_z_score_matrix(
-                        timeframe, data_type, incremental_zscores, test_socket_symbols
+                        tf, data_type, incremental_zscores, symbols
                     )
 
                     for symbol, z_score in z_score_matrix.items():
@@ -142,10 +188,8 @@ def initialize_incremental_zscore():
 
                 r.execute_command(
                     "SET",
-                    f"z_score_matrix_large_{timeframe}",
+                    f"zscore:{tf}",
                     msgpack.packb(z_scores_by_tf),
                 )
 
             set_pipeline.execute()
-
-            # TODO add storing to database for z score history

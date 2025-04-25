@@ -62,3 +62,39 @@ class BinanceSpotKline5m(models.Model):
             f"taker_buy_quote_asset_volume={self.taker_buy_quote_asset_volume}"
             f")"
         )
+
+
+class Kline1m(models.Model):
+    start_time = models.DateTimeField(db_index=True)
+    close_time = models.DateTimeField()
+    symbol = models.CharField(max_length=20, db_index=True)
+    open = models.DecimalField(max_digits=18, decimal_places=8)
+    close = models.DecimalField(max_digits=18, decimal_places=8)
+    high = models.DecimalField(max_digits=18, decimal_places=8)
+    low = models.DecimalField(max_digits=18, decimal_places=8)
+    base_volume = models.DecimalField(max_digits=24, decimal_places=8)
+    quote_volume = models.DecimalField(max_digits=24, decimal_places=8)
+    taker_buy_base_volume = models.DecimalField(max_digits=24, decimal_places=8)
+    taker_buy_quote_volume = models.DecimalField(max_digits=24, decimal_places=8)
+    number_of_trades = models.IntegerField()
+    exchange = models.CharField(max_length=20, db_index=True)
+    contract_type = models.CharField(max_length=20, db_index=True)
+
+    class Meta:
+        db_table = "cs_klines_1m"
+        ordering = ["-start_time", "symbol"]
+        constraints = [
+            UniqueConstraint(
+                fields=["start_time", "symbol", "exchange", "contract_type"],
+                name="unique_klines_1m_fields",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["symbol", "exchange", "-start_time", "contract_type"],
+                name="klines_main_query_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.symbol} @ {self.start_time} | C: {self.close}"

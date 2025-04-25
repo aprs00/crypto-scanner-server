@@ -19,22 +19,17 @@ class IncrementalPearsonCorrelation:
         self.sum_xy = 0
         self.count = 0
 
-        # Initialize with arrays if provided
         if x_initial is not None and y_initial is not None:
-            # Make sure we only take up to window_size elements
             x_initial = x_initial[-window_size:]
             y_initial = y_initial[-window_size:]
 
-            # Make sure the arrays have the same length
             min_length = min(len(x_initial), len(y_initial))
             x_initial = x_initial[:min_length]
             y_initial = y_initial[:min_length]
 
-            # Add values to deques
             self.x_values.extend(x_initial)
             self.y_values.extend(y_initial)
 
-            # Calculate sums
             self.sum_x = sum(x_initial)
             self.sum_y = sum(y_initial)
             self.sum_xx = sum(x * x for x in x_initial)

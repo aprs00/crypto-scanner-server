@@ -1,184 +1,168 @@
 import redis
 import msgpack
 import time
+import threading
 from itertools import combinations
-import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from exchange_connections.models import BinanceSpotKline5m
+from exchange_connections.selectors import get_exchange_symbols, get_latest_kline_values
 from correlations.models.pearson import IncrementalPearsonCorrelation
-from correlations.models.spearman import IncrementalSpearmanCorrelation
 from correlations.selectors.correlations import (
     get_tickers_data,
-    extract_time_series_data,
 )
-from utils.time import convert_timeframe_to_seconds
-from correlations.constants import (
-    large_correlations_timeframes,
-    large_correlation_types,
-)
-from filters.constants import stats_select_options_all
-from exchange_connections.constants import (
-    test_socket_symbols,
-    tickers,
-    redis_time_series_data_types,
-)
+from filters.constants import tf_options
+from exchange_connections.constants import redis_time_series_data_types
+from core.constants import RedisPubMessages
 
 r = redis.Redis(host="redis")
+print_lock = threading.Lock()
 
-last_end_time_tickers = {symbol: None for symbol in tickers}
+
+def generate_tuple(tf, data_type, symbol_a, symbol_b):
+    return (
+        tf,
+        data_type,
+        symbol_a,
+        symbol_b,
+    )
 
 
-def initialize_correlation_objects(symbols, data_origin, timeframes):
-    """Initialize incremental correlation objects for all combinations of timeframes, data types, and symbol pairs."""
+def chunked_iterable(iterable, size):
+    """Yield successive chunks from iterable of given size."""
+    for i in range(0, len(iterable), size):
+        yield iterable[i : i + size]
+
+
+def initialize_correlation_objects(symbols, timeframes):
     correlations = {}
+    futures = []
+    all_pairs = list(combinations(symbols, 2))
+    pair_batches = list(chunked_iterable(all_pairs, 5000))
 
-    incremental_correlation_models = {
-        "pearson": IncrementalPearsonCorrelation,
-        "spearman": IncrementalSpearmanCorrelation,
-    }
+    completed_futures = 0
+    total_futures = 0
 
-    for tf in timeframes:
-        for data_type in redis_time_series_data_types:
-            match data_origin:
-                case "DB":
-                    symbol_data = get_tickers_data(
-                        duration_hours=tf, data_type=data_type, symbols=tickers
-                    )
-                    window_size = tf * 12
-                case "REDIS":
-                    symbol_data = extract_time_series_data(tf, data_type, symbols)
-                    window_size = tf
+    with ThreadPoolExecutor() as executor:
+        for tf in timeframes:
+            for data_type in redis_time_series_data_types:
+                for pair_batch in pair_batches:
+                    batch_symbols = set()
+                    for a, b in pair_batch:
+                        batch_symbols.add(a)
+                        batch_symbols.add(b)
+                    batch_symbols = list(batch_symbols)
 
-            for symbol_a, symbol_b in combinations(symbols, 2):
-                for correlation_type in large_correlation_types:
-                    dict_tuple = (
-                        correlation_type,
-                        tf,
-                        data_origin,
-                        data_type,
-                        symbol_a,
-                        symbol_b,
+                    futures.append(
+                        executor.submit(
+                            process_correlation_batch,
+                            tf=tf,
+                            data_type=data_type,
+                            symbols=batch_symbols,
+                            symbol_pairs=pair_batch,
+                        )
                     )
 
-                    symbol_a_data = symbol_data[symbol_a]
-                    symbol_b_data = symbol_data[symbol_b]
+        total_futures = len(futures)
 
-                    correlations[dict_tuple] = incremental_correlation_models[
-                        correlation_type
-                    ](
-                        window_size=window_size,
-                        x_initial=symbol_a_data,
-                        y_initial=symbol_b_data,
-                    )
+        for future in as_completed(futures):
+            tf, data_type, result = future.result()
+            correlations.update(result)
+
+            completed_futures += 1
+
+            with print_lock:
+                print(
+                    f"TF {tf} / Data Type {data_type} batch done: {completed_futures}/{total_futures} ({(completed_futures/total_futures)*100:.1f}%), {len(result)} correlations"
+                )
 
     return correlations
 
 
-def get_symbol_data(data_type, symbols, data_origin):
+def process_correlation_batch(tf, data_type, symbols, symbol_pairs):
+    symbol_data = get_tickers_data(
+        duration_hours=tf, data_type=data_type, symbols=symbols
+    )
+    window_size = tf * 60
+
+    local_correlations = {}
+
+    for symbol_a, symbol_b in symbol_pairs:
+        dict_tuple = generate_tuple(
+            tf=tf,
+            data_type=data_type,
+            symbol_a=symbol_a,
+            symbol_b=symbol_b,
+        )
+
+        local_correlations[dict_tuple] = IncrementalPearsonCorrelation(
+            window_size=window_size,
+            x_initial=symbol_data[symbol_a],
+            y_initial=symbol_data[symbol_b],
+        )
+
+    return tf, data_type, local_correlations
+
+
+def get_symbol_data(symbols):
     """
-    Get the latest data for symbols of the specified data type from Redis or Database.
-
-    Args:
-        data_type: The type of data to retrieve ("price", "volume", "trades")
-        symbols: List of symbols to get data for
-        data_origin: Source of data ("REDIS" or "DB")
-
+    Get the latest data for all symbols and all data types from the database.
     Returns:
-        Dict mapping symbols to their data results
+        {symbol: {data_type: value, ...}, ...}
     """
+    result = {symbol: {} for symbol in symbols}
+    latest_klines = get_latest_kline_values()
 
-    match data_origin:
-        case "REDIS":
-            pipeline = r.pipeline()
+    for kline in latest_klines:
+        result[kline.symbol]["price"] = float(kline.close)
+        # result[kline.symbol]["volume"] = float(kline.base_volume)
+        # result[kline.symbol]["trades"] = float(kline.number_of_trades)
 
-            for symbol in symbols:
-                pipeline.execute_command(f"TS.GET 1s:{data_type}:{symbol}")
-            results = pipeline.execute()
-
-            return {
-                symbol: result[1] for symbol, result in zip(symbols, results) if result
-            }
-
-        case "DB":
-            result = {}
-
-            for symbol in symbols:
-                latest_kline = (
-                    BinanceSpotKline5m.objects.filter(ticker=symbol)
-                    .order_by("-end_time")
-                    .first()
-                )
-
-                if last_end_time_tickers[symbol] != latest_kline.end_time:
-                    last_end_time_tickers[symbol] = latest_kline.end_time
-
-                    match data_type:
-                        case "price":
-                            value = float(latest_kline.close)
-                        case "volume":
-                            value = float(latest_kline.base_volume)
-                        case "trades":
-                            value = float(latest_kline.number_of_trades)
-
-                    result[symbol] = value
-
-            return result
+    return result
 
 
 def update_correlations(
     incremental_correlations,
-    correlation_type,
-    data_origin,
-    timeframe,
-    data_type,
+    tf,
     symbol_data,
     symbols,
 ):
     """Update incremental correlations with the latest data points."""
-    for symbol_a, symbol_b in combinations(symbols, 2):
-        value_data_a = symbol_data.get(symbol_a)
-        value_data_b = symbol_data.get(symbol_b)
+    for data_type in redis_time_series_data_types:
+        for symbol_a, symbol_b in combinations(symbols, 2):
+            value_a = float(symbol_data.get(symbol_a, {}).get(data_type, 0))
+            value_b = float(symbol_data.get(symbol_b, {}).get(data_type, 0))
 
-        if value_data_a and value_data_b:
-            incremental_correlations[
-                (
-                    correlation_type,
-                    timeframe,
-                    data_origin,
-                    data_type,
-                    symbol_a,
-                    symbol_b,
-                )
-            ].add_data_point(float(value_data_a), float(value_data_b))
+            dict_tuple = generate_tuple(
+                tf=tf,
+                data_type=data_type,
+                symbol_a=symbol_a,
+                symbol_b=symbol_b,
+            )
+
+            if dict_tuple in incremental_correlations:
+                incremental_correlations[dict_tuple].add_data_point(value_a, value_b)
+            else:
+                print(f"[Warning] Correlation object not found for {dict_tuple}")
 
 
 def create_correlation_matrix(
-    correlation_type,
-    data_origin,
-    timeframe,
+    tf,
     data_type,
     incremental_correlations,
     symbols,
+    is_matrix_upper_triangle,
 ):
-    """
-    Creates a correlation matrix from incremental correlation objects and converts it to a matrix representation.
-
-    Args:
-        timeframe: The timeframe for the correlations
-        data_type: The type of data being correlated
-        incremental_correlations: Dictionary containing IncrementalPearsonCorrelation objects
-        symbols: List of symbols defining the matrix dimensions
-
-    Returns:
-        List of [i, j, value] entries representing the specified triangle of the correlation matrix
-    """
     correlations = {
         (symbol_a, symbol_b): incremental_correlations[
-            (correlation_type, timeframe, data_origin, data_type, symbol_a, symbol_b)
+            generate_tuple(
+                tf=tf,
+                data_type=data_type,
+                symbol_a=symbol_a,
+                symbol_b=symbol_b,
+            )
         ]
         for symbol_a, symbol_b in combinations(symbols, 2)
     }
-    is_matrix_upper_triangle = correlation_type == "pearson"
 
     return [
         [
@@ -195,81 +179,55 @@ def create_correlation_matrix(
     ]
 
 
-def handle_redis_pubsub_message(data_origin, correlations, timeframes, symbols):
+def update_and_cache_incremental_correlations(correlations, timeframes, symbols):
     set_pipeline = r.pipeline()
 
-    for data_type in redis_time_series_data_types:
-        latest_data = get_symbol_data(
-            data_type=data_type, symbols=symbols, data_origin=data_origin
+    symbol_data = get_symbol_data(symbols=symbols)
+
+    for tf in timeframes:
+        update_correlations(
+            incremental_correlations=correlations,
+            tf=tf,
+            symbol_data=symbol_data,
+            symbols=symbols,
         )
 
-        if not latest_data:
-            continue
+        for data_type in redis_time_series_data_types:
+            correlation_matrix = create_correlation_matrix(
+                tf=tf,
+                data_type=data_type,
+                incremental_correlations=correlations,
+                symbols=symbols,
+                is_matrix_upper_triangle=True,
+            )
 
-        for timeframe in timeframes:
-            for correlation_type in large_correlation_types:
-                update_correlations(
-                    incremental_correlations=correlations,
-                    correlation_type=correlation_type,
-                    data_origin=data_origin,
-                    timeframe=timeframe,
-                    data_type=data_type,
-                    symbol_data=latest_data,
-                    symbols=symbols,
-                )
-
-                correlation_matrix = create_correlation_matrix(
-                    correlation_type=correlation_type,
-                    data_origin=data_origin,
-                    timeframe=timeframe,
-                    data_type=data_type,
-                    incremental_correlations=correlations,
-                    symbols=symbols,
-                )
-
-                set_pipeline.execute_command(
-                    "SET",
-                    f"{correlation_type}:{data_type}:{timeframe}:{data_origin}",
-                    msgpack.packb(correlation_matrix),
-                )
+            set_pipeline.execute_command(
+                "SET",
+                f"correlations:{data_type}:{tf}",
+                msgpack.packb(correlation_matrix),
+            )
 
     set_pipeline.execute()
 
 
-def start_pubsub_listener(
-    redis_correlations, redis_timeframes, db_correlations, db_timeframes
-):
+def start_pubsub_listener(correlations, timeframes, symbols):
     retries = 0
 
     while True:
         try:
             print("Subscribing to Redis channels...")
             pubsub = r.pubsub()
-            pubsub.subscribe("test_socket_symbols_stored", "klines_fetched")
+            pubsub.subscribe(RedisPubMessages.KLINE_SAVED_TO_DB.value)
 
             for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
+                print(f'CORRELATIONS {message["channel"]}')
 
-                print("MESSAGE", message["channel"])
-
-                if message["channel"] == b"test_socket_symbols_stored":
-                    handle_redis_pubsub_message(
-                        data_origin="REDIS",
-                        correlations=redis_correlations,
-                        timeframes=redis_timeframes,
-                        symbols=test_socket_symbols,
+                if message["channel"] == RedisPubMessages.KLINE_SAVED_TO_DB.value:
+                    update_and_cache_incremental_correlations(
+                        correlations=correlations,
+                        timeframes=timeframes,
+                        symbols=symbols,
                     )
-
-                elif message["channel"] == b"klines_fetched":
-                    handle_redis_pubsub_message(
-                        data_origin="DB",
-                        correlations=db_correlations,
-                        timeframes=db_timeframes,
-                        symbols=tickers,
-                    )
-
-                print("DONE")
 
             retries = 0
 
@@ -292,26 +250,16 @@ def initialize_incremental_correlations():
     timeframes, and data types, and listen for Redis pubsub messages with reconnection logic.
     """
 
-    redis_timeframes = list(
-        map(convert_timeframe_to_seconds, large_correlations_timeframes)
+    timeframes = tf_options.values()
+    symbols = get_exchange_symbols()
+
+    correlations = initialize_correlation_objects(
+        symbols=symbols,
+        timeframes=timeframes,
     )
-    db_timeframes = stats_select_options_all.values()
-
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        redis_correlations = executor.submit(
-            initialize_correlation_objects,
-            test_socket_symbols,
-            "REDIS",
-            redis_timeframes,
-        ).result()
-
-        db_correlations = executor.submit(
-            initialize_correlation_objects, tickers, "DB", db_timeframes
-        ).result()
 
     start_pubsub_listener(
-        redis_correlations=redis_correlations,
-        redis_timeframes=redis_timeframes,
-        db_correlations=db_correlations,
-        db_timeframes=db_timeframes,
+        correlations=correlations,
+        timeframes=timeframes,
+        symbols=symbols,
     )

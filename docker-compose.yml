@@ -3,7 +3,7 @@ version: '3.8'
 services:
     db:
         container_name: cs-db
-        image: postgres:15.3-alpine3.18
+        image: timescale/timescaledb:2.14.2-pg15
         volumes:
             - pgdata:/var/lib/postgresql/data
         environment:

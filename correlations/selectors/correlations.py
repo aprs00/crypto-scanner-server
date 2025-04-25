@@ -1,14 +1,12 @@
 import redis
 import numpy as np
 import time
-
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import FloatField
 from django.db.models.functions import Cast
 
-from utils.lists import get_min_length
-from exchange_connections.models import BinanceSpotKline5m
+from exchange_connections.models import Kline1m
 
 r = redis.Redis(host="redis")
 
@@ -37,26 +35,26 @@ def get_tickers_data(duration_hours, data_type, symbols):
     start_time = end_time - timedelta(hours=duration_hours)
 
     all_data = (
-        BinanceSpotKline5m.objects.filter(
-            ticker__in=symbols,
+        Kline1m.objects.filter(
+            symbol__in=symbols,
             start_time__gte=start_time.astimezone(timezone.utc),
             start_time__lte=end_time.astimezone(timezone.utc),
+            exchange="binance",
         )
         .annotate(**{annotated_field: Cast(field_name, FloatField())})
-        .values("ticker", "start_time", annotated_field)
-        .order_by("ticker", "start_time")
+        .values("symbol", "start_time", annotated_field)
+        .order_by("symbol", "start_time")
     )
 
-    query_tickers_data = {ticker: [] for ticker in symbols}
+    query_symbols_data = {symbol: [] for symbol in symbols}
     for item in all_data:
-        ticker = item["ticker"]
-        if ticker in query_tickers_data:
-            query_tickers_data[ticker].append(item[annotated_field])
+        symbol = item["symbol"]
+        if symbol in query_symbols_data:
+            query_symbols_data[symbol].append(item[annotated_field])
 
-    query_tickers_data = get_min_length(query_tickers_data, symbols)
-    query_tickers_data = {k: np.array(v) for k, v in query_tickers_data.items()}
+    query_symbols_data = {k: np.array(v) for k, v in query_symbols_data.items()}
 
-    return query_tickers_data
+    return query_symbols_data
 
 
 def extract_time_series_data(tf, data_type, symbols):
@@ -78,7 +76,7 @@ def extract_time_series_data(tf, data_type, symbols):
     result = {}
     for symbol in symbols:
         redis_data = r.execute_command(
-            "TS.RANGE", f"1s:{data_type}:{symbol}", from_time, to_time
+            "TS.RANGE", f"250ms:{data_type}:{symbol}", from_time, to_time
         )
         result[symbol] = np.array([float(x[1]) for x in redis_data])
 
