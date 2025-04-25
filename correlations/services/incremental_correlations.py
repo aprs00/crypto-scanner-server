@@ -145,7 +145,7 @@ def update_correlations(
                 print(f"[Warning] Correlation object not found for {dict_tuple}")
 
 
-def create_correlation_matrix(
+def create_correlation_list(
     tf,
     data_type,
     incremental_correlations,
@@ -165,15 +165,11 @@ def create_correlation_matrix(
     }
 
     return [
-        [
-            i,
-            j,
-            round(
-                correlations[(symbols[min(i, j)], symbols[max(i, j)])].get_correlation()
-                or 0,
-                2,
-            ),
-        ]
+        round(
+            correlations[(symbols[min(i, j)], symbols[max(i, j)])].get_correlation()
+            or 0,
+            2,
+        )
         for i in range(len(symbols))
         for j in (range(i + 1, len(symbols)) if is_matrix_upper_triangle else range(i))
     ]
@@ -193,7 +189,7 @@ def update_and_cache_incremental_correlations(correlations, timeframes, symbols)
         )
 
         for data_type in redis_time_series_data_types:
-            correlation_matrix = create_correlation_matrix(
+            correlation_matrix = create_correlation_list(
                 tf=tf,
                 data_type=data_type,
                 incremental_correlations=correlations,
