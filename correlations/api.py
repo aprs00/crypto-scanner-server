@@ -32,17 +32,12 @@ def get_pearson_correlation(request):
 
     symbols = get_exchange_symbols()
 
-    formatted_symbols = [ticker[:-4] for ticker in symbols]
-
     pearson_correlations = msgpack.unpackb(
         r.execute_command("GET", f"correlations:{data_type}:{tf}")
     )
 
-    print(pearson_correlations)
-
     response = {
-        "xAxis": formatted_symbols,
-        "yAxis": formatted_symbols,
+        "axis": [ticker[:-4] for ticker in symbols],
         "data": pearson_correlations,
     }
 
