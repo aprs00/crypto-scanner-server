@@ -10,7 +10,7 @@ from zscore.utils import (
 from filters.constants import tf_options
 from zscore.utils import format_z_score_matrix_response
 from core.constants import invalid_params_error
-from exchange_connections.constants import test_socket_symbols, tickers
+from exchange_connections.constants import tickers
 from exchange_connections.selectors import get_exchange_symbols
 
 r = redis.Redis(host="redis")

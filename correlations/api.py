@@ -7,10 +7,7 @@ import msgpack
 
 from core.constants import invalid_params_error
 from filters.constants import tf_options
-from exchange_connections.constants import (
-    tickers,
-    redis_time_series_data_types,
-)
+from exchange_connections.constants import redis_time_series_data_types
 from exchange_connections.selectors import get_exchange_symbols
 
 
