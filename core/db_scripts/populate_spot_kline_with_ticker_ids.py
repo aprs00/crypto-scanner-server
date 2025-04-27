@@ -4,7 +4,7 @@ import dotenv
 
 dotenv.load_dotenv()
 
-from exchange_connections.constants import test_socket_symbols, ticker_colors
+from exchange_connections.constants import ticker_colors
 
 db_config = {
     "host": os.getenv("POSTGRES_HOST"),
@@ -46,4 +46,4 @@ def insert_data(tickers, colors):
 
 # Call the function to insert data
 if __name__ == "__main__":
-    insert_data(test_socket_symbols, ticker_colors)
+    insert_data([], ticker_colors)
