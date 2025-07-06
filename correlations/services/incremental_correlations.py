@@ -4,11 +4,14 @@ import time
 import threading
 from itertools import combinations
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict
+from typing import Dict, List, Tuple
 
 from exchange_connections.selectors import get_exchange_symbols, get_latest_kline_values
-from correlations.models.pearson import IncrementalPearsonCorrelation
+from correlations.formulas.pearson import IncrementalPearsonCorrelation
 from correlations.selectors.correlations import (
     get_tickers_data,
+    get_oldest_values_efficient,
 )
 from filters.constants import tf_options
 from exchange_connections.constants import redis_time_series_data_types
@@ -16,6 +19,10 @@ from core.constants import RedisPubMessages
 
 r = redis.Redis(host="redis")
 print_lock = threading.Lock()
+
+timeframe_oldest_values_cache: Dict[Tuple[int, str], Dict[str, Tuple[float, int]]] = (
+    defaultdict(dict)
+)
 
 
 def generate_tuple(tf, data_type, symbol_a, symbol_b):
@@ -31,6 +38,42 @@ def chunked_iterable(iterable, size):
     """Yield successive chunks from iterable of given size."""
     for i in range(0, len(iterable), size):
         yield iterable[i : i + size]
+
+
+def get_oldest_values_for_timeframe(
+    tf: int, data_type: str, symbols: List[str]
+) -> Dict[str, Tuple[float, int]]:
+    """
+    Fetch oldest values for all symbols in a timeframe at once.
+    Returns dict with symbol -> (oldest_value, oldest_timestamp)
+    """
+    cache_key = (tf, data_type)
+
+    if cache_key in timeframe_oldest_values_cache and all(
+        symbol in timeframe_oldest_values_cache[cache_key] for symbol in symbols
+    ):
+        return {
+            symbol: timeframe_oldest_values_cache[cache_key][symbol]
+            for symbol in symbols
+        }
+
+    try:
+        oldest_data = get_oldest_values_efficient(
+            duration_hours=tf, data_type=data_type, symbols=symbols
+        )
+
+        for symbol in symbols:
+            if symbol in oldest_data:
+                timeframe_oldest_values_cache[cache_key][symbol] = oldest_data[symbol]
+
+        return {
+            symbol: timeframe_oldest_values_cache[cache_key].get(symbol, (0.0, 0))
+            for symbol in symbols
+        }
+
+    except Exception as e:
+        print(f"Error fetching oldest values for tf {tf}, data_type {data_type}: {e}")
+        return {symbol: (0.0, 0) for symbol in symbols}
 
 
 def initialize_correlation_objects(symbols, timeframes):
@@ -127,10 +170,23 @@ def update_correlations(
     symbols,
 ):
     """Update incremental correlations with the latest data points."""
+
+    oldest_values_cache = {}
+
     for data_type in redis_time_series_data_types:
+        oldest_values_cache[data_type] = get_oldest_values_for_timeframe(
+            tf, data_type, symbols
+        )
+
         for symbol_a, symbol_b in combinations(symbols, 2):
-            value_a = float(symbol_data.get(symbol_a, {}).get(data_type, 0))
-            value_b = float(symbol_data.get(symbol_b, {}).get(data_type, 0))
+            value_a = symbol_data.get(symbol_a, {}).get(data_type)
+            value_b = symbol_data.get(symbol_b, {}).get(data_type)
+
+            if value_a is None or value_b is None:
+                continue
+
+            value_a = float(value_a)
+            value_b = float(value_b)
 
             dict_tuple = generate_tuple(
                 tf=tf,
@@ -140,7 +196,17 @@ def update_correlations(
             )
 
             if dict_tuple in incremental_correlations:
-                incremental_correlations[dict_tuple].add_data_point(value_a, value_b)
+                correlation_obj = incremental_correlations[dict_tuple]
+                x_old = None
+                y_old = None
+
+                if correlation_obj.count >= correlation_obj.window_size:
+                    oldest_values = oldest_values_cache[data_type]
+                    if symbol_a in oldest_values and symbol_b in oldest_values:
+                        x_old = oldest_values[symbol_a][0]
+                        y_old = oldest_values[symbol_b][0]
+
+                correlation_obj.add_data_point(value_a, value_b, x_old, y_old)
             else:
                 print(f"[Warning] Correlation object not found for {dict_tuple}")
 
@@ -175,6 +241,12 @@ def create_correlation_list(
     ]
 
 
+def clear_timeframe_cache():
+    """Clear the oldest values cache - call this periodically to prevent memory buildup"""
+    global timeframe_oldest_values_cache
+    timeframe_oldest_values_cache.clear()
+
+
 def update_and_cache_incremental_correlations(correlations, timeframes, symbols):
     set_pipeline = r.pipeline()
 
@@ -204,6 +276,9 @@ def update_and_cache_incremental_correlations(correlations, timeframes, symbols)
             )
 
     set_pipeline.execute()
+
+    if int(time.time()) % 3600 == 0:  # Every hour
+        clear_timeframe_cache()
 
 
 def start_pubsub_listener(correlations, timeframes, symbols):

@@ -31,8 +31,6 @@ def get_z_score_matrix(request):
         tf = tf_options[duration]
         symbols = get_exchange_symbols()
 
-        print(msgpack.unpackb(r.execute_command("GET", f"zscore:{tf}")))
-
         response = format_z_score_matrix_response(
             msgpack.unpackb(r.execute_command("GET", f"zscore:{tf}")),
             symbols,
