@@ -1,5 +1,6 @@
 import numpy as np
 from collections import deque
+from typing import Optional
 
 
 class IncrementalPearsonCorrelation:
@@ -9,8 +10,6 @@ class IncrementalPearsonCorrelation:
 
     def __init__(self, window_size, x_initial=None, y_initial=None):
         self.window_size = window_size
-        self.x_values = deque(maxlen=window_size)
-        self.y_values = deque(maxlen=window_size)
 
         self.sum_x = 0
         self.sum_y = 0
@@ -27,9 +26,6 @@ class IncrementalPearsonCorrelation:
             x_initial = x_initial[:min_length]
             y_initial = y_initial[:min_length]
 
-            self.x_values.extend(x_initial)
-            self.y_values.extend(y_initial)
-
             self.sum_x = sum(x_initial)
             self.sum_y = sum(y_initial)
             self.sum_xx = sum(x * x for x in x_initial)
@@ -37,26 +33,29 @@ class IncrementalPearsonCorrelation:
             self.sum_xy = sum(x * y for x, y in zip(x_initial, y_initial))
             self.count = min_length
 
-    def add_data_point(self, x, y):
+    def add_data_point(
+        self,
+        x_new: float,
+        y_new: float,
+        x_old: Optional[float] = None,
+        y_old: Optional[float] = None,
+    ):
         if self.count == self.window_size:
-            old_x = self.x_values[0]
-            old_y = self.y_values[0]
+            if x_old is not None and y_old is not None:
+                self.sum_x -= x_old
+                self.sum_y -= y_old
+                self.sum_xx -= x_old * x_old
+                self.sum_yy -= y_old * y_old
+                self.sum_xy -= x_old * y_old
+                self.count -= 1
+            else:
+                pass
 
-            self.sum_x -= old_x
-            self.sum_y -= old_y
-            self.sum_xx -= old_x * old_x
-            self.sum_yy -= old_y * old_y
-            self.sum_xy -= old_x * old_y
-            self.count -= 1
-
-        self.x_values.append(x)
-        self.y_values.append(y)
-
-        self.sum_x += x
-        self.sum_y += y
-        self.sum_xx += x * x
-        self.sum_yy += y * y
-        self.sum_xy += x * y
+        self.sum_x += x_new
+        self.sum_y += y_new
+        self.sum_xx += x_new * x_new
+        self.sum_yy += y_new * y_new
+        self.sum_xy += x_new * y_new
         self.count = min(self.count + 1, self.window_size)
 
     def get_correlation(self):
