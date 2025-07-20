@@ -42,23 +42,6 @@ class RedisManager:
                         f"TS.CREATE {key} LABELS value_type volume type 250ms:{exchange}:data symbol {symbol} RETENTION {time_series_retention}"
                     )
 
-    def store_symbol_data(
-        self, symbol, timestamp, price, quote_volume, num_of_trades, should_store
-    ):
-        try:
-            self.pipeline.execute_command(
-                f"TS.MADD "
-                f"250ms:{symbol}:price {timestamp} {price} "
-                f"250ms:{symbol}:volume {timestamp} {quote_volume} "
-                f"250ms:{symbol}:trades {timestamp} {num_of_trades}"
-            )
-
-            if should_store:
-                self.pipeline.execute()
-
-        except Exception as e:
-            self.store_error(str(e))
-
     def store_error(self, error):
         self.r.execute_command(f"LPUSH error_log {str(error)}")
 
@@ -184,25 +167,6 @@ class KlinesSocketManager:
                 self.r.publish_message(
                     RedisPubMessages.KLINE_SAVED_TO_DB.value, kline_data["t"]
                 )
-
-        # if kline_data["s"] == "BTCUSDT":
-        #     self.btc_message_counter += 1
-
-        # should_store = self.btc_message_counter == 4
-
-        # self.r.store_symbol_data(
-        #     symbol=kline_data["s"],
-        #     timestamp=msg_data["E"],
-        #     price=kline_data["c"],
-        #     quote_volume=kline_data["q"],
-        #     num_of_trades=kline_data["n"],
-        #     should_store=should_store,
-        # )
-        # print("rece")
-
-        # if should_store:
-        #     print("STORED")
-        #     self.btc_message_counter = 0
 
     def _save_batch_sync(self, batch):
         with transaction.atomic():
