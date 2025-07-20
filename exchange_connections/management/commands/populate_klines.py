@@ -66,7 +66,7 @@ def populate_all_klines_1m(start_date, end_date, batch):
 
     tickers = get_exchange_symbols()
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(
                 populate_kline_1m, ticker, start_date, end_date, batch
@@ -142,23 +142,8 @@ def fetch_all_klines_paginated(ticker, start_date, end_date):
     else:
         final_end = end_date
 
-    request_count = 0
-    rate_limit = 2300
-    window_start = time.time()
-
     while current_start < final_end:
         try:
-            if request_count >= rate_limit:
-                elapsed = time.time() - window_start
-                if elapsed < 60:
-                    sleep_time = 60 - elapsed + 2
-                    print(
-                        f"Rate limit reached. Sleeping for {sleep_time:.2f} seconds..."
-                    )
-                    time.sleep(sleep_time)
-                request_count = 0
-                window_start = time.time()
-
             print(
                 f"Fetching klines from {current_start.strftime('%d %b %Y %H:%M:%S')} for {ticker}"
             )
@@ -169,8 +154,6 @@ def fetch_all_klines_paginated(ticker, start_date, end_date):
                 current_start.strftime("%d %b %Y %H:%M:%S"),
                 limit=1000,
             )
-
-            request_count += 1
 
             if not klines:
                 print(f"No more klines available for {ticker}")
