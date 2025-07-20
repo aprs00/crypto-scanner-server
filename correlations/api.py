@@ -7,7 +7,7 @@ import msgpack
 
 from core.constants import invalid_params_error
 from filters.constants import tf_options
-from exchange_connections.constants import redis_time_series_data_types
+from exchange_connections.constants import correlations_data_types
 from exchange_connections.selectors import get_exchange_symbols
 
 
@@ -22,7 +22,7 @@ def get_pearson_correlation(request):
     tf = request.GET.get("duration", None)
     data_type = request.GET.get("type", None)
 
-    if not tf_options[tf] or data_type not in redis_time_series_data_types:
+    if not tf_options[tf] or data_type not in correlations_data_types:
         return JsonResponse(invalid_params_error, status=400)
 
     tf = tf_options[tf]
