@@ -1,4 +1,4 @@
-from exchange_connections.models import BinanceSpotKline5m
+from exchange_connections.models import Kline1m
 
 
 def get_market_data(symbol, start_time_utc, group_by):
@@ -19,12 +19,12 @@ def get_market_data(symbol, start_time_utc, group_by):
                 start_time,
                 open,
                 close,
-                ROW_NUMBER() OVER (PARTITION BY DATE_TRUNC('{group_by}', start_time), ticker ORDER BY start_time) AS row_asc,
-                ROW_NUMBER() OVER (PARTITION BY DATE_TRUNC('{group_by}', start_time), ticker ORDER BY start_time DESC) AS row_desc
+                ROW_NUMBER() OVER (PARTITION BY DATE_TRUNC('{group_by}', start_time), symbol ORDER BY start_time) AS row_asc,
+                ROW_NUMBER() OVER (PARTITION BY DATE_TRUNC('{group_by}', start_time), symbol ORDER BY start_time DESC) AS row_desc
             FROM
-                "crypto_scanner_binance_spot_kline_5m"
+                "cs_klines_1m"
             WHERE
-                ticker = '{symbol}'
+                symbol = '{symbol}'
                 AND start_time >= '{start_time_utc}'
         )
         SELECT
@@ -38,4 +38,4 @@ def get_market_data(symbol, start_time_utc, group_by):
             DATE_TRUNC('{group_by}', start_time)
     """
 
-    return BinanceSpotKline5m.objects.raw(query)
+    return list(Kline1m.objects.raw(query))
