@@ -13,7 +13,7 @@ from correlations.selectors.correlations import (
     get_tickers_data,
     get_oldest_values_efficient,
 )
-from filters.constants import tf_options
+from filters.constants import correlations_tf_options
 from exchange_connections.constants import correlations_data_types
 from core.constants import RedisPubMessages
 
@@ -321,7 +321,7 @@ def initialize_incremental_correlations():
     timeframes, and data types, and listen for Redis pubsub messages with reconnection logic.
     """
 
-    timeframes = tf_options.values()
+    timeframes = correlations_tf_options.values()
     symbols = get_exchange_symbols()
 
     correlations = initialize_correlation_objects(
