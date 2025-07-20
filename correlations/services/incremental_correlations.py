@@ -14,7 +14,7 @@ from correlations.selectors.correlations import (
     get_oldest_values_efficient,
 )
 from filters.constants import tf_options
-from exchange_connections.constants import redis_time_series_data_types
+from exchange_connections.constants import correlations_data_types
 from core.constants import RedisPubMessages
 
 r = redis.Redis(host="redis")
@@ -87,7 +87,7 @@ def initialize_correlation_objects(symbols, timeframes):
 
     with ThreadPoolExecutor() as executor:
         for tf in timeframes:
-            for data_type in redis_time_series_data_types:
+            for data_type in correlations_data_types:
                 for pair_batch in pair_batches:
                     batch_symbols = set()
                     for a, b in pair_batch:
@@ -173,7 +173,7 @@ def update_correlations(
 
     oldest_values_cache = {}
 
-    for data_type in redis_time_series_data_types:
+    for data_type in correlations_data_types:
         oldest_values_cache[data_type] = get_oldest_values_for_timeframe(
             tf, data_type, symbols
         )
@@ -260,7 +260,7 @@ def update_and_cache_incremental_correlations(correlations, timeframes, symbols)
             symbols=symbols,
         )
 
-        for data_type in redis_time_series_data_types:
+        for data_type in correlations_data_types:
             correlation_matrix = create_correlation_list(
                 tf=tf,
                 data_type=data_type,
