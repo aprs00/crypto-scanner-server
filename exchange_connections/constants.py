@@ -1,6 +1,6 @@
 from enum import Enum
 
-redis_time_series_data_types = ["price"]  # trades, volume
+correlations_data_types = ["price"]  # trades, volume
 
 KLINE_FIELD_MAP = {
     "price": "close",

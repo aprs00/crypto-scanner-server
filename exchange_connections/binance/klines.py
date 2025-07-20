@@ -11,7 +11,7 @@ from django.db import transaction
 
 
 from exchange_connections.constants import (
-    redis_time_series_data_types,
+    correlations_data_types,
     BinanceContractStatus,
 )
 from core.constants import RedisPubMessages
@@ -34,7 +34,7 @@ class RedisManager:
 
     def initialize_keys(self, symbols, exchange="binance"):
         for symbol in symbols:
-            for data_type in redis_time_series_data_types:
+            for data_type in correlations_data_types:
                 key = f"250ms:{exchange}:{symbol}:{data_type}"
 
                 if not self.r.exists(key):
