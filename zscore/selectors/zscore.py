@@ -13,7 +13,7 @@ r = redis.Redis(host="redis")
 
 
 def get_tickers_data_z_score(duration):
-    duration_hours = tf_options[duration]
+    duration_hours = tf_options["zscore"][duration]
 
     end_time = timezone.now()
     start_time = end_time - timedelta(hours=duration_hours)

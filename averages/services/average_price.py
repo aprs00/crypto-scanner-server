@@ -40,16 +40,10 @@ def average_price_change(duration, symbol, start_time_utc, time_period):
 
     if time_period == "day":
         price_changes = get_market_data(symbol, start_time_utc, "day")
-        print(
-            f"Price changes for {symbol} over the last {duration} days: {price_changes}"
-        )
         time_dict_values = calculate_dict_percentage(price_changes, "day_of_week")
         time_labels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     elif time_period == "hour":
         price_changes = get_market_data(symbol, start_time_utc, "hour")
-        print(
-            f"Price changes for {symbol} over the last {duration} hours: {price_changes}"
-        )
         time_dict_values = calculate_dict_percentage(price_changes, "hour_of_day")
         time_dict_values = dict(sorted(time_dict_values.items()))
         time_labels = [

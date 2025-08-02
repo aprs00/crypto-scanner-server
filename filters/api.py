@@ -22,7 +22,11 @@ def get_stats_select_options(request):
     if request.method != "GET":
         return HttpResponse(status=405)
 
-    return JsonResponse(format_options(tf_options), safe=False)
+    result = {
+        tf_type: format_options(options) for tf_type, options in tf_options.items()
+    }
+
+    return JsonResponse(result, safe=False)
 
 
 @csrf_exempt
