@@ -160,7 +160,7 @@ def initialize_incremental_zscore():
     Calculate and cache Z-scores for all combinations of timeframes, data types, and symbols.
     """
     symbols = get_exchange_symbols()
-    timeframes = tf_options.values()
+    timeframes = tf_options["zscore"].values()
     incremental_zscores = initialize_z_score_objects(
         symbols, timeframes, zscore_data_types
     )

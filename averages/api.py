@@ -23,7 +23,7 @@ def get_average_prices(request):
 
     # TODO fix tf options, it should start from 1d
 
-    duration_hours = tf_options[duration]
+    duration_hours = tf_options["average_price"][duration]
     start_time_utc = timezone.now() - timedelta(hours=duration_hours)
 
     response = average_price_change(duration, symbol, start_time_utc, type)

@@ -22,10 +22,10 @@ def get_pearson_correlation(request):
     tf = request.GET.get("duration", None)
     data_type = request.GET.get("type", None)
 
-    if not tf_options[tf] or data_type not in correlations_data_types:
+    if not tf_options["correlation"][tf] or data_type not in correlations_data_types:
         return JsonResponse(invalid_params_error, status=400)
 
-    tf = tf_options[tf]
+    tf = tf_options["correlation"][tf]
 
     symbols = get_exchange_symbols()
 

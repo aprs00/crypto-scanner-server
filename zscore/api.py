@@ -28,7 +28,7 @@ def get_z_score_matrix(request):
                 {"error": "Invalid axis", "code": "INVALID_AXIS"}, status=400
             )
 
-        tf = tf_options[duration]
+        tf = tf_options["zscore"][duration]
         symbols = get_exchange_symbols()
 
         response = format_z_score_matrix_response(
