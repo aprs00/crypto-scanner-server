@@ -25,9 +25,8 @@ timeframe_oldest_values_cache: Dict[Tuple[int, str], Dict[str, Tuple[float, int]
 )
 
 
-def generate_tuple(data_type, symbol_a, symbol_b):
+def generate_tuple(symbol_a, symbol_b):
     return (
-        data_type,
         symbol_a,
         symbol_b,
     )
@@ -109,10 +108,14 @@ def initialize_correlation_objects(symbols, timeframes):
         for future in as_completed(futures):
             tf, data_type, result = future.result()
 
-            for tuple_key, tf_dict in result.items():
+            for tuple_key, data_type_dict in result.items():
                 if tuple_key not in correlations:
                     correlations[tuple_key] = {}
-                correlations[tuple_key].update(tf_dict)
+
+                for dt, tf_dict in data_type_dict.items():
+                    if dt not in correlations[tuple_key]:
+                        correlations[tuple_key][dt] = {}
+                    correlations[tuple_key][dt].update(tf_dict)
 
             completed_futures += 1
 
@@ -134,7 +137,6 @@ def process_correlation_batch(tf, data_type, symbols, symbol_pairs):
 
     for symbol_a, symbol_b in symbol_pairs:
         dict_tuple = generate_tuple(
-            data_type=data_type,
             symbol_a=symbol_a,
             symbol_b=symbol_b,
         )
@@ -142,7 +144,10 @@ def process_correlation_batch(tf, data_type, symbols, symbol_pairs):
         if dict_tuple not in local_correlations:
             local_correlations[dict_tuple] = {}
 
-        local_correlations[dict_tuple][tf] = IncrementalPearsonCorrelation(
+        if data_type not in local_correlations[dict_tuple]:
+            local_correlations[dict_tuple][data_type] = {}
+
+        local_correlations[dict_tuple][data_type][tf] = IncrementalPearsonCorrelation(
             window_size=window_size,
             x_initial=symbol_data[symbol_a],
             y_initial=symbol_data[symbol_b],
@@ -160,10 +165,15 @@ def get_symbol_data(symbols):
     result = {symbol: {} for symbol in symbols}
     latest_klines = get_latest_kline_values()
 
+    data_type_db_column_mapper = {
+        "price": "close",
+        "volume": "base_volume",
+        "trades": "number_of_trades",
+    }
+
     for kline in latest_klines:
-        result[kline.symbol]["price"] = float(kline.close)
-        # result[kline.symbol]["volume"] = float(kline.base_volume)
-        # result[kline.symbol]["trades"] = float(kline.number_of_trades)
+        for data_type, db_column in data_type_db_column_mapper.items():
+            result[kline.symbol][data_type] = float(getattr(kline, db_column))
 
     return result
 
@@ -194,16 +204,16 @@ def update_correlations(
             value_b = float(value_b)
 
             dict_tuple = generate_tuple(
-                data_type=data_type,
                 symbol_a=symbol_a,
                 symbol_b=symbol_b,
             )
 
             if (
                 dict_tuple in incremental_correlations
-                and tf in incremental_correlations[dict_tuple]
+                and data_type in incremental_correlations[dict_tuple]
+                and tf in incremental_correlations[dict_tuple][data_type]
             ):
-                correlation_obj = incremental_correlations[dict_tuple][tf]
+                correlation_obj = incremental_correlations[dict_tuple][data_type][tf]
                 x_old = None
                 y_old = None
 
@@ -228,11 +238,10 @@ def create_correlation_list(
     correlations = {
         (symbol_a, symbol_b): incremental_correlations[
             generate_tuple(
-                data_type=data_type,
                 symbol_a=symbol_a,
                 symbol_b=symbol_b,
             )
-        ][tf]
+        ][data_type][tf]
         for symbol_a, symbol_b in combinations(symbols, 2)
     }
 

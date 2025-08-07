@@ -4,5 +4,6 @@
         "*": true,
         "plaintext": false,
         "scminput": false
-    }
+    },
+    "postman.settings.dotenv-detection-notification-visibility": false
 }

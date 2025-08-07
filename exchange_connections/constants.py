@@ -1,6 +1,6 @@
 from enum import Enum
 
-correlations_data_types = ["price"]  # trades, volume
+correlations_data_types = ["price", "trades", "volume"]
 
 KLINE_FIELD_MAP = {
     "price": "close",
