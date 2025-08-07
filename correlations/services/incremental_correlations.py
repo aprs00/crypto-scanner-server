@@ -25,9 +25,8 @@ timeframe_oldest_values_cache: Dict[Tuple[int, str], Dict[str, Tuple[float, int]
 )
 
 
-def generate_tuple(tf, data_type, symbol_a, symbol_b):
+def generate_tuple(data_type, symbol_a, symbol_b):
     return (
-        tf,
         data_type,
         symbol_a,
         symbol_b,
@@ -109,7 +108,11 @@ def initialize_correlation_objects(symbols, timeframes):
 
         for future in as_completed(futures):
             tf, data_type, result = future.result()
-            correlations.update(result)
+
+            for tuple_key, tf_dict in result.items():
+                if tuple_key not in correlations:
+                    correlations[tuple_key] = {}
+                correlations[tuple_key].update(tf_dict)
 
             completed_futures += 1
 
@@ -131,13 +134,15 @@ def process_correlation_batch(tf, data_type, symbols, symbol_pairs):
 
     for symbol_a, symbol_b in symbol_pairs:
         dict_tuple = generate_tuple(
-            tf=tf,
             data_type=data_type,
             symbol_a=symbol_a,
             symbol_b=symbol_b,
         )
 
-        local_correlations[dict_tuple] = IncrementalPearsonCorrelation(
+        if dict_tuple not in local_correlations:
+            local_correlations[dict_tuple] = {}
+
+        local_correlations[dict_tuple][tf] = IncrementalPearsonCorrelation(
             window_size=window_size,
             x_initial=symbol_data[symbol_a],
             y_initial=symbol_data[symbol_b],
@@ -189,14 +194,16 @@ def update_correlations(
             value_b = float(value_b)
 
             dict_tuple = generate_tuple(
-                tf=tf,
                 data_type=data_type,
                 symbol_a=symbol_a,
                 symbol_b=symbol_b,
             )
 
-            if dict_tuple in incremental_correlations:
-                correlation_obj = incremental_correlations[dict_tuple]
+            if (
+                dict_tuple in incremental_correlations
+                and tf in incremental_correlations[dict_tuple]
+            ):
+                correlation_obj = incremental_correlations[dict_tuple][tf]
                 x_old = None
                 y_old = None
 
@@ -221,12 +228,11 @@ def create_correlation_list(
     correlations = {
         (symbol_a, symbol_b): incremental_correlations[
             generate_tuple(
-                tf=tf,
                 data_type=data_type,
                 symbol_a=symbol_a,
                 symbol_b=symbol_b,
             )
-        ]
+        ][tf]
         for symbol_a, symbol_b in combinations(symbols, 2)
     }
 
