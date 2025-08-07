@@ -10,37 +10,14 @@ import threading
 from django.db import transaction
 
 
-from exchange_connections.constants import (
-    correlations_data_types,
-    BinanceContractStatus,
-)
+from exchange_connections.constants import BinanceContractStatus
 from core.constants import RedisPubMessages
-
-time_series_retention = str(1 * 60 * 60 * 1000)  # 1h in miliseconds
-
-
-def ms_to_datetime(ms_timestamp):
-    try:
-        timestamp_sec = int(ms_timestamp) / 1000.0
-        return datetime.fromtimestamp(timestamp_sec, tz=timezone.utc)
-    except (ValueError, TypeError) as e:
-        return None
+from utils.convert import ms_to_datetime
 
 
 class RedisManager:
     def __init__(self):
         self.r = redis.Redis(host="redis")
-        self.pipeline = self.r.pipeline()
-
-    def initialize_keys(self, symbols, exchange="binance"):
-        for symbol in symbols:
-            for data_type in correlations_data_types:
-                key = f"250ms:{exchange}:{symbol}:{data_type}"
-
-                if not self.r.exists(key):
-                    self.r.execute_command(
-                        f"TS.CREATE {key} LABELS value_type volume type 250ms:{exchange}:data symbol {symbol} RETENTION {time_series_retention}"
-                    )
 
     def store_error(self, error):
         self.r.execute_command(f"LPUSH error_log {str(error)}")
