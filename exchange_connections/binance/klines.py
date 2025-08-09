@@ -2,17 +2,13 @@ from binance import ThreadedWebsocketManager, Client
 from binance.enums import ContractType, KLINE_INTERVAL_1MINUTE
 import time
 import redis
-from datetime import datetime
-from django.utils import timezone
-from exchange_connections.models import Kline1m
-from decimal import Decimal
 import threading
-from django.db import transaction
-
-
 from exchange_connections.constants import BinanceContractStatus
 from core.constants import RedisPubMessages
-from utils.convert import ms_to_datetime
+from exchange_connections.services.klines_ingest import (
+    build_model_from_ws,
+    bulk_insert_klines,
+)
 
 
 class RedisManager:
@@ -116,19 +112,8 @@ class KlinesSocketManager:
 
         if kline_data["x"]:
             self.message_batch.append(
-                Kline1m(
-                    start_time=ms_to_datetime(kline_data["t"]),
-                    close_time=ms_to_datetime(kline_data["T"]),
-                    symbol=kline_data["s"],
-                    open=Decimal(kline_data["o"]),
-                    high=Decimal(kline_data["h"]),
-                    low=Decimal(kline_data["l"]),
-                    close=Decimal(kline_data["c"]),
-                    base_volume=Decimal(kline_data["v"]),
-                    quote_volume=Decimal(kline_data["q"]),
-                    taker_buy_base_volume=Decimal(kline_data["V"]),
-                    taker_buy_quote_volume=Decimal(kline_data["Q"]),
-                    number_of_trades=Decimal(kline_data["n"]),
+                build_model_from_ws(
+                    kline_data,
                     exchange="binance",
                     contract_type=ContractType.PERPETUAL.value.lower(),
                 )
@@ -146,8 +131,7 @@ class KlinesSocketManager:
                 )
 
     def _save_batch_sync(self, batch):
-        with transaction.atomic():
-            Kline1m.objects.bulk_create(batch)
+        bulk_insert_klines(batch, chunk_size=len(batch) or 1)
 
     def main(self):
         self.initialize()

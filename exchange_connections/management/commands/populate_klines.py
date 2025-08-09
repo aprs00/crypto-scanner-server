@@ -2,12 +2,14 @@ from binance.client import Client
 from datetime import datetime, timedelta
 from django.core.management.base import BaseCommand
 from django.db import IntegrityError
-from django.utils import timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 from exchange_connections.selectors import get_exchange_symbols
-from exchange_connections.models import Kline1m
+from exchange_connections.services.klines_ingest import (
+    build_models_from_rest,
+    bulk_insert_klines,
+)
 
 client = Client()
 
@@ -41,7 +43,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         ticker = options.get("ticker")
         start_date = options.get("start_date") or get_1_month_ago_date()
-        end_date = options.get("end_date") or datetime.now() + timedelta(hours=2)
+        end_date = options.get("end_date") or datetime.now()
         batch_size = options.get("batch_size", 40000)
 
         self.stdout.write(f"Starting kline population...")
@@ -91,37 +93,21 @@ def populate_kline_1m(ticker, start_date, end_date, batch):
 
     try:
         all_klines = fetch_all_klines_paginated(ticker, start_date, end_date)
-
         print(f"Total klines fetched: {len(all_klines)}")
-
         if not all_klines:
             print(f"No klines found for {ticker}")
             return
-
-        kline_objects = []
-
-        for kline in all_klines:
-            kline_object = create_kline_object_1m(Kline1m, ticker, kline)
-
-            if kline_object:
-                kline_objects.append(kline_object)
-
+        kline_objects = build_models_from_rest(ticker, all_klines)
         if kline_objects:
             print(f"Created {len(kline_objects)} kline objects for {ticker}")
-
-            for i in range(0, len(kline_objects), batch):
-                batch_objects = kline_objects[i : i + batch]
-                try:
-                    Kline1m.objects.bulk_create(batch_objects, ignore_conflicts=True)
-                    print(
-                        f"Inserted batch {i//batch + 1} for {ticker} ({len(batch_objects)} records)"
-                    )
-                except IntegrityError as e:
-                    print(f"IntegrityError for {ticker} batch {i//batch + 1}: {str(e)}")
-                    pass
-
+            try:
+                attempted = bulk_insert_klines(kline_objects, chunk_size=batch)
+                print(
+                    f"Inserted (attempted) {attempted} kline records for {ticker} (duplicates ignored)"
+                )
+            except IntegrityError as e:
+                print(f"IntegrityError bulk inserting {ticker}: {e}")
         print(f"Completed processing {ticker}")
-
     except Exception as e:
         print(f"Error processing {ticker}: {str(e)}")
 
@@ -178,39 +164,6 @@ def fetch_all_klines_paginated(ticker, start_date, end_date):
 
     print(f"Completed fetching klines for {ticker}. Total klines: {len(all_klines)}")
     return all_klines
-
-
-def create_kline_object_1m(model, ticker, kline):
-    """
-    Create a Kline1m object from binance kline data
-    Adapted for the new Kline1m model structure with timezone support
-    """
-    try:
-        start_time = datetime.fromtimestamp(kline[0] / 1000)
-        close_time = datetime.fromtimestamp(kline[6] / 1000)
-
-        start_time = timezone.make_aware(start_time, timezone.utc)
-        close_time = timezone.make_aware(close_time, timezone.utc)
-
-        return model(
-            start_time=start_time,
-            close_time=close_time,
-            symbol=ticker,
-            open=kline[1],
-            high=kline[2],
-            low=kline[3],
-            close=kline[4],
-            base_volume=kline[5],
-            quote_volume=kline[7],
-            number_of_trades=kline[8],
-            taker_buy_base_volume=kline[9],
-            taker_buy_quote_volume=kline[10],
-            exchange="binance",
-            contract_type="perpetual",
-        )
-    except Exception as e:
-        print(f"Error creating kline object for {ticker}: {str(e)}")
-        return None
 
 
 def get_1_month_ago_date():
