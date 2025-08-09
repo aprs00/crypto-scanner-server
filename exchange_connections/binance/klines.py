@@ -28,7 +28,9 @@ class KlinesSocketManager:
         self.r = RedisManager()
         self.stream_name = None
         self.symbols_executed = set()
-        self.message_batch = []
+        self.message_batch = (
+            []
+        )  # now stores raw kline 'k' dicts instead of model instances
         self.symbols = []
         self.symbols_count = 0
 
@@ -75,7 +77,7 @@ class KlinesSocketManager:
         except Exception as e:
             self.r.store_error(str(e))
 
-    def handle_message(self, msg):
+    async def handle_message(self, msg):
         """
         {
             "e": "kline",                     # event type
@@ -111,27 +113,34 @@ class KlinesSocketManager:
         kline_data = msg_data["k"]
 
         if kline_data["x"]:
-            self.message_batch.append(
-                build_model_from_ws(
-                    kline_data,
-                    exchange="binance",
-                    contract_type=ContractType.PERPETUAL.value.lower(),
-                )
-            )
+            self.message_batch.append(kline_data)
 
             if len(self.message_batch) == self.symbols_count:
+                batch_copy = list(self.message_batch)
+                self.message_batch = []
                 thread = threading.Thread(
-                    target=self._save_batch_sync, args=(list(self.message_batch),)
+                    target=self._save_batch_sync, args=(batch_copy,)
                 )
                 thread.start()
 
-                self.message_batch = []
                 self.r.publish_message(
                     RedisPubMessages.KLINE_SAVED_TO_DB.value, kline_data["t"]
                 )
 
     def _save_batch_sync(self, batch):
-        bulk_insert_klines(batch, chunk_size=len(batch) or 1)
+        try:
+            models = [
+                build_model_from_ws(
+                    kline_dict,
+                    exchange="binance",
+                    contract_type=ContractType.PERPETUAL.value.lower(),
+                )
+                for kline_dict in batch
+            ]
+
+            bulk_insert_klines(models, chunk_size=len(models) or 1)
+        except Exception as e:
+            self.r.store_error(f"kline_batch_save_error: {e}")
 
     def main(self):
         self.initialize()

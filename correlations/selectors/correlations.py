@@ -36,19 +36,19 @@ def get_tickers_data(duration_hours, data_type, symbols):
 
     all_data = (
         Kline1m.objects.filter(
-            symbol__in=symbols,
+            symbol__name__in=symbols,
             start_time__gte=start_time.astimezone(timezone.utc),
             start_time__lte=end_time.astimezone(timezone.utc),
-            exchange="binance",
+            exchange__name="binance",
         )
         .annotate(**{annotated_field: Cast(field_name, FloatField())})
-        .values("symbol", "start_time", annotated_field)
-        .order_by("symbol", "start_time")
+        .values("symbol__name", "start_time", annotated_field)
+        .order_by("symbol__name", "start_time")
     )
 
     query_symbols_data = {symbol: [] for symbol in symbols}
     for item in all_data:
-        symbol = item["symbol"]
+        symbol = item["symbol__name"]
         if symbol in query_symbols_data:
             query_symbols_data[symbol].append(item[annotated_field])
 
@@ -84,19 +84,19 @@ def get_oldest_values_efficient(
 
     oldest_data = (
         Kline1m.objects.filter(
-            symbol__in=symbols,
+            symbol__name__in=symbols,
             start_time__gte=start_window.astimezone(timezone.utc),
             start_time__lte=end_window.astimezone(timezone.utc),
-            exchange="binance",
+            exchange__name="binance",
         )
         .annotate(**{annotated_field: Cast(field_name, FloatField())})
-        .values("symbol", "start_time", annotated_field)
-        .order_by("symbol", "start_time")
+        .values("symbol__name", "start_time", annotated_field)
+        .order_by("symbol__name", "start_time")
     )
 
     result = {}
     for symbol in symbols:
-        symbol_data = [item for item in oldest_data if item["symbol"] == symbol]
+        symbol_data = [item for item in oldest_data if item["symbol__name"] == symbol]
         if symbol_data:
             closest_record = min(
                 symbol_data,

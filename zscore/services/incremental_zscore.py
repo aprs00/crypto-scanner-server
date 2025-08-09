@@ -89,9 +89,11 @@ def initialize_z_score_objects(symbols, timeframes, zscore_data_types):
         start_time = timezone.now() - timedelta(hours=tf)
 
         historical_klines = (
-            Kline1m.objects.filter(symbol__in=symbols, start_time__gte=start_time)
-            .values("symbol", "start_time", "close", "base_volume", "number_of_trades")
-            .order_by("symbol", "start_time")
+            Kline1m.objects.filter(symbol__name__in=symbols, start_time__gte=start_time)
+            .values(
+                "symbol__name", "start_time", "close", "base_volume", "number_of_trades"
+            )
+            .order_by("symbol__name", "start_time")
         )
 
         data_by_symbol = {
@@ -100,11 +102,11 @@ def initialize_z_score_objects(symbols, timeframes, zscore_data_types):
         }
 
         for kline in historical_klines:
-            data_by_symbol[kline["symbol"]]["price"].append(float(kline["close"]))
-            data_by_symbol[kline["symbol"]]["volume"].append(
+            data_by_symbol[kline["symbol__name"]]["price"].append(float(kline["close"]))
+            data_by_symbol[kline["symbol__name"]]["volume"].append(
                 float(kline["base_volume"])
             )
-            data_by_symbol[kline["symbol"]]["trades"].append(
+            data_by_symbol[kline["symbol__name"]]["trades"].append(
                 float(kline["number_of_trades"])
             )
 
