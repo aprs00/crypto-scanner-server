@@ -77,7 +77,7 @@ class KlinesSocketManager:
         except Exception as e:
             self.r.store_error(str(e))
 
-    async def handle_message(self, msg):
+    def handle_message(self, msg):
         """
         {
             "e": "kline",                     # event type
@@ -112,7 +112,7 @@ class KlinesSocketManager:
         msg_data = msg["data"]
         kline_data = msg_data["k"]
 
-        if kline_data["x"]:
+        if kline_data.get("x"):
             self.message_batch.append(kline_data)
 
             if len(self.message_batch) == self.symbols_count:
