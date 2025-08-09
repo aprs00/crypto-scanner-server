@@ -75,8 +75,10 @@ def populate_all_klines_1m(start_date, end_date, batch):
             ): ticker
             for ticker in tickers
         }
+
         for future in as_completed(futures):
             ticker = futures[future]
+
             try:
                 future.result()
             except Exception as exc:
@@ -94,12 +96,16 @@ def populate_kline_1m(ticker, start_date, end_date, batch):
     try:
         all_klines = fetch_all_klines_paginated(ticker, start_date, end_date)
         print(f"Total klines fetched: {len(all_klines)}")
+
         if not all_klines:
             print(f"No klines found for {ticker}")
             return
+
         kline_objects = build_models_from_rest(ticker, all_klines)
+
         if kline_objects:
             print(f"Created {len(kline_objects)} kline objects for {ticker}")
+
             try:
                 attempted = bulk_insert_klines(kline_objects, chunk_size=batch)
                 print(
@@ -107,7 +113,9 @@ def populate_kline_1m(ticker, start_date, end_date, batch):
                 )
             except IntegrityError as e:
                 print(f"IntegrityError bulk inserting {ticker}: {e}")
+
         print(f"Completed processing {ticker}")
+
     except Exception as e:
         print(f"Error processing {ticker}: {str(e)}")
 

@@ -67,7 +67,7 @@ class BinanceSpotKline5m(models.Model):
 class Kline1m(models.Model):
     start_time = models.DateTimeField(db_index=True)
     close_time = models.DateTimeField()
-    symbol = models.CharField(max_length=20, db_index=True)
+    symbol = models.ForeignKey("Symbol", on_delete=models.CASCADE, db_index=True)
     open = models.DecimalField(max_digits=18, decimal_places=8)
     close = models.DecimalField(max_digits=18, decimal_places=8)
     high = models.DecimalField(max_digits=18, decimal_places=8)
@@ -77,8 +77,10 @@ class Kline1m(models.Model):
     taker_buy_base_volume = models.DecimalField(max_digits=24, decimal_places=8)
     taker_buy_quote_volume = models.DecimalField(max_digits=24, decimal_places=8)
     number_of_trades = models.IntegerField()
-    exchange = models.CharField(max_length=20, db_index=True)
-    contract_type = models.CharField(max_length=20, db_index=True)
+    exchange = models.ForeignKey("Exchange", on_delete=models.CASCADE, db_index=True)
+    contract_type = models.ForeignKey(
+        "ContractType", on_delete=models.CASCADE, db_index=True
+    )
 
     class Meta:
         db_table = "cs_klines_1m"
@@ -97,4 +99,35 @@ class Kline1m(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.symbol} @ {self.start_time} | C: {self.close}"
+        return f"{self.symbol.name} @ {self.start_time} | C: {self.close}"
+
+
+class Exchange(models.Model):
+    name = models.CharField(max_length=20)
+
+    class Meta:
+        db_table = "cs_exchanges"
+
+    def __str__(self):
+        return self.name
+
+
+class ContractType(models.Model):
+    name = models.CharField(max_length=20)
+
+    class Meta:
+        db_table = "cs_contract_types"
+
+    def __str__(self):
+        return self.name
+
+
+class Symbol(models.Model):
+    name = models.CharField(max_length=20)
+    exchange = models.ForeignKey(Exchange, on_delete=models.CASCADE)
+
+    class Meta:
+        db_table = "cs_symbols"
+
+    def __str__(self):
+        return self.name

@@ -2,11 +2,45 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 from decimal import Decimal
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Sequence, Dict, Union, Optional
 from django.db import transaction
 from utils.convert import ms_to_aware_datetime
 
-from exchange_connections.models import Kline1m
+from exchange_connections.models import Kline1m, Exchange, ContractType, Symbol
+
+
+_exchange_cache: Dict[str, Exchange] = {}
+_contract_type_cache: Dict[str, ContractType] = {}
+_symbol_cache: Dict[str, Symbol] = {}
+
+
+def get_or_create_exchange(name: str) -> Exchange:
+    if name not in _exchange_cache:
+        exchange, _ = Exchange.objects.get_or_create(name=name)
+        _exchange_cache[name] = exchange
+
+    return _exchange_cache[name]
+
+
+def get_or_create_contract_type(name: str) -> ContractType:
+    if name not in _contract_type_cache:
+        contract_type, _ = ContractType.objects.get_or_create(name=name)
+        _contract_type_cache[name] = contract_type
+
+    return _contract_type_cache[name]
+
+
+def get_or_create_symbol(name: str, exchange: Exchange) -> Symbol:
+    cache_key = f"{name}_{exchange.pk}"
+
+    if cache_key not in _symbol_cache:
+        symbol, _ = Symbol.objects.get_or_create(
+            name=name,
+            exchange=exchange,
+        )
+        _symbol_cache[cache_key] = symbol
+
+    return _symbol_cache[cache_key]
 
 
 class RestKlineIndex(IntEnum):
@@ -36,10 +70,14 @@ class RawRestKline:
     ) -> Kline1m:
         d = self.data
 
+        exchange_obj = get_or_create_exchange(exchange)
+        contract_type_obj = get_or_create_contract_type(contract_type)
+        symbol_obj = get_or_create_symbol(symbol, exchange_obj)
+
         return Kline1m(
             start_time=ms_to_aware_datetime(d[RestKlineIndex.OPEN_TIME]),
             close_time=ms_to_aware_datetime(d[RestKlineIndex.CLOSE_TIME]),
-            symbol=symbol,
+            symbol=symbol_obj,
             open=d[RestKlineIndex.OPEN],
             high=d[RestKlineIndex.HIGH],
             low=d[RestKlineIndex.LOW],
@@ -49,8 +87,8 @@ class RawRestKline:
             number_of_trades=d[RestKlineIndex.NUMBER_OF_TRADES],
             taker_buy_base_volume=d[RestKlineIndex.TAKER_BUY_BASE_VOLUME],
             taker_buy_quote_volume=d[RestKlineIndex.TAKER_BUY_QUOTE_VOLUME],
-            exchange=exchange,
-            contract_type=contract_type,
+            exchange=exchange_obj,
+            contract_type=contract_type_obj,
         )
 
 
@@ -65,10 +103,14 @@ class RawWsKline:
     ) -> Kline1m:
         kd = self.k
 
+        exchange_obj = get_or_create_exchange(exchange)
+        contract_type_obj = get_or_create_contract_type(contract_type)
+        symbol_obj = get_or_create_symbol(kd["s"], exchange_obj)
+
         return Kline1m(
             start_time=ms_to_aware_datetime(kd["t"]),
             close_time=ms_to_aware_datetime(kd["T"]),
-            symbol=kd["s"],
+            symbol=symbol_obj,
             open=Decimal(kd["o"]),
             high=Decimal(kd["h"]),
             low=Decimal(kd["l"]),
@@ -78,8 +120,8 @@ class RawWsKline:
             taker_buy_base_volume=Decimal(kd["V"]),
             taker_buy_quote_volume=Decimal(kd["Q"]),
             number_of_trades=Decimal(kd["n"]),
-            exchange=exchange,
-            contract_type=contract_type,
+            exchange=exchange_obj,
+            contract_type=contract_type_obj,
         )
 
 
@@ -95,6 +137,21 @@ def build_model_from_ws(
     return RawWsKline(kline_dict).to_model(
         exchange=exchange, contract_type=contract_type
     )
+
+
+def build_kline_models(
+    data: Union[Iterable[Sequence], dict],
+    symbol: Optional[str] = None,
+    exchange: str = "binance",
+    contract_type: str = "perpetual",
+) -> Union[List[Kline1m], Kline1m]:
+    if isinstance(data, dict):
+        return RawWsKline(data).to_model(exchange=exchange, contract_type=contract_type)
+    elif isinstance(data, Iterable):
+        if symbol is None:
+            raise ValueError("symbol parameter is required when data is an Iterable")
+        return [RawRestKline(k).to_model(symbol) for k in data]
+    return []
 
 
 def bulk_insert_klines(objs: List[Kline1m], chunk_size: int = 10000) -> int:
