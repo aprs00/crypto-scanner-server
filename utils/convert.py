@@ -2,9 +2,9 @@ from datetime import datetime
 from django.utils import timezone
 
 
-def ms_to_datetime(ms_timestamp):
-    try:
-        timestamp_sec = int(ms_timestamp) / 1000.0
-        return datetime.fromtimestamp(timestamp_sec, tz=timezone.utc)
-    except (ValueError, TypeError) as e:
-        return None
+def ms_to_aware_datetime(ms) -> datetime:
+    """Convert a millisecond timestamp (epoch, UTC) to a timezone-aware UTC datetime.
+
+    Accepts int/float/Decimal/str. Returns django timezone-aware datetime in UTC.
+    """
+    return timezone.make_aware(datetime.fromtimestamp(int(ms) / 1000), timezone.utc)
