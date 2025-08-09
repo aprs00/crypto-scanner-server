@@ -74,6 +74,10 @@ class IncrementalZScore:
         return (current_value - mean) / std_dev
 
 
+def generate_tuple(tf, data_type, symbol):
+    return (tf, data_type, symbol)
+
+
 def initialize_z_score_objects(symbols, timeframes, zscore_data_types):
     """
     Initialize Z-score objects with historical data from the database.
@@ -106,7 +110,7 @@ def initialize_z_score_objects(symbols, timeframes, zscore_data_types):
 
         for data_type in zscore_data_types:
             for symbol in symbols:
-                z_score_dict[(tf, data_type, symbol)] = IncrementalZScore(
+                z_score_dict[generate_tuple(tf, data_type, symbol)] = IncrementalZScore(
                     tf, data_by_symbol[symbol][data_type]
                 )
 
@@ -134,9 +138,9 @@ def update_z_scores(incremental_zscores, tf, symbol_data):
     """Update incremental Z-scores with the latest data points for all data types."""
     for symbol, data_dict in symbol_data.items():
         for data_type, value in data_dict.items():
-            dict_tuple = (tf, data_type, symbol)
+            dict_tuple = generate_tuple(tf, data_type, symbol)
 
-            if tuple in incremental_zscores:
+            if dict_tuple in incremental_zscores:
                 incremental_zscores[dict_tuple].add_data_point(float(value))
             else:
                 print(f"[Warning] Correlation object not found for {dict_tuple}")
@@ -150,7 +154,9 @@ def create_z_score_matrix(tf, data_type, incremental_zscores, symbols):
         Dictionary with symbols as keys and their Z-scores as values
     """
     return {
-        symbol: round(incremental_zscores[(tf, data_type, symbol)].get_z_score(), 2)
+        symbol: round(
+            incremental_zscores[generate_tuple(tf, data_type, symbol)].get_z_score(), 2
+        )
         for symbol in symbols
     }
 
