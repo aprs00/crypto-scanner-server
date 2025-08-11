@@ -116,7 +116,7 @@ def initialize_z_score_objects(symbols, timeframes, zscore_data_types):
     return z_score_dict
 
 
-def get_symbol_data():
+def get_symbols_data():
     """
     Get the latest data for all symbols and all data types from the database.
     Returns:
