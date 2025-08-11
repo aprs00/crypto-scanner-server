@@ -23,15 +23,16 @@ def get_tickers_data_z_score(duration):
     trades_volume_price_tickers_data = {}
 
     for ticker in tickers:
-        trades_volume_price_tickers_data[ticker] = (
+        qs = (
             Kline1m.objects.filter(
-                symbol=ticker,
+                symbol__name=ticker,
                 start_time__gte=start_time_utc,
                 start_time__lte=end_time_utc,
             )
             .values_list("base_volume", "close", "number_of_trades", "start_time")
             .order_by("start_time")
         )
+        trades_volume_price_tickers_data[ticker] = qs
 
     trades_volume_price_tickers_data = get_min_length(
         trades_volume_price_tickers_data, tickers

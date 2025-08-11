@@ -9,6 +9,7 @@ from filters.constants import tf_options
 from zscore.constants import zscore_data_types
 from exchange_connections.selectors import get_exchange_symbols, get_latest_kline_values
 from exchange_connections.models import Kline1m
+from exchange_connections.constants import KLINE_FIELD_MAP
 from core.constants import RedisPubMessages
 
 r = redis.Redis(host="redis")
@@ -80,60 +81,55 @@ def generate_tuple(tf, data_type, symbol):
 
 def initialize_z_score_objects(symbols, timeframes, zscore_data_types):
     """
-    Initialize Z-score objects with historical data from the database.
-    Each timeframe gets its own window of historical data.
+    Initialize Z-score objects using historical kline data from the database.
+    Each timeframe has its own data window.
     """
     z_score_dict = {}
 
     for tf in timeframes:
         start_time = timezone.now() - timedelta(hours=tf)
 
-        historical_klines = (
+        klines = (
             Kline1m.objects.filter(symbol__name__in=symbols, start_time__gte=start_time)
-            .values(
-                "symbol__name", "start_time", "close", "base_volume", "number_of_trades"
-            )
-            .order_by("symbol__name", "start_time")
+            .values("symbol__name", "close", "base_volume", "number_of_trades")
+            .order_by("symbol__name")
         )
 
         data_by_symbol = {
-            symbol: {data_type: [] for data_type in zscore_data_types}
-            for symbol in symbols
+            symbol: {dt: [] for dt in zscore_data_types} for symbol in symbols
         }
 
-        for kline in historical_klines:
-            data_by_symbol[kline["symbol__name"]]["price"].append(float(kline["close"]))
-            data_by_symbol[kline["symbol__name"]]["volume"].append(
-                float(kline["base_volume"])
-            )
-            data_by_symbol[kline["symbol__name"]]["trades"].append(
-                float(kline["number_of_trades"])
-            )
+        for kline in klines:
+            for data_type, field in KLINE_FIELD_MAP.items():
+                if data_type in zscore_data_types:
+                    data_by_symbol[kline["symbol__name"]][data_type].append(
+                        float(kline[field])
+                    )
 
         for data_type in zscore_data_types:
             for symbol in symbols:
-                z_score_dict[generate_tuple(tf, data_type, symbol)] = IncrementalZScore(
+                key = generate_tuple(tf, data_type, symbol)
+                z_score_dict[key] = IncrementalZScore(
                     tf, data_by_symbol[symbol][data_type]
                 )
 
     return z_score_dict
 
 
-def get_symbol_data(symbols):
+def get_symbol_data():
     """
     Get the latest data for all symbols and all data types from the database.
     Returns:
         {symbol: {data_type: value, ...}, ...}
     """
-    result = {symbol: {} for symbol in symbols}
-    latest_klines = get_latest_kline_values()
-
-    for kline in latest_klines:
-        result[kline.symbol]["price"] = float(kline.close)
-        result[kline.symbol]["volume"] = float(kline.base_volume)
-        result[kline.symbol]["trades"] = float(kline.number_of_trades)
-
-    return result
+    return {
+        kline.symbol: {
+            "price": float(kline.close),
+            "volume": float(kline.base_volume),
+            "trades": float(kline.number_of_trades),
+        }
+        for kline in get_latest_kline_values()
+    }
 
 
 def update_z_scores(incremental_zscores, tf, symbol_data):
@@ -179,7 +175,7 @@ def initialize_incremental_zscore():
     for message in pubsub.listen():
         if message["channel"] == RedisPubMessages.KLINE_SAVED_TO_DB.value:
             set_pipeline = r.pipeline()
-            symbol_data = get_symbol_data(symbols)
+            symbol_data = get_symbols_data()
 
             for tf in timeframes:
                 z_scores_by_tf = {}

@@ -78,22 +78,19 @@ class Kline1m(models.Model):
     taker_buy_quote_volume = models.DecimalField(max_digits=24, decimal_places=8)
     number_of_trades = models.IntegerField()
     exchange = models.ForeignKey("Exchange", on_delete=models.CASCADE, db_index=True)
-    contract_type = models.ForeignKey(
-        "ContractType", on_delete=models.CASCADE, db_index=True
-    )
 
     class Meta:
         db_table = "cs_klines_1m"
         ordering = ["-start_time", "symbol"]
         constraints = [
             UniqueConstraint(
-                fields=["start_time", "symbol", "exchange", "contract_type"],
+                fields=["start_time", "symbol", "exchange"],
                 name="unique_klines_1m_fields",
             )
         ]
         indexes = [
             models.Index(
-                fields=["symbol", "exchange", "-start_time", "contract_type"],
+                fields=["symbol", "exchange", "-start_time"],
                 name="klines_main_query_idx",
             ),
         ]
@@ -125,9 +122,18 @@ class ContractType(models.Model):
 class Symbol(models.Model):
     name = models.CharField(max_length=20)
     exchange = models.ForeignKey(Exchange, on_delete=models.CASCADE)
+    contract_type = models.ForeignKey(
+        "ContractType", on_delete=models.CASCADE, null=True, db_index=True
+    )
 
     class Meta:
         db_table = "cs_symbols"
+        constraints = [
+            UniqueConstraint(
+                fields=["name", "exchange", "contract_type"],
+                name="unique_symbol_fields",
+            )
+        ]
 
     def __str__(self):
         return self.name

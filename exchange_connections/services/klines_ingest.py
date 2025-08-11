@@ -30,13 +30,16 @@ def get_or_create_contract_type(name: str) -> ContractType:
     return _contract_type_cache[name]
 
 
-def get_or_create_symbol(name: str, exchange: Exchange) -> Symbol:
-    cache_key = f"{name}_{exchange.pk}"
+def get_or_create_symbol(
+    name: str, exchange: Exchange, contract_type: ContractType
+) -> Symbol:
+    cache_key = f"{name}_{exchange.pk}_{contract_type.pk}"
 
     if cache_key not in _symbol_cache:
         symbol, _ = Symbol.objects.get_or_create(
             name=name,
             exchange=exchange,
+            contract_type=contract_type,
         )
         _symbol_cache[cache_key] = symbol
 
@@ -72,7 +75,7 @@ class RawRestKline:
 
         exchange_obj = get_or_create_exchange(exchange)
         contract_type_obj = get_or_create_contract_type(contract_type)
-        symbol_obj = get_or_create_symbol(symbol, exchange_obj)
+        symbol_obj = get_or_create_symbol(symbol, exchange_obj, contract_type_obj)
 
         return Kline1m(
             start_time=ms_to_aware_datetime(d[RestKlineIndex.OPEN_TIME]),
@@ -88,7 +91,6 @@ class RawRestKline:
             taker_buy_base_volume=d[RestKlineIndex.TAKER_BUY_BASE_VOLUME],
             taker_buy_quote_volume=d[RestKlineIndex.TAKER_BUY_QUOTE_VOLUME],
             exchange=exchange_obj,
-            contract_type=contract_type_obj,
         )
 
 
@@ -105,7 +107,7 @@ class RawWsKline:
 
         exchange_obj = get_or_create_exchange(exchange)
         contract_type_obj = get_or_create_contract_type(contract_type)
-        symbol_obj = get_or_create_symbol(kd["s"], exchange_obj)
+        symbol_obj = get_or_create_symbol(kd["s"], exchange_obj, contract_type_obj)
 
         return Kline1m(
             start_time=ms_to_aware_datetime(kd["t"]),
@@ -121,7 +123,6 @@ class RawWsKline:
             taker_buy_quote_volume=Decimal(kd["Q"]),
             number_of_trades=Decimal(kd["n"]),
             exchange=exchange_obj,
-            contract_type=contract_type_obj,
         )
 
 

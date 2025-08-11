@@ -7,6 +7,7 @@ from django.db.models import FloatField, Min
 from django.db.models.functions import Cast
 
 from exchange_connections.models import Kline1m
+from exchange_connections.constants import KLINE_FIELD_MAP
 
 r = redis.Redis(host="redis")
 
@@ -22,13 +23,7 @@ def get_tickers_data(duration_hours, data_type, symbols):
     Returns:
         Dict mapping symbols to their historical data
     """
-    field_mapping = {
-        "price": "close",
-        "volume": "base_volume",
-        "trades": "number_of_trades",
-    }
-
-    field_name = field_mapping.get(data_type)
+    field_name = KLINE_FIELD_MAP.get(data_type)
     annotated_field = f"{field_name}_as_float"
 
     end_time = timezone.now()
@@ -64,13 +59,8 @@ def get_oldest_values_efficient(
     Get the oldest value for each symbol that should be removed from the sliding window.
     This should be the value that's exactly `duration_hours` old.
     """
-    field_mapping = {
-        "price": "close",
-        "volume": "base_volume",
-        "trades": "number_of_trades",
-    }
+    field_name = KLINE_FIELD_MAP.get(data_type)
 
-    field_name = field_mapping.get(data_type)
     if not field_name:
         return {symbol: (0.0, 0) for symbol in symbols}
 

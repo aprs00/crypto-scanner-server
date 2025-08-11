@@ -4,7 +4,6 @@ import time
 import threading
 from itertools import combinations
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Tuple
 
 from exchange_connections.selectors import get_exchange_symbols, get_latest_kline_values
 from correlations.formulas.pearson import IncrementalPearsonCorrelation
@@ -13,7 +12,7 @@ from correlations.selectors.correlations import (
     get_oldest_values_efficient,
 )
 from filters.constants import tf_options
-from exchange_connections.constants import correlations_data_types
+from exchange_connections.constants import correlations_data_types, KLINE_FIELD_MAP
 from core.constants import RedisPubMessages
 
 r = redis.Redis(host="redis")
@@ -124,14 +123,8 @@ def get_symbol_data(symbols):
     result = {symbol: {} for symbol in symbols}
     latest_klines = get_latest_kline_values()
 
-    data_type_db_column_mapper = {
-        "price": "close",
-        "volume": "base_volume",
-        "trades": "number_of_trades",
-    }
-
     for kline in latest_klines:
-        for data_type, db_column in data_type_db_column_mapper.items():
+        for data_type, db_column in KLINE_FIELD_MAP.items():
             result[kline.symbol][data_type] = float(getattr(kline, db_column))
 
     return result

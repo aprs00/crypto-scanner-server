@@ -29,18 +29,18 @@ def format_z_score_matrix_response(data, symbols, x_axis, y_axis):
     return [
         {
             "type": "scatter",
-            "name": ticker,
+            "name": symbol,
             "data": [
                 [
-                    round(data[ticker][x_axis], 2),
-                    round(data[ticker][y_axis], 2),
+                    round(data[symbol][x_axis], 2),
+                    round(data[symbol][y_axis], 2),
                 ]
             ],
             "color": ticker_colors[i],
             "symbolSize": 20,
             "emphasis": {"scale": 1.6},
         }
-        for i, ticker in enumerate(symbols)
+        for i, symbol in enumerate(symbols)
     ]
 
 
