@@ -2,7 +2,7 @@ from django.http import JsonResponse
 import numpy as np
 
 from core.constants import invalid_params_error
-from averages.selectors.average_price import get_market_data
+from averages.selectors.average_price import get_average_symbol_data
 
 
 def format_data(data):
@@ -39,11 +39,15 @@ def average_price_change(duration, symbol, start_time_utc, time_period):
         return JsonResponse(invalid_params_error, status=400)
 
     if time_period == "day":
-        price_changes = get_market_data(symbol, start_time_utc, "day")
+        price_changes = get_average_symbol_data(
+            symbol, "binance", start_time_utc, "day", "perpetual"
+        )
         time_dict_values = calculate_dict_percentage(price_changes, "day_of_week")
         time_labels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     elif time_period == "hour":
-        price_changes = get_market_data(symbol, start_time_utc, "hour")
+        price_changes = get_average_symbol_data(
+            symbol, "binance", start_time_utc, "hour", "perpetual"
+        )
         time_dict_values = calculate_dict_percentage(price_changes, "hour_of_day")
         time_dict_values = dict(sorted(time_dict_values.items()))
         time_labels = [
