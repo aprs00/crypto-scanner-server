@@ -5,14 +5,13 @@ import threading
 from itertools import combinations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from exchange_connections.constants import KLINE_FIELD_MAP
 from correlations.formulas.pearson import IncrementalPearsonCorrelation
 from correlations.selectors.correlations import (
-    get_symbols_x_hours_ago,
-    get_tickers_data,
-    get_symbol_data,
+    get_symbol_kline_data,
+    get_historical_kline_data,
 )
 from filters.constants import tf_options
-from exchange_connections.constants import correlations_data_types
 from core.constants import RedisPubMessages
 
 r = redis.Redis(host="redis")
@@ -32,7 +31,7 @@ def chunked_iterable(iterable, size):
         yield iterable[i : i + size]
 
 
-def initialize_correlation_objects(symbols, timeframes):
+def initialize_correlation_objects(symbols, hours_options):
     correlations = {}
     futures = []
     all_pairs = list(combinations(symbols, 2))
@@ -42,29 +41,29 @@ def initialize_correlation_objects(symbols, timeframes):
     total_futures = 0
 
     with ThreadPoolExecutor() as executor:
-        for tf in timeframes:
-            for data_type in correlations_data_types:
-                for pair_batch in pair_batches:
-                    batch_symbols = set()
-                    for a, b in pair_batch:
-                        batch_symbols.add(a)
-                        batch_symbols.add(b)
-                    batch_symbols = list(batch_symbols)
+        for hours in hours_options:
+            for pair_batch in pair_batches:
+                batch_symbols = set()
 
-                    futures.append(
-                        executor.submit(
-                            process_correlation_batch,
-                            tf=tf,
-                            data_type=data_type,
-                            symbols=batch_symbols,
-                            symbol_pairs=pair_batch,
-                        )
+                for a, b in pair_batch:
+                    batch_symbols.add(a)
+                    batch_symbols.add(b)
+
+                batch_symbols = list(batch_symbols)
+
+                futures.append(
+                    executor.submit(
+                        process_correlation_batch,
+                        hours=hours,
+                        batch_symbols=batch_symbols,
+                        symbol_pairs=pair_batch,
                     )
+                )
 
         total_futures = len(futures)
 
         for future in as_completed(futures):
-            tf, data_type, result = future.result()
+            tf, result = future.result()
 
             for tuple_key, data_type_dict in result.items():
                 if tuple_key not in correlations:
@@ -79,53 +78,47 @@ def initialize_correlation_objects(symbols, timeframes):
 
             with print_lock:
                 print(
-                    f"TF {tf} / Data Type {data_type} batch done: {completed_futures}/{total_futures} ({(completed_futures/total_futures)*100:.1f}%), {len(result)} correlations"
+                    f"TF {tf} / Batch done: {completed_futures}/{total_futures} ({(completed_futures/total_futures)*100:.1f}%), {len(result)} correlations"
                 )
 
     return correlations
 
 
-def process_correlation_batch(tf, data_type, symbols, symbol_pairs):
-    symbol_data = get_tickers_data(
-        duration_hours=tf, data_type=data_type, symbols=symbols
-    )
-    window_size = tf * 60
+def process_correlation_batch(hours, batch_symbols, symbol_pairs):
+    symbols_data = get_historical_kline_data(hours=hours, symbols=batch_symbols)
+    window_size = hours * 60
+    correlation_batch = {}
 
-    local_correlations = {}
+    for data_type in KLINE_FIELD_MAP.keys():
+        for symbol_a, symbol_b in symbol_pairs:
+            dict_tuple = generate_tuple(
+                symbol_a=symbol_a,
+                symbol_b=symbol_b,
+            )
 
-    for symbol_a, symbol_b in symbol_pairs:
-        dict_tuple = generate_tuple(
-            symbol_a=symbol_a,
-            symbol_b=symbol_b,
-        )
+            correlation_batch.setdefault(dict_tuple, {}).setdefault(data_type, {})[
+                hours
+            ] = IncrementalPearsonCorrelation(
+                window_size=window_size,
+                x_initial=symbols_data[symbol_a][data_type],
+                y_initial=symbols_data[symbol_b][data_type],
+            )
 
-        if dict_tuple not in local_correlations:
-            local_correlations[dict_tuple] = {}
-
-        if data_type not in local_correlations[dict_tuple]:
-            local_correlations[dict_tuple][data_type] = {}
-
-        local_correlations[dict_tuple][data_type][tf] = IncrementalPearsonCorrelation(
-            window_size=window_size,
-            x_initial=symbol_data[symbol_a],
-            y_initial=symbol_data[symbol_b],
-        )
-
-    return tf, data_type, local_correlations
+    return hours, correlation_batch
 
 
 def update_correlations(
     incremental_correlations,
-    tf,
-    symbol_data,
+    hours,
     symbols,
 ):
-    oldest_values = get_symbols_x_hours_ago(symbols, tf)
+    newest_values = get_symbol_kline_data(symbols=symbols)
+    oldest_values = get_symbol_kline_data(symbols=symbols, hours=hours)
 
-    for data_type in correlations_data_types:
+    for data_type in KLINE_FIELD_MAP.keys():
         for symbol_a, symbol_b in combinations(symbols, 2):
-            value_a = symbol_data.get(symbol_a, {}).get(data_type)
-            value_b = symbol_data.get(symbol_b, {}).get(data_type)
+            value_a = newest_values.get(symbol_a, {}).get(data_type)
+            value_b = newest_values.get(symbol_b, {}).get(data_type)
 
             if value_a is None or value_b is None:
                 continue
@@ -141,9 +134,9 @@ def update_correlations(
             if (
                 dict_tuple in incremental_correlations
                 and data_type in incremental_correlations[dict_tuple]
-                and tf in incremental_correlations[dict_tuple][data_type]
+                and hours in incremental_correlations[dict_tuple][data_type]
             ):
-                correlation_obj = incremental_correlations[dict_tuple][data_type][tf]
+                correlation_obj = incremental_correlations[dict_tuple][data_type][hours]
                 x_old = None
                 y_old = None
 
@@ -157,7 +150,7 @@ def update_correlations(
 
 
 def create_correlation_list(
-    tf,
+    hours,
     data_type,
     incremental_correlations,
     symbols,
@@ -169,7 +162,7 @@ def create_correlation_list(
                 symbol_a=symbol_a,
                 symbol_b=symbol_b,
             )
-        ][data_type][tf]
+        ][data_type][hours]
         for symbol_a, symbol_b in combinations(symbols, 2)
     }
 
@@ -184,22 +177,19 @@ def create_correlation_list(
     ]
 
 
-def update_and_cache_incremental_correlations(correlations, timeframes, symbols):
+def update_and_cache_incremental_correlations(correlations, hours_options, symbols):
     set_pipeline = r.pipeline()
 
-    symbol_data = get_symbol_data(symbols=symbols)
-
-    for tf in timeframes:
+    for hours in hours_options:
         update_correlations(
             incremental_correlations=correlations,
-            tf=tf,
-            symbol_data=symbol_data,
+            hours=hours,
             symbols=symbols,
         )
 
-        for data_type in correlations_data_types:
+        for data_type in KLINE_FIELD_MAP.keys():
             correlation_matrix = create_correlation_list(
-                tf=tf,
+                hours=hours,
                 data_type=data_type,
                 incremental_correlations=correlations,
                 symbols=symbols,
@@ -208,14 +198,14 @@ def update_and_cache_incremental_correlations(correlations, timeframes, symbols)
 
             set_pipeline.execute_command(
                 "SET",
-                f"correlations:{data_type}:{tf}",
+                f"correlations:{data_type}:{hours}",
                 msgpack.packb(correlation_matrix),
             )
 
     set_pipeline.execute()
 
 
-def start_pubsub_listener(correlations, timeframes, symbols):
+def start_pubsub_listener(correlations, hours_options, symbols):
     retries = 0
 
     while True:
@@ -231,7 +221,7 @@ def start_pubsub_listener(correlations, timeframes, symbols):
                 if message["channel"] == RedisPubMessages.KLINE_SAVED_TO_DB.value:
                     update_and_cache_incremental_correlations(
                         correlations=correlations,
-                        timeframes=timeframes,
+                        hours_options=hours_options,
                         symbols=symbols,
                     )
 
@@ -256,17 +246,17 @@ def initialize_incremental_correlations():
     timeframes, and data types, and listen for Redis pubsub messages with reconnection logic.
     """
 
-    timeframes = tf_options["correlation"].values()
+    hours_options = tf_options["correlation"].values()
     # symbols = get_exchange_symbols()
     symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
     correlations = initialize_correlation_objects(
         symbols=symbols,
-        timeframes=timeframes,
+        hours_options=hours_options,
     )
 
     start_pubsub_listener(
         correlations=correlations,
-        timeframes=timeframes,
+        hours_options=hours_options,
         symbols=symbols,
     )

@@ -1,4 +1,6 @@
 from enum import Enum
+from django.db.models import FloatField
+from django.db.models.functions import Cast
 
 correlations_data_types = ["price", "trades", "volume"]
 
@@ -7,6 +9,11 @@ KLINE_FIELD_MAP = {
     "volume": "base_volume",
     "trades": "number_of_trades",
 }
+
+kline_annotations = {}
+for field_name in KLINE_FIELD_MAP.values():
+    annotated_field = f"{field_name}_as_float"
+    kline_annotations[annotated_field] = Cast(field_name, FloatField())
 
 
 class BinanceContractStatus(Enum):
