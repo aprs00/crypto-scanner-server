@@ -1,12 +1,12 @@
 import redis
 import numpy as np
 import msgpack
-from collections import deque
 from datetime import timedelta
 from django.utils import timezone
 
 from filters.constants import tf_options
 from zscore.constants import zscore_data_types
+from zscore.selectors.zscore import get_oldest_kline_for_timeframe
 from exchange_connections.selectors import get_exchange_symbols, get_latest_kline_values
 from exchange_connections.models import Kline1m
 from exchange_connections.constants import KLINE_FIELD_MAP
@@ -17,50 +17,45 @@ r = redis.Redis(host="redis")
 
 class IncrementalZScore:
     """
-    Calculates Z-score over a incremental window of data points.
+    Calculates Z-score over an incremental window of data points.
     """
 
-    def __init__(self, window_size, initial_data):
+    def __init__(self, window_size):
         self.window_size = window_size
+        self.sum = 0
+        self.sum_squared = 0
+        self.count = 0
+        self.current_value = None
 
-        if initial_data:
-            data = (
-                initial_data[-window_size:]
-                if len(initial_data) > window_size
-                else initial_data
-            )
-            self.values = deque(data, maxlen=window_size)
-            self.count = len(self.values)
-            self.sum = sum(self.values)
-            self.sum_squared = sum(x * x for x in self.values)
-        else:
-            self.values = deque(maxlen=window_size)
-            self.sum = 0
-            self.sum_squared = 0
-            self.count = 0
+    def initialize_from_data(self, data):
+        if data:
+            self.count = len(data)
+            self.sum = sum(data)
+            self.sum_squared = sum(x * x for x in data)
+            if data:
+                self.current_value = data[-1]
 
-    def add_data_point(self, value):
-        if self.count == self.window_size:
-            old_value = self.values[0]
-
-            self.sum -= old_value
-            self.sum_squared -= old_value * old_value
+    def remove_data_point(self, value):
+        if self.count > 0:
+            self.sum -= value
+            self.sum_squared -= value * value
             self.count -= 1
 
-        self.values.append(value)
-
+    def add_data_point(self, value):
         self.sum += value
         self.sum_squared += value * value
-        self.count = min(self.count + 1, self.window_size)
+        self.count += 1
+        self.current_value = value
 
-    def get_z_score(self, current_value=None):
+    def update_data_point(self, old_value, new_value):
+        self.remove_data_point(old_value)
+        self.add_data_point(new_value)
+
+    def get_z_score(self):
         """
         Calculate the Z-score for the current value.
-        If current_value is not provided, uses the most recent value in the window.
         """
-        if current_value is None and self.values:
-            current_value = self.values[-1]
-        elif current_value is None:
+        if self.count == 0 or self.current_value is None:
             return 0
 
         mean = self.sum / self.count
@@ -72,27 +67,32 @@ class IncrementalZScore:
 
         std_dev = np.sqrt(variance)
 
-        return (current_value - mean) / std_dev
+        return (self.current_value - mean) / std_dev
 
 
-def generate_tuple(tf, data_type, symbol):
-    return (tf, data_type, symbol)
-
-
-def initialize_z_score_objects(symbols, timeframes, zscore_data_types):
+def initialize_zscore_dict(symbols, timeframes, zscore_data_types):
     """
     Initialize Z-score objects using historical kline data from the database.
-    Each timeframe has its own data window.
+    Returns nested dictionary: {symbol: {data_type: {timeframe: ZScore}}}
     """
-    z_score_dict = {}
+    dict = {}
+
+    for symbol in symbols:
+        dict[symbol] = {}
+        for data_type in zscore_data_types:
+            dict[symbol][data_type] = {}
+            for tf in timeframes:
+                dict[symbol][data_type][tf] = IncrementalZScore(tf * 60)
 
     for tf in timeframes:
         start_time = timezone.now() - timedelta(hours=tf)
 
         klines = (
             Kline1m.objects.filter(symbol__name__in=symbols, start_time__gte=start_time)
-            .values("symbol__name", "close", "base_volume", "number_of_trades")
-            .order_by("symbol__name")
+            .values(
+                "symbol__name", "close", "base_volume", "number_of_trades", "start_time"
+            )
+            .order_by("symbol__name", "start_time")
         )
 
         data_by_symbol = {
@@ -100,20 +100,19 @@ def initialize_z_score_objects(symbols, timeframes, zscore_data_types):
         }
 
         for kline in klines:
+            symbol = kline["symbol__name"]
             for data_type, field in KLINE_FIELD_MAP.items():
                 if data_type in zscore_data_types:
-                    data_by_symbol[kline["symbol__name"]][data_type].append(
-                        float(kline[field])
+                    data_by_symbol[symbol][data_type].append(float(kline[field]))
+
+        for symbol in symbols:
+            for data_type in zscore_data_types:
+                if data_by_symbol[symbol][data_type]:
+                    dict[symbol][data_type][tf].initialize_from_data(
+                        data_by_symbol[symbol][data_type]
                     )
 
-        for data_type in zscore_data_types:
-            for symbol in symbols:
-                key = generate_tuple(tf, data_type, symbol)
-                z_score_dict[key] = IncrementalZScore(
-                    tf, data_by_symbol[symbol][data_type]
-                )
-
-    return z_score_dict
+    return dict
 
 
 def get_symbols_data():
@@ -123,7 +122,7 @@ def get_symbols_data():
         {symbol: {data_type: value, ...}, ...}
     """
     return {
-        kline.symbol: {
+        kline.symbol.name: {
             "price": float(kline.close),
             "volume": float(kline.base_volume),
             "trades": float(kline.number_of_trades),
@@ -132,31 +131,59 @@ def get_symbols_data():
     }
 
 
-def update_z_scores(incremental_zscores, tf, symbol_data):
-    """Update incremental Z-scores with the latest data points for all data types."""
-    for symbol, data_dict in symbol_data.items():
-        for data_type, value in data_dict.items():
-            dict_tuple = generate_tuple(tf, data_type, symbol)
-
-            if dict_tuple in incremental_zscores:
-                incremental_zscores[dict_tuple].add_data_point(float(value))
-            else:
-                print(f"[Warning] Correlation object not found for {dict_tuple}")
-
-
-def create_z_score_matrix(tf, data_type, incremental_zscores, symbols):
+def update_z_scores_incremental(incremental_zscores, symbols, timeframes):
     """
-    Creates a Z-score matrix for all symbols.
-
-    Returns:
-        Dictionary with symbols as keys and their Z-scores as values
+    Update incremental Z-scores by removing oldest values and adding new ones.
     """
-    return {
-        symbol: round(
-            incremental_zscores[generate_tuple(tf, data_type, symbol)].get_z_score(), 2
-        )
-        for symbol in symbols
-    }
+    symbol_data = get_symbols_data()
+
+    for symbol in symbols:
+        if symbol not in symbol_data:
+            continue
+
+        new_data = symbol_data[symbol]
+
+        for tf in timeframes:
+            old_data = get_oldest_kline_for_timeframe(symbol, tf)
+
+            for data_type in zscore_data_types:
+                if (
+                    symbol in incremental_zscores
+                    and data_type in incremental_zscores[symbol]
+                ):
+                    zscore_obj = incremental_zscores[symbol][data_type].get(tf)
+
+                    if zscore_obj:
+                        new_value = new_data[data_type]
+
+                        if old_data:
+                            old_value = old_data[data_type]
+                            zscore_obj.update_data_point(old_value, new_value)
+                        else:
+                            zscore_obj.add_data_point(new_value)
+
+
+def create_z_score_results(incremental_zscores, timeframes):
+    """
+    Create Z-score results for all timeframes.
+    Returns a dictionary per timeframe: {tf: {symbol: {data_type: z_score}}}
+    """
+    results = {}
+
+    for tf in timeframes:
+        tf_results = {}
+
+        for symbol, data_types in incremental_zscores.items():
+            tf_results[symbol] = {}
+
+            for data_type, tf_dict in data_types.items():
+                if tf in tf_dict:
+                    z_score = round(tf_dict[tf].get_z_score(), 2)
+                    tf_results[symbol][data_type] = z_score
+
+        results[tf] = tf_results
+
+    return results
 
 
 def initialize_incremental_zscore():
@@ -164,36 +191,29 @@ def initialize_incremental_zscore():
     Calculate and cache Z-scores for all combinations of timeframes, data types, and symbols.
     """
     symbols = get_exchange_symbols()
-    timeframes = tf_options["zscore"].values()
-    incremental_zscores = initialize_z_score_objects(
-        symbols, timeframes, zscore_data_types
-    )
+    timeframes = list(tf_options["zscore"].values())
+
+    incremental_zscores = initialize_zscore_dict(symbols, timeframes, zscore_data_types)
 
     pubsub = r.pubsub()
     pubsub.subscribe(RedisPubMessages.KLINE_SAVED_TO_DB.value)
 
     for message in pubsub.listen():
-        if message["channel"] == RedisPubMessages.KLINE_SAVED_TO_DB.value:
-            set_pipeline = r.pipeline()
-            symbol_data = get_symbols_data()
+        if (
+            message["type"] == "message"
+            and message["channel"] == RedisPubMessages.KLINE_SAVED_TO_DB.value
+        ):
+            update_z_scores_incremental(incremental_zscores, symbols, timeframes)
 
-            for tf in timeframes:
-                z_scores_by_tf = {}
+            results = create_z_score_results(incremental_zscores, timeframes)
 
-                update_z_scores(incremental_zscores, tf, symbol_data)
+            pipeline = r.pipeline()
 
-                for data_type in zscore_data_types:
-                    z_score_matrix = create_z_score_matrix(
-                        tf, data_type, incremental_zscores, symbols
-                    )
-
-                    for symbol, z_score in z_score_matrix.items():
-                        z_scores_by_tf.setdefault(symbol, {})[data_type] = z_score
-
-                r.execute_command(
+            for tf, tf_data in results.items():
+                pipeline.execute_command(
                     "SET",
                     f"zscore:{tf}",
-                    msgpack.packb(z_scores_by_tf),
+                    msgpack.packb(tf_data),
                 )
 
-            set_pipeline.execute()
+            pipeline.execute()
