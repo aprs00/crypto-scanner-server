@@ -124,8 +124,13 @@ def get_symbol_data(symbols):
     latest_klines = get_latest_kline_values()
 
     for kline in latest_klines:
-        for data_type, db_column in KLINE_FIELD_MAP.items():
-            result[kline.symbol][data_type] = float(getattr(kline, db_column))
+        symbol_name = (
+            kline.symbol.name if hasattr(kline.symbol, "name") else str(kline.symbol)
+        )
+
+        if symbol_name in result:
+            for data_type, db_column in KLINE_FIELD_MAP.items():
+                result[symbol_name][data_type] = float(getattr(kline, db_column))
 
     return result
 
