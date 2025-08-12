@@ -48,8 +48,6 @@ class IncrementalPearsonCorrelation:
                 self.sum_yy -= y_old * y_old
                 self.sum_xy -= x_old * y_old
                 self.count -= 1
-            else:
-                pass
 
         self.sum_x += x_new
         self.sum_y += y_new

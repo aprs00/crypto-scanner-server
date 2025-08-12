@@ -3,11 +3,13 @@ import numpy as np
 import time
 from django.utils import timezone
 from datetime import timedelta
-from django.db.models import FloatField, Min
+from django.db.models import FloatField
 from django.db.models.functions import Cast
 
 from exchange_connections.models import Kline1m
 from exchange_connections.constants import KLINE_FIELD_MAP
+from exchange_connections.selectors import get_latest_kline_values
+
 
 r = redis.Redis(host="redis")
 
@@ -52,55 +54,59 @@ def get_tickers_data(duration_hours, data_type, symbols):
     return query_symbols_data
 
 
-def get_oldest_values_efficient(
-    duration_hours: int, data_type: str, symbols: list
-) -> dict:
-    """
-    Get the oldest value for each symbol that should be removed from the sliding window.
-    This should be the value that's exactly `duration_hours` old.
-    """
-    field_name = KLINE_FIELD_MAP.get(data_type)
+def get_symbols_x_hours_ago(symbols: list, hours: int):
+    target_time = timezone.now() - timedelta(hours=hours)
 
-    if not field_name:
-        return {symbol: (0.0, 0) for symbol in symbols}
-
-    annotated_field = f"{field_name}_as_float"
-
-    target_time = timezone.now() - timedelta(hours=duration_hours)
-
-    buffer_time = timedelta(minutes=30)
-    start_window = target_time - buffer_time
-    end_window = target_time + buffer_time
-
-    oldest_data = (
+    klines = (
         Kline1m.objects.filter(
             symbol__name__in=symbols,
-            start_time__gte=start_window.astimezone(timezone.utc),
-            start_time__lte=end_window.astimezone(timezone.utc),
             exchange__name="binance",
+            start_time__lte=target_time.astimezone(timezone.utc),
         )
-        .annotate(**{annotated_field: Cast(field_name, FloatField())})
-        .values("symbol__name", "start_time", annotated_field)
-        .order_by("symbol__name", "start_time")
+        .select_related("symbol", "exchange")
+        .annotate(
+            price=Cast("close", FloatField()),
+            volume=Cast("base_volume", FloatField()),
+            trades=Cast("number_of_trades", FloatField()),
+        )
+        .order_by("symbol__name", "-start_time")
+        .distinct("symbol__name")
+        .values("symbol__name", "price", "volume", "trades")
     )
 
-    result = {}
-    for symbol in symbols:
-        symbol_data = [item for item in oldest_data if item["symbol__name"] == symbol]
-        if symbol_data:
-            closest_record = min(
-                symbol_data,
-                key=lambda x: abs(
-                    (
-                        x["start_time"] - target_time.astimezone(timezone.utc)
-                    ).total_seconds()
-                ),
-            )
-            result[symbol] = (
-                float(closest_record[annotated_field]),
-                int(closest_record["start_time"].timestamp()),
-            )
-        else:
-            result[symbol] = (0.0, 0)
+    return {
+        kline["symbol__name"]: {
+            "price": kline["price"],
+            "volume": kline["volume"],
+            "trades": kline["trades"],
+        }
+        for kline in klines
+    }
+
+
+def get_symbol_data(symbols):
+    """
+    Get the latest data for all symbols and all data types from the database.
+    Returns:
+        {symbol: {data_type: value, ...}, ...}
+    """
+    result = {symbol: {} for symbol in symbols}
+    latest_klines = get_latest_kline_values()
+
+    for kline in latest_klines:
+        symbol_name = (
+            kline.symbol.name if hasattr(kline.symbol, "name") else str(kline.symbol)
+        )
+
+        if symbol_name in result:
+            for data_type, db_column in KLINE_FIELD_MAP.items():
+                result[symbol_name][data_type] = float(getattr(kline, db_column))
 
     return result
+
+
+"""
+this code is used for storing streaming pearson correlations.
+every minute new data gets saved to database, that data is then queried and added to pearson formula
+in the same time oldest value is removed from the calculation
+"""

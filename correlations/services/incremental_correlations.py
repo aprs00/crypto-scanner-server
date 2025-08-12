@@ -5,14 +5,14 @@ import threading
 from itertools import combinations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from exchange_connections.selectors import get_exchange_symbols, get_latest_kline_values
 from correlations.formulas.pearson import IncrementalPearsonCorrelation
 from correlations.selectors.correlations import (
+    get_symbols_x_hours_ago,
     get_tickers_data,
-    get_oldest_values_efficient,
+    get_symbol_data,
 )
 from filters.constants import tf_options
-from exchange_connections.constants import correlations_data_types, KLINE_FIELD_MAP
+from exchange_connections.constants import correlations_data_types
 from core.constants import RedisPubMessages
 
 r = redis.Redis(host="redis")
@@ -114,48 +114,15 @@ def process_correlation_batch(tf, data_type, symbols, symbol_pairs):
     return tf, data_type, local_correlations
 
 
-def get_symbol_data(symbols):
-    """
-    Get the latest data for all symbols and all data types from the database.
-    Returns:
-        {symbol: {data_type: value, ...}, ...}
-    """
-    result = {symbol: {} for symbol in symbols}
-    latest_klines = get_latest_kline_values()
-
-    for kline in latest_klines:
-        symbol_name = (
-            kline.symbol.name if hasattr(kline.symbol, "name") else str(kline.symbol)
-        )
-
-        if symbol_name in result:
-            for data_type, db_column in KLINE_FIELD_MAP.items():
-                result[symbol_name][data_type] = float(getattr(kline, db_column))
-
-    return result
-
-
 def update_correlations(
     incremental_correlations,
     tf,
     symbol_data,
     symbols,
 ):
-    """Update incremental correlations with the latest data points."""
-
-    oldest_values_cache = {}
+    oldest_values = get_symbols_x_hours_ago(symbols, tf)
 
     for data_type in correlations_data_types:
-        try:
-            oldest_values_cache[data_type] = get_oldest_values_efficient(
-                duration_hours=tf, data_type=data_type, symbols=symbols
-            )
-        except Exception as e:
-            print(
-                f"Error fetching oldest values for tf {tf}, data_type {data_type}: {e}"
-            )
-            oldest_values_cache[data_type] = {symbol: (0.0, 0) for symbol in symbols}
-
         for symbol_a, symbol_b in combinations(symbols, 2):
             value_a = symbol_data.get(symbol_a, {}).get(data_type)
             value_b = symbol_data.get(symbol_b, {}).get(data_type)
@@ -181,10 +148,8 @@ def update_correlations(
                 y_old = None
 
                 if correlation_obj.count >= correlation_obj.window_size:
-                    oldest_values = oldest_values_cache[data_type]
-                    if symbol_a in oldest_values and symbol_b in oldest_values:
-                        x_old = oldest_values[symbol_a][0]
-                        y_old = oldest_values[symbol_b][0]
+                    x_old = oldest_values.get(symbol_a, {}).get(data_type, 0.0)
+                    y_old = oldest_values.get(symbol_b, {}).get(data_type, 0.0)
 
                 correlation_obj.add_data_point(value_a, value_b, x_old, y_old)
             else:
@@ -258,6 +223,7 @@ def start_pubsub_listener(correlations, timeframes, symbols):
             print("Subscribing to Redis channels...")
             pubsub = r.pubsub()
             pubsub.subscribe(RedisPubMessages.KLINE_SAVED_TO_DB.value)
+            pubsub.get_message()
 
             for message in pubsub.listen():
                 print(f'CORRELATIONS {message["channel"]}')
@@ -291,7 +257,8 @@ def initialize_incremental_correlations():
     """
 
     timeframes = tf_options["correlation"].values()
-    symbols = get_exchange_symbols()
+    # symbols = get_exchange_symbols()
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
     correlations = initialize_correlation_objects(
         symbols=symbols,
