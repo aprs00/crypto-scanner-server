@@ -6,23 +6,14 @@ from typing import Optional
 
 from exchange_connections.models import Kline1m
 from exchange_connections.constants import KLINE_FIELD_MAP, kline_annotations
-from exchange_connections.selectors import get_latest_kline_values
 
 
 r = redis.Redis(host="redis")
 
 
 def get_historical_kline_data(hours, symbols):
-    """
-    Get historical ticker data from the database for all KLINE fields.
+    """Get historical ticker data from the database for all KLINE fields."""
 
-    Args:
-        hours: The duration in hours to retrieve data for
-        symbols: List of symbols to retrieve data for
-
-    Returns:
-        Dict mapping symbols to their historical data for all KLINE fields
-    """
     end_time = timezone.now()
     start_time = end_time - timedelta(hours=hours)
 
@@ -57,6 +48,10 @@ def get_historical_kline_data(hours, symbols):
 
 
 def get_symbol_kline_data(symbols: list, hours: Optional[int] = None):
+    """
+    If hours is provided, gets the kline data from X hours ago
+    Else, gets the most recent available kline data.
+    """
     queryset = Kline1m.objects.filter(
         symbol__name__in=symbols,
         exchange__name="binance",

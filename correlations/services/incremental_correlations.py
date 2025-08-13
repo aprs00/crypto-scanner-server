@@ -19,11 +19,8 @@ r = redis.Redis(host="redis")
 print_lock = threading.Lock()
 
 
-def generate_tuple(symbol_a, symbol_b):
-    return (
-        symbol_a,
-        symbol_b,
-    )
+def key_for(symbol_a, symbol_b):
+    return (symbol_a, symbol_b) if symbol_a < symbol_b else (symbol_b, symbol_a)
 
 
 def chunked_iterable(iterable, size):
@@ -92,12 +89,12 @@ def process_correlation_batch(hours, batch_symbols, symbol_pairs):
 
     for data_type in KLINE_FIELD_MAP.keys():
         for symbol_a, symbol_b in symbol_pairs:
-            dict_tuple = generate_tuple(
+            key_pair = key_for(
                 symbol_a=symbol_a,
                 symbol_b=symbol_b,
             )
 
-            correlation_batch.setdefault(dict_tuple, {}).setdefault(data_type, {})[
+            correlation_batch.setdefault(key_pair, {}).setdefault(data_type, {})[
                 hours
             ] = IncrementalPearsonCorrelation(
                 window_size=window_size,
@@ -115,66 +112,50 @@ def update_correlations(
 ):
     newest_values = get_symbol_kline_data(symbols=symbols)
     oldest_values = get_symbol_kline_data(symbols=symbols, hours=hours)
+    symbol_pairs = [key_for(a, b) for a, b in combinations(symbols, 2)]
 
     for data_type in KLINE_FIELD_MAP.keys():
-        for symbol_a, symbol_b in combinations(symbols, 2):
-            value_a = newest_values.get(symbol_a, {}).get(data_type)
-            value_b = newest_values.get(symbol_b, {}).get(data_type)
+        for pair_key in symbol_pairs:
+            a, b = pair_key
+            value_a = newest_values.get(a, {}).get(data_type)
+            value_b = newest_values.get(b, {}).get(data_type)
 
             if value_a is None or value_b is None:
                 continue
 
-            value_a = float(value_a)
-            value_b = float(value_b)
-
-            dict_tuple = generate_tuple(
-                symbol_a=symbol_a,
-                symbol_b=symbol_b,
+            correlation_obj = (
+                incremental_correlations.get(pair_key, {}).get(data_type, {}).get(hours)
             )
 
-            if (
-                dict_tuple in incremental_correlations
-                and data_type in incremental_correlations[dict_tuple]
-                and hours in incremental_correlations[dict_tuple][data_type]
-            ):
-                correlation_obj = incremental_correlations[dict_tuple][data_type][hours]
-                x_old = None
-                y_old = None
+            if correlation_obj is None:
+                print(f"Missing correlation object for {pair_key} {data_type} {hours}h")
+                continue
 
-                if correlation_obj.count >= correlation_obj.window_size:
-                    x_old = oldest_values.get(symbol_a, {}).get(data_type, 0.0)
-                    y_old = oldest_values.get(symbol_b, {}).get(data_type, 0.0)
+            x_old = y_old = None
 
-                correlation_obj.add_data_point(value_a, value_b, x_old, y_old)
-            else:
-                print(f"[Warning] Correlation object not found for {dict_tuple}")
+            if correlation_obj.count >= correlation_obj.window_size:
+                x_old = oldest_values.get(a, {}).get(data_type, 0.0)
+                y_old = oldest_values.get(b, {}).get(data_type, 0.0)
+
+            correlation_obj.add_data_point(float(value_a), float(value_b), x_old, y_old)
 
 
-def create_correlation_list(
-    hours,
-    data_type,
-    incremental_correlations,
-    symbols,
-    is_matrix_upper_triangle,
+def create_correlation_matrix(
+    hours, data_type, correlations, symbols, is_upper_triangle
 ):
-    correlations = {
-        (symbol_a, symbol_b): incremental_correlations[
-            generate_tuple(
-                symbol_a=symbol_a,
-                symbol_b=symbol_b,
-            )
-        ][data_type][hours]
-        for symbol_a, symbol_b in combinations(symbols, 2)
+    pairwise_correlations = {
+        key_for(sym_a, sym_b): correlations[key_for(sym_a, sym_b)][data_type][hours]
+        for sym_a, sym_b in combinations(symbols, 2)
     }
 
+    def get_corr(i, j):
+        key = (symbols[min(i, j)], symbols[max(i, j)])
+        return round(pairwise_correlations.get(key, {}).get_correlation() or 0, 2)
+
     return [
-        round(
-            correlations[(symbols[min(i, j)], symbols[max(i, j)])].get_correlation()
-            or 0,
-            2,
-        )
+        get_corr(i, j)
         for i in range(len(symbols))
-        for j in (range(i + 1, len(symbols)) if is_matrix_upper_triangle else range(i))
+        for j in (range(i + 1, len(symbols)) if is_upper_triangle else range(i))
     ]
 
 
@@ -189,12 +170,12 @@ def update_and_cache_incremental_correlations(correlations, hours_options, symbo
         )
 
         for data_type in KLINE_FIELD_MAP.keys():
-            correlation_matrix = create_correlation_list(
+            correlation_matrix = create_correlation_matrix(
                 hours=hours,
                 data_type=data_type,
-                incremental_correlations=correlations,
+                correlations=correlations,
                 symbols=symbols,
-                is_matrix_upper_triangle=True,
+                is_upper_triangle=True,
             )
 
             set_pipeline.execute_command(

@@ -18,9 +18,6 @@ class IncrementalPearsonCorrelation:
         self.count = 0
 
         if x_initial is not None and y_initial is not None:
-            x_initial = x_initial[-window_size:]
-            y_initial = y_initial[-window_size:]
-
             min_length = min(len(x_initial), len(y_initial))
             x_initial = x_initial[:min_length]
             y_initial = y_initial[:min_length]
@@ -55,7 +52,7 @@ class IncrementalPearsonCorrelation:
         self.sum_xy += x_new * y_new
         self.count = min(self.count + 1, self.window_size)
 
-    def get_correlation(self):
+    def get_correlation(self) -> float:
         var_x = self.count * self.sum_xx - self.sum_x * self.sum_x
         var_y = self.count * self.sum_yy - self.sum_y * self.sum_y
 
