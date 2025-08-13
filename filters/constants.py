@@ -1,8 +1,8 @@
 tf_options = {
     "correlation": {
         "1h": 1,
-        "4h": 4,
-        "1d": 24,
+        # "4h": 4,
+        # "1d": 24,
     },
     "zscore": {
         "1h": 1,

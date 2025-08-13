@@ -3,13 +3,12 @@ import numpy as np
 import msgpack
 
 from filters.constants import tf_options
-from zscore.constants import zscore_data_types
-from zscore.selectors.zscore import get_oldest_kline_for_timeframe
-from exchange_connections.selectors import get_exchange_symbols
-from correlations.selectors.correlations import (
+from exchange_connections.selectors import (
+    get_exchange_symbols,
     get_symbol_kline_data,
     get_historical_kline_data,
 )
+from exchange_connections.constants import KLINE_FIELD_MAP
 from core.constants import RedisPubMessages
 
 r = redis.Redis(host="redis")
@@ -52,9 +51,6 @@ class IncrementalZScore:
         self.add_data_point(new_value)
 
     def get_z_score(self):
-        """
-        Calculate the Z-score for the current value.
-        """
         if self.count == 0 or self.current_value is None:
             return 0
 
@@ -70,74 +66,65 @@ class IncrementalZScore:
         return (self.current_value - mean) / std_dev
 
 
-def initialize_zscores(symbols, hours_options, zscore_data_types):
+def initialize_zscores(symbols, hours_options):
     """
     Initialize Z-score objects using historical kline data from the database.
     Returns nested dictionary: {symbol: {data_type: {timeframe: ZScore}}}
     """
     dict = {}
 
+    data_by_hours = {
+        hours: get_historical_kline_data(hours=hours, symbols=symbols)
+        for hours in hours_options
+    }
+
     for symbol in symbols:
-        for data_type in zscore_data_types:
+        for data_type in KLINE_FIELD_MAP.keys():
             for hours in hours_options:
                 dict.setdefault(symbol, {}).setdefault(data_type, {})[hours] = (
                     IncrementalZScore(hours * 60)
                 )
 
-    for hours in hours_options:
-        data_by_symbol = get_historical_kline_data(hours=hours, symbols=symbols)
-
-        for symbol in symbols:
-            for data_type in zscore_data_types:
-                series = data_by_symbol.get(symbol, {}).get(data_type, [])
+                series = data_by_hours[hours].get(symbol, {}).get(data_type, [])
                 if series is not None and len(series) > 0:
                     dict[symbol][data_type][hours].initialize_from_data(series.tolist())
 
     return dict
 
 
-def update_zscores(incremental_zscores, symbols, timeframes):
+def update_zscores(incremental_zscores, symbols, hours_options):
     """
     Update incremental Z-scores by removing oldest values and adding new ones.
     """
-    symbol_data = get_symbol_kline_data(symbols=symbols)
+    newest_values = get_symbol_kline_data(symbols=symbols)
 
     for symbol in symbols:
-        if symbol not in symbol_data:
-            continue
+        for hours in hours_options:
+            oldest_values = get_symbol_kline_data(symbols=symbols, hours=hours)
 
-        new_data = symbol_data[symbol]
+            for data_type in KLINE_FIELD_MAP.keys():
+                zscore_obj = incremental_zscores[symbol][data_type][hours]
+                new_value = newest_values[symbol][data_type]
 
-        for tf in timeframes:
-            old_data = get_oldest_kline_for_timeframe(symbol, tf)
-
-            for data_type in zscore_data_types:
-                if (
-                    symbol in incremental_zscores
-                    and data_type in incremental_zscores[symbol]
-                ):
-                    zscore_obj = incremental_zscores[symbol][data_type].get(tf)
-
-                    if zscore_obj:
-                        new_value = new_data[data_type]
-
-                        if old_data:
-                            old_value = old_data[data_type]
-                            zscore_obj.update_data_point(old_value, new_value)
-                        else:
-                            zscore_obj.add_data_point(new_value)
+                if oldest_values:
+                    old_value = oldest_values[symbol][data_type]
+                    zscore_obj.update_data_point(old_value, new_value)
+                else:
+                    zscore_obj.add_data_point(new_value)
 
 
-def create_z_score_results(incremental_zscores, timeframes):
+def create_z_score_results(incremental_zscores, hours_options):
     return {
-        tf: {
+        hours: {
             symbol: {
-                data_type: round(tf_dict[tf].get_z_score(), 2)
-                for data_type, tf_dict in data_types.items()
+                data_type: round(
+                    incremental_zscores[symbol][data_type][hours].get_z_score(), 2
+                )
+                for data_type in incremental_zscores[symbol].keys()
             }
-            for symbol, data_types in incremental_zscores.items()
+            for symbol in incremental_zscores.keys()
         }
-        for tf in timeframes
+        for hours in hours_options
     }
 
 
@@ -148,7 +135,7 @@ def initialize_incremental_zscore():
     symbols = get_exchange_symbols()
     hours_options = list(tf_options["zscore"].values())
 
-    incremental_zscores = initialize_zscores(symbols, hours_options, zscore_data_types)
+    incremental_zscores = initialize_zscores(symbols, hours_options)
 
     pubsub = r.pubsub()
     pubsub.subscribe(RedisPubMessages.KLINE_SAVED_TO_DB.value)

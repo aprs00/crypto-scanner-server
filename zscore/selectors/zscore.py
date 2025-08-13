@@ -76,32 +76,3 @@ def get_all_tickers_data_z_score(duration, type):
     )
 
     return list(z_score_data)
-
-
-def get_oldest_kline_for_timeframe(symbol, tf_hours):
-    """
-    Get the oldest kline (most recent outside the rolling window) that should be removed
-    for a specific timeframe. Dynamically applies KLINE_FIELD_MAP for zscore_data_types.
-    """
-    cutoff_time = timezone.now() - timedelta(hours=tf_hours)
-
-    fields_map = {
-        data_type: KLINE_FIELD_MAP[data_type]
-        for data_type in zscore_data_types
-        if data_type in KLINE_FIELD_MAP
-    }
-
-    oldest_kline = (
-        Kline1m.objects.filter(symbol__name=symbol, start_time__lte=cutoff_time)
-        .values(*fields_map.values())
-        .order_by("-start_time")
-        .first()
-    )
-
-    if oldest_kline:
-        return {
-            data_type: float(oldest_kline[field_name])
-            for data_type, field_name in fields_map.items()
-        }
-
-    return None

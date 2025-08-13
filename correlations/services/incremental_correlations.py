@@ -6,12 +6,12 @@ from itertools import combinations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from exchange_connections.constants import KLINE_FIELD_MAP
-from exchange_connections.selectors import get_exchange_symbols
-from correlations.formulas.pearson import IncrementalPearsonCorrelation
-from correlations.selectors.correlations import (
+from exchange_connections.selectors import (
+    get_exchange_symbols,
     get_symbol_kline_data,
     get_historical_kline_data,
 )
+from correlations.formulas.pearson import IncrementalPearsonCorrelation
 from filters.constants import tf_options
 from core.constants import RedisPubMessages
 
