@@ -28,9 +28,7 @@ class KlinesSocketManager:
         self.r = RedisManager()
         self.stream_name = None
         self.symbols_executed = set()
-        self.message_batch = (
-            []
-        )  # now stores raw kline 'k' dicts instead of model instances
+        self.message_batch = []
         self.symbols = []
         self.symbols_count = 0
 
