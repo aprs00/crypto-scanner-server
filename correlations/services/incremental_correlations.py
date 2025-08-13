@@ -6,6 +6,7 @@ from itertools import combinations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from exchange_connections.constants import KLINE_FIELD_MAP
+from exchange_connections.selectors import get_exchange_symbols
 from correlations.formulas.pearson import IncrementalPearsonCorrelation
 from correlations.selectors.correlations import (
     get_symbol_kline_data,
@@ -247,8 +248,7 @@ def initialize_incremental_correlations():
     """
 
     hours_options = tf_options["correlation"].values()
-    # symbols = get_exchange_symbols()
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    symbols = get_exchange_symbols()
 
     correlations = initialize_correlation_objects(
         symbols=symbols,
