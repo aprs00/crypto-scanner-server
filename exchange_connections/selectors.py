@@ -55,6 +55,16 @@ def get_historical_kline_data(hours, symbols):
     return klines_data
 
 
+from typing import Optional
+from datetime import timedelta
+
+from django.utils import timezone
+from django.db.models import F, Window
+from django.db.models.functions import RowNumber
+
+# Assuming your models and other variables (kline_annotations, KLINE_FIELD_MAP) are defined elsewhere
+
+
 def get_symbol_kline_data(
     symbols: list, exchange: str, contract_type: str, hours: Optional[int] = None
 ):
@@ -63,7 +73,6 @@ def get_symbol_kline_data(
     Else, gets the most recent available kline data for the given exchange and contract type.
     """
     print("11")
-
     base_qs = Kline1m.objects.filter(
         symbol__name__in=symbols,
         exchange__name=exchange,
@@ -80,18 +89,18 @@ def get_symbol_kline_data(
 
     print("33")
 
-    latest_ids = list(
-        base_qs.order_by("symbol__name", "-start_time")
-        .distinct("symbol__name")
-        .values_list("id", flat=True)
-    )
+    latest_klines_qs = base_qs.annotate(
+        row_number=Window(
+            expression=RowNumber(),
+            partition_by=[F("symbol__name")],
+            order_by=F("start_time").desc(),
+        )
+    ).filter(row_number=1)
 
     print("44")
 
-    klines = (
-        Kline1m.objects.filter(id__in=latest_ids)
-        .annotate(**kline_annotations)
-        .values("symbol__name", *kline_annotations.keys())
+    klines = latest_klines_qs.annotate(**kline_annotations).values(
+        "symbol__name", *kline_annotations.keys()
     )
 
     print("55")
