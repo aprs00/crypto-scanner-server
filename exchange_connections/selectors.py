@@ -59,7 +59,6 @@ def get_historical_kline_data(hours, symbols):
 def get_symbol_kline_data(
     symbols: list, exchange: str, contract_type: str, hours: Optional[int] = None
 ):
-    print("OPTIMIZED QUERY")
     symbol_placeholders = ",".join(["%s"] * len(symbols))
 
     if hours is not None:

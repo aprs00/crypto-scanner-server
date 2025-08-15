@@ -33,13 +33,13 @@ def initialize_correlation_objects(symbols, hours_options):
     correlations = {}
     futures = []
     all_pairs = list(combinations(symbols, 2))
-    pair_batches = list(chunked_iterable(all_pairs, 5000))
+    pair_batches = list(chunked_iterable(all_pairs, 25000))
 
     completed_futures = 0
     total_futures = 0
 
     with ThreadPoolExecutor() as executor:
-        for hours in hours_options:
+        for hours in reversed(hours_options):
             for pair_batch in pair_batches:
                 batch_symbols = set()
 
