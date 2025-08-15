@@ -60,6 +60,7 @@ def get_symbol_kline_data(symbols: list, hours: Optional[int] = None):
     If hours is provided, gets the kline data from X hours ago
     Else, gets the most recent available kline data.
     """
+    print("HEREEE")
     base_qs = Kline1m.objects.filter(
         symbol__name__in=symbols,
         exchange__name="binance",
