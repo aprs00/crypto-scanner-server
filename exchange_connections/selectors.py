@@ -59,49 +59,51 @@ def get_historical_kline_data(hours, symbols):
 def get_symbol_kline_data(
     symbols: list, exchange: str, contract_type: str, hours: Optional[int] = None
 ):
-    """
-    If hours is provided, gets the kline data from X hours ago.
-    Else, gets the most recent available kline data for the given exchange and contract type.
-    """
-    print("NEW QUERY")
+    print("OPTIMIZED QUERY")
     symbol_placeholders = ",".join(["%s"] * len(symbols))
 
     if hours is not None:
         target_time = timezone.now() - timezone.timedelta(hours=hours)
         time_condition = "AND k.start_time <= %s"
-        params = symbols + [exchange, contract_type, target_time]
+        params = [target_time] + [exchange, contract_type] + symbols
     else:
         time_condition = ""
-        params = symbols + [exchange, contract_type]
+        params = [exchange, contract_type] + symbols
 
     query = f"""
-        SELECT DISTINCT ON (s.name) 
-            s.name as symbol_name,
+        SELECT 
+            s.name AS symbol_name,
             k.close,
             k.base_volume,
             k.number_of_trades
-        FROM cs_klines_1m k
-        JOIN cs_symbols s ON k.symbol_id = s.id
-        JOIN cs_exchanges e ON k.exchange_id = e.id
+        FROM cs_symbols s
+        JOIN cs_exchanges e ON s.exchange_id = e.id
         JOIN cs_contract_types ct ON s.contract_type_id = ct.id
-        WHERE s.name IN ({symbol_placeholders})
-            AND e.name = %s
+        CROSS JOIN LATERAL (
+            SELECT close, base_volume, number_of_trades
+            FROM cs_klines_1m k
+            WHERE 
+                k.symbol_id = s.id
+                AND k.exchange_id = e.id
+                {time_condition}
+            ORDER BY k.start_time DESC
+            LIMIT 1
+        ) k
+        WHERE 
+            e.name = %s
             AND ct.name = %s
-            {time_condition}
-        ORDER BY s.name, k.start_time DESC
+            AND s.name IN ({symbol_placeholders})
     """
 
     with connection.cursor() as cursor:
         cursor.execute(query, params)
         rows = cursor.fetchall()
 
-        result = {}
-
-        for row in rows:
-            result[row[0]] = {
+        return {
+            row[0]: {
                 "price": float(row[1]),
                 "volume": float(row[2]),
                 "trades": float(row[3]),
             }
-
-        return result
+            for row in rows
+        }
