@@ -36,14 +36,13 @@ class IncrementalPearsonCorrelation:
         x_old: Optional[float] = None,
         y_old: Optional[float] = None,
     ):
-        if self.count == self.window_size:
-            if x_old is not None and y_old is not None:
-                self.sum_x -= x_old
-                self.sum_y -= y_old
-                self.sum_xx -= x_old * x_old
-                self.sum_yy -= y_old * y_old
-                self.sum_xy -= x_old * y_old
-                self.count -= 1
+        if self.count == self.window_size and x_old is not None and y_old is not None:
+            self.sum_x -= x_old
+            self.sum_y -= y_old
+            self.sum_xx -= x_old * x_old
+            self.sum_yy -= y_old * y_old
+            self.sum_xy -= x_old * y_old
+            self.count -= 1
 
         self.sum_x += x_new
         self.sum_y += y_new
