@@ -1,9 +1,7 @@
 from exchange_connections.models import Kline1m, Symbol
 
 
-def get_average_symbol_data(
-    symbol_name, exchange_name, start_time_utc, group_by, contract_type_name
-):
+def get_average_symbol_data(symbol, exchange, start_time_utc, group_by, contract_type):
     group_by_mapping = {
         "day": {"extract_function": "dow", "column_name": "day_of_week"},
         "hour": {"extract_function": "hour", "column_name": "hour_of_day"},
@@ -13,16 +11,11 @@ def get_average_symbol_data(
     if not settings:
         raise ValueError(f"Invalid group_by value: {group_by}")
 
-    extract_function = settings["extract_function"]
-    column_name = settings["column_name"]
-
     symbol_obj = Symbol.objects.get(
-        name=symbol_name,
-        exchange__name=exchange_name,
-        contract_type__name=contract_type_name,
+        name=symbol,
+        exchange__name=exchange,
+        contract_type__name=contract_type,
     )
-
-    symbol_id = symbol_obj.pk
 
     query = f"""
         WITH ranked_data AS (
@@ -42,7 +35,7 @@ def get_average_symbol_data(
         )
         SELECT
             MAX(id) as id,
-            EXTRACT({extract_function} FROM DATE_TRUNC('{group_by}', start_time)) AS {column_name},
+            EXTRACT({settings["extract_function"]} FROM DATE_TRUNC('{group_by}', start_time)) AS {settings["column_name"]},
             MAX(CASE WHEN row_asc = 1 THEN open END) AS open,
             MAX(CASE WHEN row_desc = 1 THEN close END) AS close
         FROM
@@ -53,4 +46,4 @@ def get_average_symbol_data(
             DATE_TRUNC('{group_by}', start_time)
     """
 
-    return list(Kline1m.objects.raw(query, [symbol_id, start_time_utc]))
+    return list(Kline1m.objects.raw(query, [symbol_obj.pk, start_time_utc]))

@@ -1,4 +1,5 @@
 from django.http import JsonResponse
+from typing import Literal
 import numpy as np
 
 from core.constants import invalid_params_error
@@ -34,20 +35,24 @@ def calculate_dict_percentage(data, grouped_by):
     return calculated_data
 
 
-def average_price_change(duration, symbol, start_time_utc, time_period):
+def average_price_change(
+    duration, symbol, start_time_utc, time_period: Literal["hour", "day"]
+):
     if duration is None or symbol is None:
         return JsonResponse(invalid_params_error, status=400)
 
+    price_changes = get_average_symbol_data(
+        symbol=symbol,
+        exchange="binance",
+        start_time_utc=start_time_utc,
+        group_by=time_period,
+        contract_type="perpetual",
+    )
+
     if time_period == "day":
-        price_changes = get_average_symbol_data(
-            symbol, "binance", start_time_utc, "day", "perpetual"
-        )
         time_dict_values = calculate_dict_percentage(price_changes, "day_of_week")
         time_labels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     elif time_period == "hour":
-        price_changes = get_average_symbol_data(
-            symbol, "binance", start_time_utc, "hour", "perpetual"
-        )
         time_dict_values = calculate_dict_percentage(price_changes, "hour_of_day")
         time_dict_values = dict(sorted(time_dict_values.items()))
         time_labels = [
