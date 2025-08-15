@@ -29,7 +29,9 @@ def get_z_score_matrix(request):
 
         tf = tf_options["zscore"][duration]
 
-        tf_data = msgpack.unpackb(r.execute_command("GET", f"zscore:{tf}"), raw=False)
+        tf_data = msgpack.unpackb(
+            r.execute_command("GET", f"zscore:binance:perpetual{tf}"), raw=False
+        )
 
         response = format_z_score_matrix_response(
             data=tf_data,

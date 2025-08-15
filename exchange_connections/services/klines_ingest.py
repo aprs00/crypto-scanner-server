@@ -140,21 +140,6 @@ def build_model_from_ws(
     )
 
 
-def build_kline_models(
-    data: Union[Iterable[Sequence], dict],
-    symbol: Optional[str] = None,
-    exchange: str = "binance",
-    contract_type: str = "perpetual",
-) -> Union[List[Kline1m], Kline1m]:
-    if isinstance(data, dict):
-        return RawWsKline(data).to_model(exchange=exchange, contract_type=contract_type)
-    elif isinstance(data, Iterable):
-        if symbol is None:
-            raise ValueError("symbol parameter is required when data is an Iterable")
-        return [RawRestKline(k).to_model(symbol) for k in data]
-    return []
-
-
 def bulk_insert_klines(objs: List[Kline1m], chunk_size: int = 10000) -> int:
     if not objs:
         return 0

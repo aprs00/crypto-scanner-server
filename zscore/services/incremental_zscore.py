@@ -1,6 +1,7 @@
 import redis
 import numpy as np
 import msgpack
+from django.utils import timezone
 
 from filters.constants import tf_options
 from exchange_connections.selectors import (
@@ -10,6 +11,8 @@ from exchange_connections.selectors import (
 )
 from exchange_connections.constants import KLINE_FIELD_MAP
 from core.constants import RedisPubMessages
+from zscore.models import ZScoreHistory
+from exchange_connections.models import Symbol, Exchange, ContractType
 
 r = redis.Redis(host="redis")
 
@@ -128,6 +131,43 @@ def create_z_score_results(incremental_zscores, hours_options):
     }
 
 
+def store_z_score_results(results, symbols, tf):
+    """
+    Store the calculated Z-score results in the database.
+    """
+    db_entries = []
+    current_time = timezone.now()
+
+    for symbol in symbols:
+        try:
+            symbol_obj = Symbol.objects.get(
+                name=symbol,
+                exchange=Exchange.objects.get(name="binance"),
+                contract_type=ContractType.objects.get(name="perpetual"),
+            )
+
+            zscores = results[tf][symbol]
+
+            db_entries.append(
+                ZScoreHistory(
+                    symbol=symbol_obj,
+                    volume=zscores.get("volume", 0),
+                    price=zscores.get("price", 0),
+                    trades=zscores.get("trades", 0),
+                    calculated_at=current_time,
+                )
+            )
+        except (
+            Symbol.DoesNotExist,
+            Exchange.DoesNotExist,
+            ContractType.DoesNotExist,
+        ):
+            continue
+
+    if db_entries:
+        ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
+
+
 def initialize_incremental_zscore():
     """
     Calculate and cache Z-scores for all combinations of hours, data types, and symbols.
@@ -156,8 +196,10 @@ def initialize_incremental_zscore():
             for tf, tf_data in results.items():
                 pipeline.execute_command(
                     "SET",
-                    f"zscore:{tf}",
+                    f"zscore:binance:perpetual{tf}",
                     msgpack.packb(tf_data),
                 )
+
+                store_z_score_results(results, symbols, tf)
 
             pipeline.execute()
