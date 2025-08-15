@@ -72,7 +72,7 @@ class IncrementalCorrelationCalculator:
 
                 with self.print_lock:
                     print(
-                        f"TF {tf} / Batch done: {completed_futures}/{total_futures} ({(completed_futures/total_futures)*100:.1f}%), {len(result)} correlations"
+                        f"TF {tf}, Batch done: {completed_futures}/{total_futures} ({(completed_futures/total_futures)*100:.1f}%), {len(result)} correlations"
                     )
 
     def process_correlation_batch(self, hours, batch_symbols, symbol_pairs):
