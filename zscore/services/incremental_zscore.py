@@ -99,17 +99,14 @@ def update_zscores(incremental_zscores, symbols, hours_options):
     """
     Update incremental Z-scores by removing oldest values and adding new ones.
     """
-    print("1")
     newest_values = get_symbol_kline_data(
         symbols=symbols, exchange="binance", contract_type="perpetual"
     )
-    print("2")
 
     for hours in hours_options:
         oldest_values = get_symbol_kline_data(
             symbols=symbols, hours=hours, exchange="binance", contract_type="perpetual"
         )
-        print("3")
 
         for symbol in symbols:
             for data_type in KLINE_FIELD_MAP.keys():
@@ -138,40 +135,45 @@ def create_z_score_results(incremental_zscores, hours_options):
     }
 
 
-def store_z_score_results(results, symbols, tf):
+def store_z_score_results(results):
     """
-    Store the calculated Z-score results in the database.
+    Store calculated Z-scores for all Binance+perpetual symbols in the DB.
+    Pulls from `results` dict and defaults to zero if missing.
     """
-    db_entries = []
     current_time = timezone.now()
     print("STORING ZSCORES")
 
-    for symbol in symbols:
-        try:
-            symbol_obj = Symbol.objects.get(
-                name=symbol,
-                exchange=Exchange.objects.get(name="binance"),
-                contract_type=ContractType.objects.get(name="perpetual"),
-            )
+    try:
+        exchange_obj = Exchange.objects.get(name="binance")
+        contract_type_obj = ContractType.objects.get(name="perpetual")
+    except (Exchange.DoesNotExist, ContractType.DoesNotExist) as e:
+        print("Exchange or ContractType not found:", e)
+        return
 
-            zscores = results[tf][symbol]
+    symbol_objs = {
+        s.name: s
+        for s in Symbol.objects.filter(
+            exchange=exchange_obj, contract_type=contract_type_obj
+        )
+    }
 
-            db_entries.append(
-                ZScoreHistory(
-                    symbol=symbol_obj,
-                    volume=zscores.get("volume", 0),
-                    price=zscores.get("price", 0),
-                    trades=zscores.get("trades", 0),
-                    calculated_at=current_time,
-                )
+    db_entries = []
+
+    timeframe_key = 1
+    tf_data = results.get(timeframe_key, {})
+
+    for symbol_name, symbol_obj in symbol_objs.items():
+        zscores = tf_data.get(symbol_name, {})
+
+        db_entries.append(
+            ZScoreHistory(
+                symbol=symbol_obj,
+                volume=zscores.get("volume", 0),
+                price=zscores.get("price", 0),
+                trades=zscores.get("trades", 0),
+                calculated_at=current_time,
             )
-        except (
-            Symbol.DoesNotExist,
-            Exchange.DoesNotExist,
-            ContractType.DoesNotExist,
-        ) as e:
-            print("Error occurred while storing Z-score results:", e)
-            continue
+        )
 
     if db_entries:
         ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
@@ -209,6 +211,6 @@ def initialize_incremental_zscore():
                     msgpack.packb(tf_data),
                 )
 
-                store_z_score_results(results, symbols, tf)
+            store_z_score_results(results)
 
             pipeline.execute()
