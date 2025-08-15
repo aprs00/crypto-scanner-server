@@ -11,7 +11,6 @@ from filters.constants import tf_options
 from zscore.utils import format_z_score_matrix_response
 from core.constants import invalid_params_error
 from exchange_connections.constants import tickers
-from exchange_connections.selectors import get_exchange_symbols
 
 r = redis.Redis(host="redis")
 
@@ -29,10 +28,12 @@ def get_z_score_matrix(request):
             )
 
         tf = tf_options["zscore"][duration]
-        symbols = get_exchange_symbols()
+
+        tf_data = msgpack.unpackb(r.execute_command("GET", f"zscore:{tf}"), raw=False)
+        symbols = list(tf_data.keys())
 
         response = format_z_score_matrix_response(
-            msgpack.unpackb(r.execute_command("GET", f"zscore:{tf}")),
+            tf_data,
             symbols,
             x_axis,
             y_axis,
