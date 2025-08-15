@@ -2,6 +2,7 @@ import numpy as np
 from django.utils import timezone
 from datetime import timedelta
 from typing import Optional
+from django.db import connection
 
 from exchange_connections.models import Kline1m, Symbol
 from exchange_connections.constants import KLINE_FIELD_MAP, kline_annotations
@@ -55,16 +56,6 @@ def get_historical_kline_data(hours, symbols):
     return klines_data
 
 
-from typing import Optional
-from datetime import timedelta
-
-from django.utils import timezone
-from django.db.models import F, Window
-from django.db.models.functions import RowNumber
-
-# Assuming your models and other variables (kline_annotations, KLINE_FIELD_MAP) are defined elsewhere
-
-
 def get_symbol_kline_data(
     symbols: list, exchange: str, contract_type: str, hours: Optional[int] = None
 ):
@@ -72,43 +63,45 @@ def get_symbol_kline_data(
     If hours is provided, gets the kline data from X hours ago.
     Else, gets the most recent available kline data for the given exchange and contract type.
     """
-    print("11")
-    base_qs = Kline1m.objects.filter(
-        symbol__name__in=symbols,
-        exchange__name=exchange,
-        symbol__contract_type__name=contract_type,
-    )
-
-    print("22")
+    print("NEW QUERY")
+    symbol_placeholders = ",".join(["%s"] * len(symbols))
 
     if hours is not None:
-        target_time = timezone.now() - timedelta(hours=hours)
-        base_qs = base_qs.filter(
-            start_time__lte=target_time.astimezone(timezone.utc),
-        )
+        target_time = timezone.now() - timezone.timedelta(hours=hours)
+        time_condition = "AND k.start_time <= %s"
+        params = symbols + [exchange, contract_type, target_time]
+    else:
+        time_condition = ""
+        params = symbols + [exchange, contract_type]
 
-    print("33")
+    query = f"""
+        SELECT DISTINCT ON (s.name) 
+            s.name as symbol_name,
+            k.close,
+            k.base_volume,
+            k.number_of_trades
+        FROM cs_klines_1m k
+        JOIN cs_symbols s ON k.symbol_id = s.id
+        JOIN cs_exchanges e ON k.exchange_id = e.id
+        JOIN cs_contract_types ct ON s.contract_type_id = ct.id
+        WHERE s.name IN ({symbol_placeholders})
+            AND e.name = %s
+            AND ct.name = %s
+            {time_condition}
+        ORDER BY s.name, k.start_time DESC
+    """
 
-    latest_klines_qs = base_qs.annotate(
-        row_number=Window(
-            expression=RowNumber(),
-            partition_by=[F("symbol__name")],
-            order_by=F("start_time").desc(),
-        )
-    ).filter(row_number=1)
+    with connection.cursor() as cursor:
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
 
-    print("44")
+        result = {}
 
-    klines = latest_klines_qs.annotate(**kline_annotations).values(
-        "symbol__name", *kline_annotations.keys()
-    )
+        for row in rows:
+            result[row[0]] = {
+                "price": float(row[1]),
+                "volume": float(row[2]),
+                "trades": float(row[3]),
+            }
 
-    print("55")
-
-    return {
-        kline["symbol__name"]: {
-            data_type: kline[f"{field_name}_as_float"]
-            for data_type, field_name in KLINE_FIELD_MAP.items()
-        }
-        for kline in klines
-    }
+        return result
