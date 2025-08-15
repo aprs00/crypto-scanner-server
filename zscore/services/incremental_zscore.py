@@ -22,49 +22,64 @@ class IncrementalZScore:
 
     def __init__(self, window_size):
         self.window_size = window_size
-        self.sum = 0
-        self.sum_squared = 0
         self.count = 0
+        self.mean = 0.0
+        self.M2 = 0.0
         self.current_value = None
 
     def initialize_from_data(self, data):
-        if data:
-            self.count = len(data)
-            self.sum = sum(data)
-            self.sum_squared = sum(x * x for x in data)
-            if data:
-                self.current_value = data[-1]
+        arr = np.array(data, dtype=np.float64)
+
+        if arr.size > 0:
+            self.count = arr.size
+            self.mean = np.mean(arr)
+            self.M2 = np.sum((arr - self.mean) ** 2)
+            self.current_value = arr[-1]
 
     def remove_data_point(self, value):
-        if self.count > 0:
-            self.sum -= value
-            self.sum_squared -= value * value
-            self.count -= 1
+        if self.count <= 1:
+            self.count = 0
+            self.mean = 0.0
+            self.M2 = 0.0
+
+        old_count = self.count
+        self.count -= 1
+        delta = value - self.mean
+        self.mean = (old_count * self.mean - value) / self.count
+        self.M2 -= delta * (value - self.mean)
 
     def add_data_point(self, value):
-        self.sum += value
-        self.sum_squared += value * value
-        self.count += 1
+        delta = value - self.mean
+        delta2 = value - self.mean
+
+        self.mean += delta / self.count
+        self.M2 += delta * delta2
         self.current_value = value
+        self.count += 1
 
     def update_data_point(self, old_value, new_value):
-        self.remove_data_point(old_value)
-        self.add_data_point(new_value)
+        if self.count == 0:
+            self.add_data_point(new_value)
+            return
+
+        delta_old = old_value - self.mean
+        self.mean += (new_value - old_value) / self.count
+        delta_new = new_value - self.mean
+        self.M2 += (new_value - old_value) * (delta_old + delta_new)
+        self.current_value = new_value
 
     def get_z_score(self):
-        if self.count == 0 or self.current_value is None:
+        if self.count < 2 or self.current_value is None:
             return 0
 
-        mean = self.sum / self.count
-
-        variance = (self.sum_squared / self.count) - (mean * mean)
-
-        if variance <= 0:
+        variance = self.M2 / self.count
+        if variance <= 1e-9:
             return 0
 
         std_dev = np.sqrt(variance)
+        z_score = (self.current_value - self.mean) / std_dev
 
-        return (self.current_value - mean) / std_dev
+        return z_score
 
 
 class ZScoreProcessor:
@@ -75,7 +90,7 @@ class ZScoreProcessor:
 
     def initialize_zscores(self):
         """Initialize Z-score objects using historical kline data from DB"""
-        dict = {}
+        zscore_dict = {}
         data_by_hours = {
             hours: get_historical_kline_data(hours=hours, symbols=self.symbols)
             for hours in self.hours_options
@@ -84,18 +99,20 @@ class ZScoreProcessor:
         for symbol in self.symbols:
             for data_type in KLINE_FIELD_MAP.keys():
                 for hours in self.hours_options:
-                    dict.setdefault(symbol, {}).setdefault(data_type, {})[hours] = (
-                        IncrementalZScore(hours * 60)
-                    )
+                    zscore_dict.setdefault(symbol, {}).setdefault(data_type, {})[
+                        hours
+                    ] = IncrementalZScore(hours * 60)
+
                     series = data_by_hours[hours].get(symbol, {}).get(data_type, [])
+
                     if series is not None and len(series) > 0:
-                        dict[symbol][data_type][hours].initialize_from_data(
-                            series.tolist()
+                        zscore_dict[symbol][data_type][hours].initialize_from_data(
+                            np.array(series, dtype=np.float64)
                         )
-        return dict
+        return zscore_dict
 
     def update_zscores(self):
-        """Update incremental Z-scores by removing oldest values and adding new ones"""
+        """Update incremental Z-scores with new data"""
         newest_values = get_symbol_kline_data(
             symbols=self.symbols, exchange="binance", contract_type="perpetual"
         )
@@ -111,13 +128,13 @@ class ZScoreProcessor:
             for symbol in self.symbols:
                 for data_type in KLINE_FIELD_MAP.keys():
                     zscore_obj = self.incremental_zscores[symbol][data_type][hours]
-                    new_value = newest_values[symbol][data_type]
-                    old_value = oldest_values.get(symbol, {}).get(data_type)
+                    new_val = newest_values[symbol][data_type]
+                    old_val = oldest_values.get(symbol, {}).get(data_type)
 
-                    if old_value:
-                        zscore_obj.update_data_point(old_value, new_value)
+                    if old_val is not None:
+                        zscore_obj.update_data_point(old_val, new_val)
                     else:
-                        zscore_obj.add_data_point(new_value)
+                        zscore_obj.add_data_point(new_val)
 
     def create_z_score_results(self):
         return {
@@ -129,48 +146,46 @@ class ZScoreProcessor:
                         ].get_z_score(),
                         2,
                     )
-                    for data_type in self.incremental_zscores[symbol].keys()
+                    for data_type in KLINE_FIELD_MAP.keys()
                 }
-                for symbol in self.incremental_zscores.keys()
+                for symbol in self.symbols
             }
             for hours in self.hours_options
         }
 
     @staticmethod
     def store_z_score_results(results):
-        """Store calculated Z-scores in DB (pulls from `results` dict)"""
+        """Store calculated Z-scores in DB"""
         current_time = timezone.now()
         print("STORING ZSCORES")
 
         try:
-            exchange_obj = Exchange.objects.get(name="binance")
-            contract_type_obj = ContractType.objects.get(name="perpetual")
+            exchange = Exchange.objects.get(name="binance")
+            contract_type = ContractType.objects.get(name="perpetual")
+            symbols = Symbol.objects.filter(
+                exchange=exchange, contract_type=contract_type
+            )
+            symbol_map = {s.name: s for s in symbols}
         except (Exchange.DoesNotExist, ContractType.DoesNotExist) as e:
             print("Exchange or ContractType not found:", e)
             return
 
-        symbol_objs = {
-            s.name: s
-            for s in Symbol.objects.filter(
-                exchange=exchange_obj, contract_type=contract_type_obj
-            )
-        }
-
         db_entries = []
-        timeframe_key = 1
-        tf_data = results.get(timeframe_key, {})
 
-        for symbol_name, symbol_obj in symbol_objs.items():
-            zscores = tf_data.get(symbol_name, {})
-            db_entries.append(
-                ZScoreHistory(
-                    symbol=symbol_obj,
-                    volume=zscores.get("volume", 0),
-                    price=zscores.get("price", 0),
-                    trades=zscores.get("trades", 0),
-                    calculated_at=current_time,
+        for hours in results:
+            for symbol_name, data in results[hours].items():
+                if symbol_name not in symbol_map:
+                    continue
+
+                db_entries.append(
+                    ZScoreHistory(
+                        symbol=symbol_map[symbol_name],
+                        volume=data.get("volume", 0),
+                        price=data.get("price", 0),
+                        trades=data.get("trades", 0),
+                        calculated_at=current_time,
+                    )
                 )
-            )
 
         if db_entries:
             ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
@@ -199,8 +214,3 @@ class ZScoreProcessor:
                     )
                 self.store_z_score_results(results)
                 pipeline.execute()
-
-
-def initialize_incremental_zscore():
-    processor = ZScoreProcessor()
-    processor.run()
