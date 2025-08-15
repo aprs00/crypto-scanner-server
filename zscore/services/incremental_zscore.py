@@ -101,16 +101,16 @@ def update_zscores(incremental_zscores, symbols, hours_options):
     """
     newest_values = get_symbol_kline_data(symbols=symbols)
 
-    for symbol in symbols:
-        for hours in hours_options:
-            oldest_values = get_symbol_kline_data(symbols=symbols, hours=hours)
+    for hours in hours_options:
+        oldest_values = get_symbol_kline_data(symbols=symbols, hours=hours)
 
+        for symbol in symbols:
             for data_type in KLINE_FIELD_MAP.keys():
                 zscore_obj = incremental_zscores[symbol][data_type][hours]
                 new_value = newest_values[symbol][data_type]
+                old_value = oldest_values.get(symbol, {}).get(data_type)
 
-                if oldest_values:
-                    old_value = oldest_values[symbol][data_type]
+                if old_value:
                     zscore_obj.update_data_point(old_value, new_value)
                 else:
                     zscore_obj.add_data_point(new_value)
@@ -137,8 +137,6 @@ def store_z_score_results(results, symbols, tf):
     """
     db_entries = []
     current_time = timezone.now()
-
-    print("store to db invoked")
 
     for symbol in symbols:
         try:
@@ -168,7 +166,6 @@ def store_z_score_results(results, symbols, tf):
             continue
 
     if db_entries:
-        print(f"Storing {len(db_entries)} Z-score entries to the database.")
         ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
 
 
