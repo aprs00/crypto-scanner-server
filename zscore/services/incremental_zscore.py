@@ -138,6 +138,8 @@ def store_z_score_results(results, symbols, tf):
     db_entries = []
     current_time = timezone.now()
 
+    print("store to db invoked")
+
     for symbol in symbols:
         try:
             symbol_obj = Symbol.objects.get(
@@ -161,10 +163,12 @@ def store_z_score_results(results, symbols, tf):
             Symbol.DoesNotExist,
             Exchange.DoesNotExist,
             ContractType.DoesNotExist,
-        ):
+        ) as e:
+            print("Error occurred while storing Z-score results:", e)
             continue
 
     if db_entries:
+        print(f"Storing {len(db_entries)} Z-score entries to the database.")
         ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
 
 
@@ -196,7 +200,7 @@ def initialize_incremental_zscore():
             for tf, tf_data in results.items():
                 pipeline.execute_command(
                     "SET",
-                    f"zscore:binance:perpetual{tf}",
+                    f"zscore:binance:perpetual:{tf}",
                     msgpack.packb(tf_data),
                 )
 

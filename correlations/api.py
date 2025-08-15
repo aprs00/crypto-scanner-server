@@ -24,16 +24,14 @@ def get_pearson_correlation(request):
     if not tf_options["correlation"][tf] or data_type not in correlations_data_types:
         return JsonResponse(invalid_params_error, status=400)
 
-    tf = tf_options["correlation"][tf]
+    hours = tf_options["correlation"][tf]
 
     symbols = msgpack.unpackb(
         r.execute_command("GET", "correlations:symbols:binance:perpetual")
     )
 
-    print("SYMBOLS", symbols)
-
     pearson_correlations = msgpack.unpackb(
-        r.execute_command("GET", f"correlations:{data_type}:{tf}")
+        r.execute_command("GET", f"correlations:{data_type}:{hours}:binance:perpetual")
     )
 
     response = {
