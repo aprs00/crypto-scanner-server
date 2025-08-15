@@ -8,7 +8,6 @@ import msgpack
 from core.constants import invalid_params_error
 from filters.constants import tf_options
 from exchange_connections.constants import correlations_data_types
-from exchange_connections.selectors import get_exchange_symbols
 
 
 r = redis.Redis(host="redis")
@@ -27,7 +26,11 @@ def get_pearson_correlation(request):
 
     tf = tf_options["correlation"][tf]
 
-    symbols = get_exchange_symbols()
+    symbols = msgpack.unpackb(
+        r.execute_command("GET", "correlations:symbols:binance:perpetual")
+    )
+
+    print("SYMBOLS", symbols)
 
     pearson_correlations = msgpack.unpackb(
         r.execute_command("GET", f"correlations:{data_type}:{tf}")

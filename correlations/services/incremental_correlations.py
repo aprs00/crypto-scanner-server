@@ -180,7 +180,7 @@ def update_and_cache_incremental_correlations(correlations, hours_options, symbo
 
             set_pipeline.execute_command(
                 "SET",
-                f"correlations:{data_type}:{hours}",
+                f"correlations:{data_type}:{hours}:binance:perpetual",
                 msgpack.packb(correlation_matrix),
             )
 
@@ -230,6 +230,9 @@ def initialize_incremental_correlations():
 
     hours_options = tf_options["correlation"].values()
     symbols = get_exchange_symbols()
+    r.execute_command(
+        "SET", f"correlations:symbols:binance:perpetual", msgpack.packb(symbols)
+    )
 
     correlations = initialize_correlation_objects(
         symbols=symbols,
