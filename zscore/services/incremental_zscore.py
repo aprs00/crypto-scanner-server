@@ -99,21 +99,30 @@ def update_zscores(incremental_zscores, symbols, hours_options):
     """
     Update incremental Z-scores by removing oldest values and adding new ones.
     """
+    print("1")
     newest_values = get_symbol_kline_data(symbols=symbols)
+    print("2")
 
     for hours in hours_options:
         oldest_values = get_symbol_kline_data(symbols=symbols, hours=hours)
+        print("3")
 
         for symbol in symbols:
             for data_type in KLINE_FIELD_MAP.keys():
+                print("4")
                 zscore_obj = incremental_zscores[symbol][data_type][hours]
+                print("5")
                 new_value = newest_values[symbol][data_type]
+                print("6")
                 old_value = oldest_values.get(symbol, {}).get(data_type)
+                print("7")
 
                 if old_value:
                     zscore_obj.update_data_point(old_value, new_value)
+                    print("8")
                 else:
                     zscore_obj.add_data_point(new_value)
+                    print("9")
 
 
 def create_z_score_results(incremental_zscores, hours_options):
@@ -137,6 +146,7 @@ def store_z_score_results(results, symbols, tf):
     """
     db_entries = []
     current_time = timezone.now()
+    print("STORING ZSCORES")
 
     for symbol in symbols:
         try:
