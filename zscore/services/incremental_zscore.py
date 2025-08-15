@@ -109,20 +109,14 @@ def update_zscores(incremental_zscores, symbols, hours_options):
 
         for symbol in symbols:
             for data_type in KLINE_FIELD_MAP.keys():
-                print("4")
                 zscore_obj = incremental_zscores[symbol][data_type][hours]
-                print("5")
                 new_value = newest_values[symbol][data_type]
-                print("6")
                 old_value = oldest_values.get(symbol, {}).get(data_type)
-                print("7")
 
                 if old_value:
                     zscore_obj.update_data_point(old_value, new_value)
-                    print("8")
                 else:
                     zscore_obj.add_data_point(new_value)
-                    print("9")
 
 
 def create_z_score_results(incremental_zscores, hours_options):

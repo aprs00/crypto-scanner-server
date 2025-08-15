@@ -90,7 +90,7 @@ class Kline1m(models.Model):
         ]
         indexes = [
             models.Index(
-                fields=["symbol", "exchange", "-start_time"],
+                fields=["exchange", "symbol", "-start_time"],
                 name="klines_main_query_idx",
             ),
         ]
@@ -100,7 +100,7 @@ class Kline1m(models.Model):
 
 
 class Exchange(models.Model):
-    name = models.CharField(max_length=20)
+    name = models.CharField(max_length=20, db_index=True)
 
     class Meta:
         db_table = "cs_exchanges"
@@ -110,7 +110,7 @@ class Exchange(models.Model):
 
 
 class ContractType(models.Model):
-    name = models.CharField(max_length=20)
+    name = models.CharField(max_length=20, db_index=True)
 
     class Meta:
         db_table = "cs_contract_types"
@@ -133,6 +133,12 @@ class Symbol(models.Model):
                 fields=["name", "exchange", "contract_type"],
                 name="unique_symbol_fields",
             )
+        ]
+        indexes = [
+            models.Index(
+                fields=["exchange", "contract_type", "name"],
+                name="symbol_lookup_idx",
+            ),
         ]
 
     def __str__(self):

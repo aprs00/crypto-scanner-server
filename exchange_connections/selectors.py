@@ -60,22 +60,26 @@ def get_symbol_kline_data(symbols: list, hours: Optional[int] = None):
     If hours is provided, gets the kline data from X hours ago
     Else, gets the most recent available kline data.
     """
-    queryset = Kline1m.objects.filter(
+    base_qs = Kline1m.objects.filter(
         symbol__name__in=symbols,
         exchange__name="binance",
     )
 
     if hours is not None:
         target_time = timezone.now() - timedelta(hours=hours)
-        queryset = queryset.filter(
+        base_qs = base_qs.filter(
             start_time__lte=target_time.astimezone(timezone.utc),
         )
 
-    klines = (
-        queryset.select_related("symbol", "exchange")
-        .annotate(**kline_annotations)
-        .order_by("symbol__name", "-start_time")
+    latest_ids = list(
+        base_qs.order_by("symbol__name", "-start_time")
         .distinct("symbol__name")
+        .values_list("id", flat=True)
+    )
+
+    klines = (
+        Kline1m.objects.filter(id__in=latest_ids)
+        .annotate(**kline_annotations)
         .values("symbol__name", *kline_annotations.keys())
     )
 
