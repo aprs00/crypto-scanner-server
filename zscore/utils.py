@@ -25,7 +25,7 @@ def calculate_z_score_history(duration):
     return {"data": z_scores, "start_time_values": start_time_values}
 
 
-def format_z_score_matrix_response(data, symbols, x_axis, y_axis):
+def format_z_score_matrix_response(data: dict, x_axis: str, y_axis: str):
     return [
         {
             "type": "scatter",
@@ -40,7 +40,7 @@ def format_z_score_matrix_response(data, symbols, x_axis, y_axis):
             "symbolSize": 20,
             "emphasis": {"scale": 1.6},
         }
-        for i, symbol in enumerate(symbols)
+        for i, symbol in enumerate(list(data.keys()))
     ]
 
 

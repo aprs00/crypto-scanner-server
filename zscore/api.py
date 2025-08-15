@@ -30,13 +30,11 @@ def get_z_score_matrix(request):
         tf = tf_options["zscore"][duration]
 
         tf_data = msgpack.unpackb(r.execute_command("GET", f"zscore:{tf}"), raw=False)
-        symbols = list(tf_data.keys())
 
         response = format_z_score_matrix_response(
-            tf_data,
-            symbols,
-            x_axis,
-            y_axis,
+            data=tf_data,
+            x_axis=x_axis,
+            y_axis=y_axis,
         )
 
         return JsonResponse(response, safe=False)
