@@ -100,11 +100,15 @@ def update_zscores(incremental_zscores, symbols, hours_options):
     Update incremental Z-scores by removing oldest values and adding new ones.
     """
     print("1")
-    newest_values = get_symbol_kline_data(symbols=symbols)
+    newest_values = get_symbol_kline_data(
+        symbols=symbols, exchange="binance", contract_type="perpetual"
+    )
     print("2")
 
     for hours in hours_options:
-        oldest_values = get_symbol_kline_data(symbols=symbols, hours=hours)
+        oldest_values = get_symbol_kline_data(
+            symbols=symbols, hours=hours, exchange="binance", contract_type="perpetual"
+        )
         print("3")
 
         for symbol in symbols:

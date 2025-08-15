@@ -110,8 +110,12 @@ def update_correlations(
     hours,
     symbols,
 ):
-    newest_values = get_symbol_kline_data(symbols=symbols)
-    oldest_values = get_symbol_kline_data(symbols=symbols, hours=hours)
+    newest_values = get_symbol_kline_data(
+        symbols=symbols, exchange="binance", contract_type="perpetual"
+    )
+    oldest_values = get_symbol_kline_data(
+        symbols=symbols, hours=hours, exchange="binance", contract_type="perpetual"
+    )
     symbol_pairs = [key_for(a, b) for a, b in combinations(symbols, 2)]
 
     for data_type in KLINE_FIELD_MAP.keys():
