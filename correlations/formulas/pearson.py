@@ -23,16 +23,15 @@ class IncrementalPearsonCorrelation:
             y_initial = np.asarray(y_initial, dtype=np.float64)
 
             min_length = min(len(x_initial), len(y_initial))
-            if min_length > 0:
-                x_data = x_initial[:min_length]
-                y_data = y_initial[:min_length]
+            x_data = x_initial[:min_length]
+            y_data = y_initial[:min_length]
 
-                self.sum_x = np.sum(x_data)
-                self.sum_y = np.sum(y_data)
-                self.sum_xx = np.sum(x_data * x_data)
-                self.sum_yy = np.sum(y_data * y_data)
-                self.sum_xy = np.sum(x_data * y_data)
-                self.count = min_length
+            self.sum_x = np.sum(x_data)
+            self.sum_y = np.sum(y_data)
+            self.sum_xx = np.sum(x_data * x_data)
+            self.sum_yy = np.sum(y_data * y_data)
+            self.sum_xy = np.sum(x_data * y_data)
+            self.count = min_length
 
     def add_data_point(
         self,
@@ -63,18 +62,13 @@ class IncrementalPearsonCorrelation:
         self.count = min(self.count + 1, self.window_size)
 
     def get_correlation(self) -> float:
-        if self.count <= 1:
-            return 0.0
+        var_x = self.count * self.sum_xx - self.sum_x * self.sum_x
+        var_y = self.count * self.sum_yy - self.sum_y * self.sum_y
 
-        n = np.float64(self.count)
-
-        var_x = n * self.sum_xx - self.sum_x * self.sum_x
-        var_y = n * self.sum_yy - self.sum_y * self.sum_y
-
-        if var_x <= np.finfo(np.float64).eps or var_y <= np.finfo(np.float64).eps:
-            return 0.0
-
-        numerator = (n * self.sum_xy) - (self.sum_x * self.sum_y)
+        numerator = (self.count * self.sum_xy) - (self.sum_x * self.sum_y)
         denominator = np.sqrt(var_x * var_y)
+
+        if denominator == 0.0:
+            return 0.0
 
         return float(numerator / denominator)

@@ -3,6 +3,7 @@ from binance.enums import ContractType, KLINE_INTERVAL_1MINUTE
 import time
 import redis
 import threading
+
 from exchange_connections.constants import BinanceContractStatus
 from core.constants import RedisPubMessages
 from exchange_connections.services.klines_ingest import (
@@ -11,26 +12,18 @@ from exchange_connections.services.klines_ingest import (
 )
 
 
-class RedisManager:
-    def __init__(self):
-        self.r = redis.Redis(host="redis")
-
-    def store_error(self, error):
-        self.r.execute_command(f"LPUSH error_log {str(error)}")
-
-    def publish_message(self, message, data=""):
-        self.r.publish(message, data)
-
-
 class KlinesSocketManager:
     def __init__(self):
         self.twm = ThreadedWebsocketManager()
-        self.r = RedisManager()
+        self.r = redis.Redis(host="redis")
         self.stream_name = None
         self.symbols_executed = set()
         self.message_batch = []
         self.symbols = []
         self.symbols_count = 0
+
+    def store_error(self, error):
+        self.r.execute_command(f"LPUSH error_log {str(error)}")
 
     def initialize(self):
         self.twm.start()
@@ -60,7 +53,7 @@ class KlinesSocketManager:
 
             client.close_connection()
         except Exception as e:
-            self.r.store_error(f"Error fetching futures symbols: {str(e)}")
+            self.store_error(f"Error fetching futures symbols: {str(e)}")
 
     def start(self):
         self.fetch_futures_symbols()
@@ -73,7 +66,7 @@ class KlinesSocketManager:
                 ],
             )
         except Exception as e:
-            self.r.store_error(str(e))
+            self.store_error(str(e))
 
     def handle_message(self, msg):
         """
@@ -103,7 +96,7 @@ class KlinesSocketManager:
         }
         """
         if self.is_message_error(msg):
-            self.r.store_error(str(msg))
+            self.store_error(str(msg))
             self.reconnect()
             return
 
@@ -121,7 +114,7 @@ class KlinesSocketManager:
                 )
                 thread.start()
 
-                self.r.publish_message(
+                self.r.publish(
                     RedisPubMessages.KLINE_SAVED_TO_DB.value, kline_data["t"]
                 )
 
@@ -138,7 +131,7 @@ class KlinesSocketManager:
 
             bulk_insert_klines(models, chunk_size=len(models) or 1)
         except Exception as e:
-            self.r.store_error(f"kline_batch_save_error: {e}")
+            self.store_error(f"kline_batch_save_error: {e}")
 
     def main(self):
         self.initialize()

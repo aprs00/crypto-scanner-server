@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from exchange_connections.constants import KLINE_FIELD_MAP
 from exchange_connections.selectors import (
     get_exchange_symbols,
-    get_symbol_kline_data,
     get_historical_kline_data,
+    get_symbol_kline_data,
 )
 from correlations.formulas.pearson import IncrementalPearsonCorrelation
 from filters.constants import tf_options
@@ -21,13 +21,9 @@ class IncrementalCorrelationCalculator:
         self.r = redis.Redis(host=redis_host)
         self.print_lock = threading.Lock()
         self.symbols = []
+        self.symbol_pairs = []
         self.hours_options = []
         self.correlations = {}
-
-    @staticmethod
-    def key_for(symbol_a, symbol_b):
-        """Generate consistent key for symbol pairs (sorted order)"""
-        return tuple(sorted([symbol_a, symbol_b]))
 
     def chunked_iterable(self, iterable, size):
         """Yield successive chunks from iterable of given size."""
@@ -81,13 +77,10 @@ class IncrementalCorrelationCalculator:
         correlation_batch = {}
 
         for data_type in KLINE_FIELD_MAP.keys():
-            for symbol_a, symbol_b in symbol_pairs:
-                key_pair = IncrementalCorrelationCalculator.key_for(
-                    symbol_a=symbol_a,
-                    symbol_b=symbol_b,
-                )
+            for symbol_pair in symbol_pairs:
+                symbol_a, symbol_b = symbol_pair
 
-                correlation_batch.setdefault(key_pair, {}).setdefault(data_type, {})[
+                correlation_batch.setdefault(symbol_pair, {}).setdefault(data_type, {})[
                     hours
                 ] = IncrementalPearsonCorrelation(
                     window_size=window_size,
@@ -97,20 +90,9 @@ class IncrementalCorrelationCalculator:
 
         return hours, correlation_batch
 
-    def update_correlations(self, hours):
-        newest_values = get_symbol_kline_data(
-            symbols=self.symbols, exchange="binance", contract_type="perpetual"
-        )
-        oldest_values = get_symbol_kline_data(
-            symbols=self.symbols,
-            hours=hours,
-            exchange="binance",
-            contract_type="perpetual",
-        )
-        symbol_pairs = [self.key_for(a, b) for a, b in combinations(self.symbols, 2)]
-
+    def update_correlations(self, hours, newest_values, oldest_values):
         for data_type in KLINE_FIELD_MAP.keys():
-            for pair_key in symbol_pairs:
+            for pair_key in self.symbol_pairs:
                 a, b = pair_key
                 val_a = newest_values.get(a, {}).get(data_type)
                 val_b = newest_values.get(b, {}).get(data_type)
@@ -136,31 +118,38 @@ class IncrementalCorrelationCalculator:
 
                 correlation_obj.add_data_point(float(val_a), float(val_b), x_old, y_old)
 
-    def create_correlation_matrix(self, hours, data_type, is_upper_triangle):
-        pairwise_correlations = {
-            self.key_for(sym_a, sym_b): self.correlations[self.key_for(sym_a, sym_b)][
-                data_type
-            ][hours]
-            for sym_a, sym_b in combinations(self.symbols, 2)
-        }
+    def create_correlation_matrix(self, hours, data_type, is_upper_triangle=True):
+        results = []
 
-        def get_corr(i, j):
-            key = (self.symbols[min(i, j)], self.symbols[max(i, j)])
-            return round(pairwise_correlations.get(key, {}).get_correlation() or 0, 2)
+        for i in range(len(self.symbols)):
+            for j in range(i + 1, len(self.symbols)) if is_upper_triangle else range(i):
+                corr_obj = (
+                    self.correlations.get((self.symbols[i], self.symbols[j]), {})
+                    .get(data_type, {})
+                    .get(hours)
+                )
+                val = round(corr_obj.get_correlation(), 2) if corr_obj else 0.0
+                results.append(val)
 
-        return [
-            get_corr(i, j)
-            for i in range(len(self.symbols))
-            for j in (
-                range(i + 1, len(self.symbols)) if is_upper_triangle else range(i)
-            )
-        ]
+        return results
 
     def update_and_cache_incremental_correlations(self):
         set_pipeline = self.r.pipeline()
 
+        newest_values = get_symbol_kline_data(
+            symbols=self.symbols, exchange="binance", contract_type="perpetual"
+        )
+
         for hours in self.hours_options:
-            self.update_correlations(hours=hours)
+            oldest_values = get_symbol_kline_data(
+                symbols=self.symbols,
+                hours=hours,
+                exchange="binance",
+                contract_type="perpetual",
+            )
+            self.update_correlations(
+                hours=hours, newest_values=newest_values, oldest_values=oldest_values
+            )
 
             for data_type in KLINE_FIELD_MAP.keys():
                 correlation_matrix = self.create_correlation_matrix(
@@ -191,7 +180,13 @@ class IncrementalCorrelationCalculator:
                     print(f'CORRELATIONS {message["channel"]}')
 
                     if message["channel"] == RedisPubMessages.KLINE_SAVED_TO_DB.value:
+                        start_time = time.time()
                         self.update_and_cache_incremental_correlations()
+                        elapsed = time.time() - start_time
+                        with self.print_lock:
+                            print(
+                                f"update_and_cache_incremental_correlations finished in {elapsed:.2f}s"
+                            )
 
                 retries = 0
 
@@ -215,6 +210,7 @@ class IncrementalCorrelationCalculator:
 
         self.hours_options = list(tf_options["correlation"].values())
         self.symbols = get_exchange_symbols()
+        self.symbol_pairs = list(combinations(self.symbols, 2))
 
         self.r.execute_command(
             "SET",
@@ -223,5 +219,5 @@ class IncrementalCorrelationCalculator:
         )
 
         self.initialize_correlation_objects()
-
+        self.start_pubsub_listener()
         self.start_pubsub_listener()
