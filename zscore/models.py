@@ -23,9 +23,7 @@ class ZScoreHistory(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=["symbol", "price"]),
-            models.Index(fields=["symbol", "volume"]),
-            models.Index(fields=["symbol", "trades"]),
+            models.Index(fields=["symbol", "calculated_at"]),
         ]
 
 
