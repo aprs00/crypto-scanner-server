@@ -6,6 +6,6 @@ class Command(BaseCommand):
     help = "Runs the incremental zscore calculations"
 
     def handle(self, *args, **options):
-        self.stdout.write(self.style.SUCCESS("Starting correlations calculations..."))
+        self.stdout.write(self.style.SUCCESS("Starting zscore calculations..."))
         processor = ZScoreProcessor()
         processor.run()

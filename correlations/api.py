@@ -36,6 +36,7 @@ def get_pearson_correlation(request):
     response = {
         "axis": [ticker[:-4] for ticker in symbols],
         "data": pearson_correlations,
+        "type": "correlation",
     }
 
     return JsonResponse(response, safe=False)

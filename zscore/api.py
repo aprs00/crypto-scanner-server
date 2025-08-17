@@ -98,6 +98,7 @@ def get_z_score_heatmap(request):
         "data": matrix,
         "y_axis": [symbol[:4] for symbol in list(transformed_zscore_data.keys())],
         "x_axis": list(time_set),
+        "type": "grid",
     }
 
     return JsonResponse(response, safe=False)

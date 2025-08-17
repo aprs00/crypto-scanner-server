@@ -7,7 +7,8 @@ import redis
 from exchange_connections.models import Kline1m
 from utils.lists import get_min_length
 from filters.constants import tf_options
-from exchange_connections.constants import tickers
+from exchange_connections.constants import tickers, KLINE_FIELD_MAP
+from zscore.constants import zscore_data_types
 
 r = redis.Redis(host="redis")
 
@@ -50,12 +51,19 @@ def get_zscore_history_data(hours):
         .annotate(
             time=Func(
                 F("calculated_at"),
-                Value("HH24:MI"),
+                Value("HH24:MI:SS"),
                 function="to_char",
                 output_field=CharField(),
             )
         )
-        .values("price", "volume", "trades", "time", "hours", "symbol__name")
+        .values(
+            "price",
+            "volume",
+            "trades",
+            "time",
+            "hours",
+            symbol_name=F("symbol__name"),
+        )
         .order_by("calculated_at")
     )
 
