@@ -203,6 +203,8 @@ class ZScoreProcessor:
                 msgpack.packb(zscore_heatmap_data),
             )
 
+        print("ZSCORE: Stored zscore history data to redis")
+
     def run(self):
         """Main processing loop listening for Redis updates"""
         pubsub = r.pubsub()

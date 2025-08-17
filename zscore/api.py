@@ -3,7 +3,6 @@ from django.views.decorators.csrf import csrf_exempt
 import redis
 import msgpack
 
-from zscore.selectors.zscore import get_zscore_history_data
 from zscore.utils import format_z_score_history_response, format_z_score_matrix_response
 from filters.constants import tf_options
 from core.constants import invalid_params_error
@@ -71,7 +70,8 @@ def get_z_score_heatmap(request):
         return HttpResponse(status=405)
 
     type = request.GET.get("type", None)
-    hours = request.GET.get("hours", None)
+    duration = request.GET.get("duration", None)
+    hours = tf_options["zscore_heatmap"][duration]
 
     if type is None:
         return JsonResponse(invalid_params_error, status=400)
@@ -81,8 +81,7 @@ def get_z_score_heatmap(request):
     )
 
     transformed_zscore_data = {}
-    time = []
-    matrix = []
+    time_set = set()
 
     for record in zscore_data:
         if record["hours"] != 1:
@@ -90,19 +89,15 @@ def get_z_score_heatmap(request):
 
         name = record["symbol_name"]
 
-        transformed_zscore_data.setdefault(name, []).append(record.get(type))
+        transformed_zscore_data.setdefault(name, []).append(record[type])
+        time_set.add(record["time"])
 
-        if name == "BTCUSDT":
-            time.append(record["time"])
-
-    for row, (_, values) in enumerate(transformed_zscore_data.items()):
-        for col, zscore in enumerate(values):
-            matrix.append([col, row, round(zscore, 2)])
+    matrix = [value for values in transformed_zscore_data.values() for value in values]
 
     response = {
         "data": matrix,
-        "y_axis": list(transformed_zscore_data.keys()),
-        "x_axis": time,
+        "y_axis": [symbol[:4] for symbol in list(transformed_zscore_data.keys())],
+        "x_axis": list(time_set),
     }
 
     return JsonResponse(response, safe=False)
