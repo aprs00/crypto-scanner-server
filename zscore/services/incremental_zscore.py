@@ -87,7 +87,6 @@ class ZScoreProcessor:
     def __init__(self):
         self.symbols = get_exchange_symbols()
         self.hours_options = list(tf_options["zscore"].values())
-        self.hours_options_heatmap = list(tf_options["zscore"].values())
         self.incremental_zscores = self.initialize_zscores()
 
     def initialize_zscores(self):
@@ -194,7 +193,7 @@ class ZScoreProcessor:
             ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
 
     def fetch_and_store_zscore_history_data(self, redis_pipeline):
-        for hours in self.hours_options_heatmap:
+        for hours in self.hours_options:
             zscore_heatmap_data = get_zscore_history_data(hours)
 
             redis_pipeline.execute_command(
