@@ -183,6 +183,7 @@ class ZScoreProcessor:
                         volume=data.get("volume", 0),
                         price=data.get("price", 0),
                         trades=data.get("trades", 0),
+                        hours=hours,
                         calculated_at=current_time,
                     )
                 )
