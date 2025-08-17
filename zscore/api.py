@@ -71,7 +71,7 @@ def get_z_score_heatmap(request):
 
     type = request.GET.get("type", None)
     duration = request.GET.get("duration", None)
-    hours = tf_options["zscore_heatmap"][duration]
+    hours = tf_options["zscore"][duration]
     # TODO: also add rolling hours select option
 
     if type is None:

@@ -87,7 +87,7 @@ class ZScoreProcessor:
     def __init__(self):
         self.symbols = get_exchange_symbols()
         self.hours_options = list(tf_options["zscore"].values())
-        self.hours_options_heatmap = list(tf_options["zscore_heatmap"].values())
+        self.hours_options_heatmap = list(tf_options["zscore"].values())
         self.incremental_zscores = self.initialize_zscores()
 
     def initialize_zscores(self):

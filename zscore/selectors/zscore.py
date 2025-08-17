@@ -7,8 +7,7 @@ import redis
 from exchange_connections.models import Kline1m
 from utils.lists import get_min_length
 from filters.constants import tf_options
-from exchange_connections.constants import tickers, KLINE_FIELD_MAP
-from zscore.constants import zscore_data_types
+from exchange_connections.constants import tickers
 
 r = redis.Redis(host="redis")
 
