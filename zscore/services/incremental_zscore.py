@@ -9,6 +9,7 @@ from exchange_connections.selectors import (
     get_symbol_kline_data,
     get_historical_kline_data,
 )
+from zscore.selectors.zscore import get_zscore_history_data
 from exchange_connections.constants import KLINE_FIELD_MAP
 from core.constants import RedisPubMessages
 from zscore.models import ZScoreHistory
@@ -86,6 +87,7 @@ class ZScoreProcessor:
     def __init__(self):
         self.symbols = get_exchange_symbols()
         self.hours_options = list(tf_options["zscore"].values())
+        self.hours_options_heatmap = list(tf_options["zscore_heatmap"].values())
         self.incremental_zscores = self.initialize_zscores()
 
     def initialize_zscores(self):
@@ -191,6 +193,16 @@ class ZScoreProcessor:
         if db_entries:
             ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
 
+    def fetch_and_store_zscore_history_data(self, redis_pipeline):
+        for hours in self.hours_options_heatmap:
+            zscore_heatmap_data = get_zscore_history_data(hours)
+
+            redis_pipeline.execute_command(
+                "SET",
+                f"zscore:heatmap:binance:perpetual:{hours}",
+                msgpack.packb(zscore_heatmap_data),
+            )
+
     def run(self):
         """Main processing loop listening for Redis updates"""
         pubsub = r.pubsub()
@@ -214,4 +226,5 @@ class ZScoreProcessor:
                         msgpack.packb(tf_data),
                     )
                 self.store_z_score_results(results)
+                self.fetch_and_store_zscore_history_data(redis_pipeline=pipeline)
                 pipeline.execute()

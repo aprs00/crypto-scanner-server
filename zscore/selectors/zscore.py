@@ -1,5 +1,5 @@
 from django.db.models import F, CharField, Func, Value
-from zscore.models import ZScoreHistorical
+from zscore.models import ZScoreHistory
 from django.utils import timezone
 from datetime import timedelta
 import redis
@@ -42,21 +42,14 @@ def get_tickers_data_z_score(duration):
     return trades_volume_price_tickers_data
 
 
-def get_all_tickers_data_z_score(duration, type):
-    now = timezone.now()
-    last_24_hours = now - timezone.timedelta(hours=duration)
-
-    type_mapper = {
-        "price": "price_z_score",
-        "volume": "volume_z_score",
-        "trades": "trades_z_score",
-    }
+def get_zscore_history_data(hours):
+    last_hours = timezone.now() - timezone.timedelta(hours=hours)
 
     z_score_data = (
-        ZScoreHistorical.objects.select_related("ticker_name", "ticker_quote")
-        .filter(calculated_at__gte=last_24_hours)
+        ZScoreHistory.objects.select_related("symbol")
+        .filter(calculated_at__gte=last_hours)
         .annotate(
-            time_string=Func(
+            time=Func(
                 F("calculated_at"),
                 Value("HH24:MI:SS"),
                 function="to_char",
@@ -64,15 +57,16 @@ def get_all_tickers_data_z_score(duration, type):
             )
         )
         .values(
-            base=F("ticker_name__name"),
-            quote=F("ticker_quote__name"),
-            time=F("time_string"),
-            z_score=F(type_mapper[type]),
-            # price=F("price_z_score"),
-            # volume=F("volume_z_score"),
-            # trades=F("trades_z_score"),
+            "price",
+            "volume",
+            "trades",
+            "time",
+            "hours",
+            symbol_name=F("symbol__name"),
         )
         .order_by("calculated_at")
     )
+
+    print(z_score_data.query)
 
     return list(z_score_data)
