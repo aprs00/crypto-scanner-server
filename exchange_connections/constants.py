@@ -10,11 +10,6 @@ KLINE_FIELD_MAP = {
     "trades": "number_of_trades",
 }
 
-kline_annotations = {}
-for field_name in KLINE_FIELD_MAP.values():
-    annotated_field = f"{field_name}_as_float"
-    kline_annotations[annotated_field] = Cast(field_name, FloatField())
-
 
 class BinanceContractStatus(Enum):
     PENDING_TRADING = "PENDING_TRADING"

@@ -3,9 +3,10 @@ from django.utils import timezone
 from datetime import timedelta
 from typing import Optional
 from django.db import connection
+from collections import defaultdict
 
 from exchange_connections.models import Kline1m, Symbol
-from exchange_connections.constants import KLINE_FIELD_MAP, kline_annotations
+from exchange_connections.constants import KLINE_FIELD_MAP
 
 
 def get_exchange_symbols(exchange="binance", contract_type="perpetual"):
@@ -33,27 +34,19 @@ def get_historical_kline_data(hours, symbols):
             start_time__lte=end_time.astimezone(timezone.utc),
             exchange__name="binance",
         )
-        .annotate(**kline_annotations)
-        .values("symbol__name", "start_time", *kline_annotations.keys())
+        .values(
+            "symbol__name", "start_time", "close", "base_volume", "number_of_trades"
+        )
         .order_by("symbol__name", "start_time")
     )
 
-    klines_data = {}
+    klines_data = defaultdict(lambda: {field: [] for field in KLINE_FIELD_MAP.keys()})
 
     for item in klines:
-        symbol = item["symbol__name"]
-
-        if symbol not in klines_data:
-            klines_data[symbol] = {field: [] for field in KLINE_FIELD_MAP.keys()}
-
         for data_type, field_name in KLINE_FIELD_MAP.items():
-            klines_data[symbol][data_type].append(item[f"{field_name}_as_float"])
+            klines_data[item["symbol__name"]][data_type].append(float(item[field_name]))
 
-    for symbol in klines_data:
-        for data_type in klines_data[symbol]:
-            klines_data[symbol][data_type] = np.array(klines_data[symbol][data_type])
-
-    return klines_data
+    return dict(klines_data)
 
 
 def get_symbol_kline_data(

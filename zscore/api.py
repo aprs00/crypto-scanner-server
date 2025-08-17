@@ -84,12 +84,12 @@ def get_z_score_heatmap(request):
     time_set = set()
 
     for record in zscore_data:
-        if record["hours"] != 1:
+        if record["hours"] != hours:
             continue
 
-        name = record["symbol_name"]
-
-        transformed_zscore_data.setdefault(name, []).append(record[type])
+        transformed_zscore_data.setdefault(record["symbol__name"], []).append(
+            record[type]
+        )
         time_set.add(record["time"])
 
     matrix = [value for values in transformed_zscore_data.values() for value in values]

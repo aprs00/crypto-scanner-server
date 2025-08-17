@@ -2,14 +2,12 @@ from django.db.models import F, CharField, Func, Value
 from zscore.models import ZScoreHistory
 from django.utils import timezone
 from datetime import timedelta
-from django.db import connection
 import redis
 
 from exchange_connections.models import Kline1m
 from utils.lists import get_min_length
 from filters.constants import tf_options
-from exchange_connections.constants import tickers, KLINE_FIELD_MAP
-from zscore.constants import zscore_data_types
+from exchange_connections.constants import tickers
 
 r = redis.Redis(host="redis")
 
@@ -44,25 +42,21 @@ def get_tickers_data_z_score(duration):
 
 
 def get_zscore_history_data(hours):
-    query = f"""
-        SELECT 
-            czh.price, 
-            czh.volume, 
-            czh.trades, 
-            czh.hours, 
-            to_char(czh.calculated_at, 'HH24:MI:SS') AS "time", 
-            css.name AS symbol_name
-        FROM cs_zscore_history czh
-        INNER JOIN cs_symbols css ON czh.symbol_id = css.id
-        WHERE czh.calculated_at >= %s
-        ORDER BY czh.calculated_at
-    """
+    last_hours = timezone.now() - timezone.timedelta(hours=hours)
 
-    with connection.cursor() as cursor:
-        last_hours = timezone.now() - timezone.timedelta(hours=hours)
-        cursor.execute(query, [last_hours])
-        results = cursor.fetchall()
-        columns = [col[0] for col in cursor.description or []]
-        results = [dict(zip(columns, row)) for row in results]
+    zscore_data = (
+        ZScoreHistory.objects.select_related("symbol")
+        .filter(calculated_at__gte=last_hours)
+        .annotate(
+            time=Func(
+                F("calculated_at"),
+                Value("HH24:MI"),
+                function="to_char",
+                output_field=CharField(),
+            )
+        )
+        .values("price", "volume", "trades", "time", "hours", "symbol__name")
+        .order_by("calculated_at")
+    )
 
-    return results
+    return list(zscore_data)

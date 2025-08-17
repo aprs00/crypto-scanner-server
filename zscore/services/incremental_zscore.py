@@ -109,7 +109,7 @@ class ZScoreProcessor:
 
                     if series is not None and len(series) > 0:
                         zscore_dict[symbol][data_type][hours].initialize_from_data(
-                            np.array(series, dtype=np.float64)
+                            series
                         )
         return zscore_dict
 
