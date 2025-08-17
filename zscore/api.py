@@ -72,6 +72,7 @@ def get_z_score_heatmap(request):
     type = request.GET.get("type", None)
     duration = request.GET.get("duration", None)
     hours = tf_options["zscore_heatmap"][duration]
+    # TODO: also add rolling hours select option
 
     if type is None:
         return JsonResponse(invalid_params_error, status=400)
@@ -84,7 +85,7 @@ def get_z_score_heatmap(request):
     time_set = set()
 
     for record in zscore_data:
-        if record["hours"] != hours:
+        if record["hours"] != 1:
             continue
 
         transformed_zscore_data.setdefault(record["symbol__name"], []).append(
