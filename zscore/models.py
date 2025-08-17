@@ -10,7 +10,7 @@ class ZScoreHistory(models.Model):
     volume = models.FloatField()
     price = models.FloatField()
     trades = models.FloatField()
-    hours = models.FloatField()
+    hours = models.IntegerField()
     calculated_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
