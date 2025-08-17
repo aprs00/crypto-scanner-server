@@ -23,7 +23,11 @@ class ZScoreHistory(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=["symbol", "calculated_at"]),
+            models.Index(
+                fields=["calculated_at"],
+                name="idx_zscore_calculated_covering",
+                include=["price", "volume", "trades", "hours", "symbol_id"],
+            )
         ]
 
 
