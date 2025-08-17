@@ -1,6 +1,5 @@
 Django==4.2.11
 celery==5.4.0
-scipy==1.13.0
 channels==4.1.0
 channels-redis==4.2.0
 daphne==4.1.2
@@ -14,4 +13,3 @@ python-binance==1.0.28
 python-dotenv==1.0.1
 redis==5.2.1
 msgpack==1.1.0
-sortedcontainers==2.4.0

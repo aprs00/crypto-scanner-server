@@ -1,5 +1,4 @@
 from collections import deque
-from sortedcontainers import SortedList
 
 
 class IncrementalSpearmanCorrelation:
@@ -12,8 +11,12 @@ class IncrementalSpearmanCorrelation:
         self.x_values = deque(maxlen=window_size)
         self.y_values = deque(maxlen=window_size)
 
-        self.sorted_x = SortedList()
-        self.sorted_y = SortedList()
+        # from sortedcontainers import SortedList
+        # self.sorted_x = SortedList()
+        # self.sorted_y = SortedList()
+
+        self.sorted_x = []
+        self.sorted_y = []
 
         self.x_ranks = deque(maxlen=window_size)
         self.y_ranks = deque(maxlen=window_size)
@@ -56,8 +59,8 @@ class IncrementalSpearmanCorrelation:
 
         self.x_values.append(x)
         self.y_values.append(y)
-        self.sorted_x.add(x)
-        self.sorted_y.add(y)
+        # self.sorted_x.add(x)
+        # self.sorted_y.add(y)
 
         self._update_ranks()
 
