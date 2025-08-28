@@ -3,6 +3,7 @@ import numpy as np
 import msgpack
 import os
 from django.utils import timezone
+from django.conf import settings
 
 from filters.constants import tf_options
 from exchange_connections.selectors import (
@@ -190,9 +191,7 @@ class ZScoreProcessor:
                     )
                 )
 
-        print("HEREE", os.getenv("STORE_TO_DB"), os.getenv("STORE_TO_DB") == "True")
-
-        if db_entries and os.getenv("STORE_TO_DB") == "True":
+        if db_entries and settings.STORE_TO_DB:
             ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
 
     def fetch_and_store_zscore_history_data(self, redis_pipeline):
