@@ -81,8 +81,6 @@ def get_z_score_heatmap(request):
         r.execute_command("GET", f"zscore:heatmap:binance:perpetual:{hours}")
     )
 
-    print(zscore_data[100])
-
     transformed_zscore_data = {}
     time_set = set()
 
