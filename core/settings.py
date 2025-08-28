@@ -17,8 +17,6 @@ import os
 env = environ.Env(
     DEBUG=(bool, False),
     STORE_TO_DB=(bool, True),
-    CELERY_BROKER=(str, "redis://redis:6379/0"),
-    CELERY_RESULT_BACKEND=(str, "redis://redis:6379/0"),
 )
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -175,24 +173,9 @@ STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-
-# CELERY
-CELERY_BROKER_URL = env("CELERY_BROKER")
-CELERY_RESULT_BACKEND = env("CELERY_BROKER")
-CELERY_ACCEPT_CONTENT = ["application/json"]
-CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_TIMEZONE = "UTC"
-
-CELERY_BEAT_SCHEDULE = {}
-
 CORS_ALLOW_ALL_ORIGINS = False
-CORS_ALLOW_HEADERS = (
-    # Add any additional headers you need to allow here.
-)
-CORS_ALLOW_CREDENTIALS = (
-    True  # If you need to include credentials (e.g., cookies) in your requests.
-)
+CORS_ALLOW_HEADERS = ()
+CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost",
