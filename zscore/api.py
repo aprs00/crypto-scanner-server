@@ -81,12 +81,16 @@ def get_z_score_heatmap(request):
         r.execute_command("GET", f"zscore:heatmap:binance:perpetual:{hours}")
     )
 
+    print(zscore_data)
+
     transformed_zscore_data = {}
     time_set = set()
 
     for record in zscore_data:
         if record["hours"] != 1:
             continue
+
+        print(record["symbol__name"])
 
         transformed_zscore_data.setdefault(record["symbol__name"], []).append(
             record[type]
