@@ -190,6 +190,8 @@ class ZScoreProcessor:
                     )
                 )
 
+        print("HEREE", os.getenv("STORE_TO_DB"), os.getenv("STORE_TO_DB") == "True")
+
         if db_entries and os.getenv("STORE_TO_DB") == "True":
             ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
 
