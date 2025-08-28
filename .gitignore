@@ -1,6 +1,5 @@
 .env
 .env.development
-celerybeat-schedule
 data/
 bin
 lib

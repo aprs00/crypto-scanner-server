@@ -32,8 +32,6 @@ services:
             - POSTGRES_NAME=${POSTGRES_NAME}
             - POSTGRES_USER=${POSTGRES_USER}
             - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-            - CELERY_BACKEND=${CELERY_BACKEND}
-            - CELERY_BROKER=${CELERY_BROKER}
         depends_on:
             - db
             - redis
@@ -56,45 +54,6 @@ services:
                 max-size: "10m"
                 max-file: "3"
 
-    celery:
-        container_name: cs-celery
-        build: .
-        command: celery -A core worker -l INFO
-        volumes:
-            - .:/code
-        environment:
-            - DEBUG=1
-            - DJANGO_ALLOWED_HOSTS=*
-            - CELERY_BROKER=${CELERY_BROKER}
-            - CELERY_BACKEND=${CELERY_BACKEND}
-        depends_on:
-            - app
-            - redis
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
-
-    celery-beat:
-        container_name: cs-celery-beat
-        build: .
-        command: celery -A core beat -l INFO
-        volumes:
-            - .:/code
-        environment:
-            - DEBUG=1
-            - DJANGO_ALLOWED_HOSTS=*
-            - CELERY_BROKER=${CELERY_BROKER}
-            - CELERY_BACKEND=${CELERY_BACKEND}
-        depends_on:
-            - app
-            - redis
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
 
     correlations:
         container_name: cs-correlations
