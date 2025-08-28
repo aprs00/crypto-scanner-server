@@ -61,7 +61,7 @@ def get_zscore_history_data(hours):
             "trades",
             "time",
             "hours",
-            symbol_name=F("symbol__name"),
+            "symbol__name",
         )
         .order_by("calculated_at")
     )

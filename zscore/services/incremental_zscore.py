@@ -1,6 +1,7 @@
 import redis
 import numpy as np
 import msgpack
+import os
 from django.utils import timezone
 
 from filters.constants import tf_options
@@ -189,7 +190,7 @@ class ZScoreProcessor:
                     )
                 )
 
-        if db_entries:
+        if db_entries and os.getenv("STORE_TO_DB") == "True":
             ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
 
     def fetch_and_store_zscore_history_data(self, redis_pipeline):
