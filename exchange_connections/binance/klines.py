@@ -3,7 +3,7 @@ from binance.enums import ContractType, KLINE_INTERVAL_1MINUTE
 import time
 import redis
 import threading
-import os
+from django.conf import settings
 
 from exchange_connections.constants import BinanceContractStatus
 from core.constants import RedisPubMessages
@@ -130,7 +130,7 @@ class KlinesSocketManager:
                 for kline_dict in batch
             ]
 
-            if os.getenv("STORE_TO_DB") == "True":
+            if settings.STORE_TO_DB:
                 bulk_insert_klines(models, chunk_size=len(models) or 1)
         except Exception as e:
             self.store_error(f"kline_batch_save_error: {e}")
