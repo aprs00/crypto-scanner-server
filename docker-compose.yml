@@ -44,6 +44,7 @@ services:
     redis:
         container_name: cs-redis
         image: "redis/redis-stack-server:latest"
+        command: redis-server /usr/local/etc/redis/redis.conf
         volumes:
             - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
         ports:

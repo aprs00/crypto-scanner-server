@@ -1,11 +1,9 @@
-import redis
-
-import redis
 from exchange_connections.constants import ticker_colors
 from zscore.selectors.zscore import get_tickers_data_z_score
-from zscore.formulas import calculate_current_z_score, calculate_z_scores
+from zscore.formulas import calculate_z_scores
+from core.redis_config import get_redis_connection
 
-r = redis.Redis(host="redis")
+r = get_redis_connection()
 
 
 def calculate_z_score_history(duration):

@@ -1,15 +1,15 @@
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-import redis
 import msgpack
 
 
 from core.constants import invalid_params_error
 from filters.constants import tf_options
 from exchange_connections.constants import correlations_data_types
+from core.redis_config import get_redis_connection
 
 
-r = redis.Redis(host="redis")
+r = get_redis_connection()
 
 
 @csrf_exempt
