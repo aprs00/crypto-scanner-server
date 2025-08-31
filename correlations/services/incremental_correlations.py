@@ -25,6 +25,9 @@ class IncrementalCorrelationCalculator:
         self.symbol_pairs = []
         self.hours_options = []
         self.correlations = {}
+        self.initialization_complete = False
+        self.pending_message_count = 0
+        self.pending_messages_lock = threading.Lock()
 
     def chunked_iterable(self, iterable, size):
         """Yield successive chunks from iterable of given size."""
@@ -167,6 +170,26 @@ class IncrementalCorrelationCalculator:
 
         set_pipeline.execute()
 
+    def process_pending_messages(self):
+        """Process any messages that were queued during initialization."""
+        with self.pending_messages_lock:
+            if self.pending_message_count == 0:
+                print("No pending messages to process")
+                return
+
+            message_count = self.pending_message_count
+
+            print(f"Processing {message_count} pending messages...")
+
+            start_time = time.time()
+            for i in range(message_count):
+                self.update_and_cache_incremental_correlations()
+            elapsed = time.time() - start_time
+
+            self.pending_message_count = 0
+
+            print(f"Processed {message_count} pending messages in {elapsed:.2f}s")
+
     def start_pubsub_listener(self):
         retries = 0
 
@@ -178,13 +201,21 @@ class IncrementalCorrelationCalculator:
                 pubsub.get_message()
 
                 for message in pubsub.listen():
-                    print(f'CORRELATIONS {message["channel"]}')
-
                     if (
                         message["type"] == "message"
                         and message["channel"]
                         == RedisPubMessages.KLINE_SAVED_TO_DB.value
                     ):
+                        print(f'CORRELATIONS {message["channel"]}')
+
+                        if not self.initialization_complete:
+                            with self.pending_messages_lock:
+                                self.pending_message_count += 1
+                                print(
+                                    f"Queued message during initialization. Queue size: {self.pending_message_count}"
+                                )
+                            continue
+
                         start_time = time.time()
                         self.update_and_cache_incremental_correlations()
                         elapsed = time.time() - start_time
@@ -223,5 +254,26 @@ class IncrementalCorrelationCalculator:
             msgpack.packb(self.symbols),
         )
 
+        print("Starting pubsub listener thread...")
+        pubsub_thread = threading.Thread(target=self.start_pubsub_listener)
+        pubsub_thread.start()
+
+        time.sleep(2)
+
+        print("Starting correlation objects initialization...")
+        start_time = time.time()
         self.initialize_correlation_objects()
-        self.start_pubsub_listener()
+        elapsed = time.time() - start_time
+        print(f"Correlation objects initialization completed in {elapsed:.2f}s")
+
+        self.initialization_complete = True
+        print("Initialization complete - now processing any pending messages")
+
+        self.process_pending_messages()
+
+        print("Ready for real-time message processing")
+
+        try:
+            pubsub_thread.join()
+        except KeyboardInterrupt:
+            print("Shutting down...")

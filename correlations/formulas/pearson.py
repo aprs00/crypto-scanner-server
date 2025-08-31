@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Optional
+import math
 
 
 class IncrementalPearsonCorrelation:
@@ -66,7 +67,7 @@ class IncrementalPearsonCorrelation:
         var_y = self.count * self.sum_yy - self.sum_y * self.sum_y
 
         numerator = (self.count * self.sum_xy) - (self.sum_x * self.sum_y)
-        denominator = np.sqrt(var_x * var_y)
+        denominator = math.sqrt(var_x * var_y)
 
         if denominator == 0.0:
             return 0.0
