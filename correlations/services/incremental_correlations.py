@@ -11,7 +11,7 @@ from exchange_connections.selectors import (
     get_historical_kline_data,
     get_symbol_kline_data,
 )
-from correlations.formulas.pearson import IncrementalPearsonCorrelation
+from correlations.formulas.pearson import IncrementalPearsonCorrelation, SumCache
 from filters.constants import tf_options
 from core.constants import RedisPubMessages
 from core.redis_config import get_redis_connection
@@ -28,6 +28,7 @@ class IncrementalCorrelationCalculator:
         self.initialization_complete = False
         self.pending_message_count = 0
         self.pending_messages_lock = threading.Lock()
+        self.sum_cache = SumCache()
 
     def chunked_iterable(self, iterable, size):
         """Yield successive chunks from iterable of given size."""
@@ -90,6 +91,11 @@ class IncrementalCorrelationCalculator:
                     window_size=window_size,
                     x_initial=symbols_data[symbol_a][data_type],
                     y_initial=symbols_data[symbol_b][data_type],
+                    sum_cache=self.sum_cache,
+                    x_symbol=symbol_a,
+                    y_symbol=symbol_b,
+                    data_type=data_type,
+                    hours=hours,
                 )
 
         return hours, correlation_batch
@@ -268,6 +274,10 @@ class IncrementalCorrelationCalculator:
 
         self.initialization_complete = True
         print("Initialization complete - now processing any pending messages")
+
+        print("Clearing sum_x cache to free memory...")
+        self.sum_cache.clear()
+        print("Sum_x cache cleared")
 
         self.process_pending_messages()
 

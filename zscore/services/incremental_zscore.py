@@ -219,7 +219,6 @@ class ZScoreProcessor:
                 pubsub.get_message()
 
                 for message in pubsub.listen():
-                    print("MESSAGE RECEIVED", message)
                     if (
                         message["type"] == "message"
                         and message["channel"]
