@@ -1,7 +1,6 @@
 from binance import ThreadedWebsocketManager, Client
 from binance.enums import ContractType, KLINE_INTERVAL_1MINUTE
 import time
-import redis
 import threading
 from django.conf import settings
 
@@ -11,12 +10,13 @@ from exchange_connections.services.klines_ingest import (
     build_model_from_ws,
     bulk_insert_klines,
 )
+from core.redis_config import get_redis_connection
 
 
 class KlinesSocketManager:
     def __init__(self):
         self.twm = ThreadedWebsocketManager()
-        self.r = redis.Redis(host="redis")
+        self.r = get_redis_connection()
         self.stream_name = None
         self.symbols_executed = set()
         self.message_batch = []
@@ -114,6 +114,8 @@ class KlinesSocketManager:
                     target=self._save_batch_sync, args=(batch_copy,)
                 )
                 thread.start()
+
+                print("SENDING MESSAGE")
 
                 self.r.publish(
                     RedisPubMessages.KLINE_SAVED_TO_DB.value, kline_data["t"]

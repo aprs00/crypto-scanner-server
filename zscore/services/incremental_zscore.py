@@ -1,7 +1,7 @@
 import redis
 import numpy as np
 import msgpack
-import os
+import time
 from django.utils import timezone
 from django.conf import settings
 
@@ -16,8 +16,9 @@ from exchange_connections.constants import KLINE_FIELD_MAP
 from core.constants import RedisPubMessages
 from zscore.models import ZScoreHistory
 from exchange_connections.models import Symbol, Exchange, ContractType
+from core.redis_config import get_redis_connection
 
-r = redis.Redis(host="redis")
+r = get_redis_connection()
 
 
 class IncrementalZScore:
@@ -208,26 +209,47 @@ class ZScoreProcessor:
 
     def run(self):
         """Main processing loop listening for Redis updates"""
-        pubsub = r.pubsub()
-        pubsub.subscribe(RedisPubMessages.KLINE_SAVED_TO_DB.value)
-        pubsub.get_message()
+        retries = 0
 
-        for message in pubsub.listen():
-            if (
-                message["type"] == "message"
-                and message["channel"] == RedisPubMessages.KLINE_SAVED_TO_DB.value
-            ):
-                print(f'ZSCORE {message["channel"]}')
-                self.update_zscores()
-                results = self.create_z_score_results()
+        while True:
+            try:
+                print("Subscribing to Redis channels...")
+                pubsub = r.pubsub()
+                pubsub.subscribe(RedisPubMessages.KLINE_SAVED_TO_DB.value)
+                pubsub.get_message()
 
-                pipeline = r.pipeline()
-                for tf, tf_data in results.items():
-                    pipeline.execute_command(
-                        "SET",
-                        f"zscore:binance:perpetual:{tf}",
-                        msgpack.packb(tf_data),
-                    )
-                self.store_z_score_results(results)
-                self.fetch_and_store_zscore_history_data(redis_pipeline=pipeline)
-                pipeline.execute()
+                for message in pubsub.listen():
+                    print("MESSAGE RECEIVED", message)
+                    if (
+                        message["type"] == "message"
+                        and message["channel"]
+                        == RedisPubMessages.KLINE_SAVED_TO_DB.value
+                    ):
+                        print(f'ZSCORE {message["channel"]}')
+                        self.update_zscores()
+                        results = self.create_z_score_results()
+
+                        pipeline = r.pipeline()
+                        for tf, tf_data in results.items():
+                            pipeline.execute_command(
+                                "SET",
+                                f"zscore:binance:perpetual:{tf}",
+                                msgpack.packb(tf_data),
+                            )
+                        self.store_z_score_results(results)
+                        self.fetch_and_store_zscore_history_data(
+                            redis_pipeline=pipeline
+                        )
+                        pipeline.execute()
+
+                retries = 0
+
+            except (redis.ConnectionError, redis.TimeoutError) as e:
+                retries += 1
+                wait = min(2**retries, 40)
+                print(f"[ZScore] Disconnected from Redis: {e}. Retrying in {wait}s...")
+                time.sleep(wait)
+
+            except Exception as e:
+                print(f"[ZScore] Unexpected error: {e}")
+                time.sleep(5)

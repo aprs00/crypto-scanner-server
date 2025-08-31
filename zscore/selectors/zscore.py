@@ -8,8 +8,9 @@ from exchange_connections.models import Kline1m
 from utils.lists import get_min_length
 from filters.constants import tf_options
 from exchange_connections.constants import tickers
+from core.redis_config import get_redis_connection
 
-r = redis.Redis(host="redis")
+r = get_redis_connection()
 
 
 def get_tickers_data_z_score(duration):

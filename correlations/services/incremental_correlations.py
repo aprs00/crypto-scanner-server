@@ -14,11 +14,12 @@ from exchange_connections.selectors import (
 from correlations.formulas.pearson import IncrementalPearsonCorrelation
 from filters.constants import tf_options
 from core.constants import RedisPubMessages
+from core.redis_config import get_redis_connection
 
 
 class IncrementalCorrelationCalculator:
-    def __init__(self, redis_host="redis"):
-        self.r = redis.Redis(host=redis_host)
+    def __init__(self):
+        self.r = get_redis_connection()
         self.print_lock = threading.Lock()
         self.symbols = []
         self.symbol_pairs = []
@@ -179,7 +180,11 @@ class IncrementalCorrelationCalculator:
                 for message in pubsub.listen():
                     print(f'CORRELATIONS {message["channel"]}')
 
-                    if message["channel"] == RedisPubMessages.KLINE_SAVED_TO_DB.value:
+                    if (
+                        message["type"] == "message"
+                        and message["channel"]
+                        == RedisPubMessages.KLINE_SAVED_TO_DB.value
+                    ):
                         start_time = time.time()
                         self.update_and_cache_incremental_correlations()
                         elapsed = time.time() - start_time
@@ -219,5 +224,4 @@ class IncrementalCorrelationCalculator:
         )
 
         self.initialize_correlation_objects()
-        self.start_pubsub_listener()
         self.start_pubsub_listener()

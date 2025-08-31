@@ -1,14 +1,14 @@
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-import redis
 import msgpack
 
 from zscore.utils import format_z_score_history_response, format_z_score_matrix_response
 from filters.constants import tf_options
 from core.constants import invalid_params_error
 from exchange_connections.constants import tickers
+from core.redis_config import get_redis_connection
 
-r = redis.Redis(host="redis")
+r = get_redis_connection()
 
 
 @csrf_exempt
@@ -82,7 +82,7 @@ def get_z_score_heatmap(request):
     )
 
     transformed_zscore_data = {}
-    time_set = set()
+    times = []
 
     for record in zscore_data:
         if record["hours"] != 1:
@@ -91,14 +91,15 @@ def get_z_score_heatmap(request):
         transformed_zscore_data.setdefault(record["symbol__name"], []).append(
             record[type]
         )
-        time_set.add(record["time"])
+        if record["symbol__name"] == "BTCUSDT":
+            times.append(record["time"])
 
     matrix = [value for values in transformed_zscore_data.values() for value in values]
 
     response = {
         "data": matrix,
         "y_axis": [symbol[:4] for symbol in list(transformed_zscore_data.keys())],
-        "x_axis": list(time_set),
+        "x_axis": list(times),
         "type": "grid",
     }
 
