@@ -2,7 +2,6 @@ from django.urls import path
 
 from zscore.api import (
     get_z_score_matrix,
-    get_z_score_history,
     get_z_score_heatmap,
 )
 
@@ -12,11 +11,6 @@ urlpatterns = [
         "z-score-matrix",
         get_z_score_matrix,
         name="z-score-matrix",
-    ),
-    path(
-        "z-score-history",
-        get_z_score_history,
-        name="z-score-history",
     ),
     path(
         "z-score-heatmap",

@@ -2,7 +2,7 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import msgpack
 
-from zscore.utils import format_z_score_history_response, format_z_score_matrix_response
+from zscore.utils import format_z_score_matrix_response
 from filters.constants import tf_options
 from core.constants import invalid_params_error
 from exchange_connections.constants import tickers
@@ -34,30 +34,6 @@ def get_z_score_matrix(request):
             x_axis=x_axis,
             y_axis=y_axis,
         )
-
-        return JsonResponse(response, safe=False)
-
-    return HttpResponse(status=405)
-
-
-@csrf_exempt
-def get_z_score_history(request):
-    if request.method == "GET":
-        duration = request.GET.get("duration", None)
-        type = request.GET.get("type", None)
-
-        if duration is None or type is None:
-            return JsonResponse(invalid_params_error, status=400)
-
-        formatted_response = format_z_score_history_response(
-            r.execute_command("GET", f"z_score_history_{duration}"), type
-        )
-
-        response = {
-            "legend": tickers,
-            "data": formatted_response["data"],
-            "xAxis": formatted_response["time"],
-        }
 
         return JsonResponse(response, safe=False)
 
