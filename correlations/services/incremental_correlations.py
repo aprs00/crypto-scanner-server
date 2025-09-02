@@ -12,8 +12,7 @@ from exchange_connections.selectors import (
     get_symbol_kline_data,
 )
 from correlations.formulas.pearson import IncrementalPearsonCorrelation, SumCache
-from filters.constants import tf_options
-from core.constants import RedisPubMessages
+from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
 
 

@@ -50,7 +50,7 @@ INSTALLED_APPS = [
     "exchange_connections",
     "correlations",
     "zscore",
-    "filters",
+    "averages",
     "rest_framework",
 ]
 

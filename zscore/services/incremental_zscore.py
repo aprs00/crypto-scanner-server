@@ -5,7 +5,6 @@ import time
 from django.utils import timezone
 from django.conf import settings
 
-from filters.constants import tf_options
 from exchange_connections.selectors import (
     get_exchange_symbols,
     get_symbol_kline_data,
@@ -13,7 +12,7 @@ from exchange_connections.selectors import (
 )
 from zscore.selectors.zscore import get_zscore_history_data
 from exchange_connections.constants import KLINE_FIELD_MAP
-from core.constants import RedisPubMessages
+from core.constants import RedisPubMessages, tf_options
 from zscore.models import ZScoreHistory
 from exchange_connections.models import Symbol, Exchange, ContractType
 from core.redis_config import get_redis_connection

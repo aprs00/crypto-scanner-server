@@ -1,7 +1,4 @@
-from exchange_connections.constants import ticker_colors
-from core.redis_config import get_redis_connection
-
-r = get_redis_connection()
+from core.constants import ticker_colors
 
 
 def format_z_score_matrix_response(data: dict, x_axis: str, y_axis: str):
