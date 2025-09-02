@@ -275,9 +275,9 @@ class IncrementalCorrelationCalculator:
         self.initialization_complete = True
         print("Initialization complete - now processing any pending messages")
 
-        print("Clearing sum_x cache to free memory...")
+        print("Clearing sum cache to free memory...")
         self.sum_cache.clear()
-        print("Sum_x cache cleared")
+        print("Sum cache cleared")
 
         self.process_pending_messages()
 
