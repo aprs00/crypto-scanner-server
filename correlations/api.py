@@ -5,7 +5,7 @@ import msgpack
 
 from core.constants import invalid_params_error
 from filters.constants import tf_options
-from exchange_connections.constants import correlations_data_types
+from exchange_connections.constants import KLINE_FIELD_MAP
 from core.redis_config import get_redis_connection
 
 
@@ -20,7 +20,7 @@ def get_pearson_correlation(request):
     tf = request.GET.get("duration", None)
     data_type = request.GET.get("type", None)
 
-    if not tf_options["correlation"][tf] or data_type not in correlations_data_types:
+    if not tf_options["correlation"][tf] or data_type not in KLINE_FIELD_MAP.keys():
         return JsonResponse(invalid_params_error, status=400)
 
     hours = tf_options["correlation"][tf]

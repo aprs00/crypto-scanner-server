@@ -1,8 +1,4 @@
 from enum import Enum
-from django.db.models import FloatField
-from django.db.models.functions import Cast
-
-correlations_data_types = ["price", "trades", "volume"]
 
 KLINE_FIELD_MAP = {
     "price": "close",

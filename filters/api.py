@@ -3,7 +3,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 
 from filters.constants import tf_options
-from exchange_connections.constants import tickers, correlations_data_types
+from exchange_connections.constants import tickers, KLINE_FIELD_MAP
 from filters.utils import format_options
 
 
@@ -34,6 +34,6 @@ def get_large_pearson_types(request):
     if request.method != "GET":
         return HttpResponse(status=405)
 
-    response = format_options(correlations_data_types, "list", True)
+    response = format_options(KLINE_FIELD_MAP.keys(), "list", True)
 
     return JsonResponse(response, safe=False)
