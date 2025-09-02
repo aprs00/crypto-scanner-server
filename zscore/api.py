@@ -3,9 +3,6 @@ from django.views.decorators.csrf import csrf_exempt
 import msgpack
 
 from zscore.utils import format_z_score_matrix_response
-from filters.constants import tf_options
-from core.constants import invalid_params_error
-from exchange_connections.constants import tickers
 from core.redis_config import get_redis_connection
 
 r = get_redis_connection()
@@ -13,31 +10,25 @@ r = get_redis_connection()
 
 @csrf_exempt
 def get_z_score_matrix(request):
-    if request.method == "GET":
-        x_axis = request.GET.get("xAxis", None)
-        y_axis = request.GET.get("yAxis", None)
-        duration = request.GET.get("duration", None)
+    if request.method != "GET":
+        return HttpResponse(status=405)
 
-        if x_axis is None or y_axis is None or duration is None:
-            return JsonResponse(
-                {"error": "Invalid axis", "code": "INVALID_AXIS"}, status=400
-            )
+    x_axis = request.GET.get("xAxis", None)
+    y_axis = request.GET.get("yAxis", None)
+    hours = request.GET.get("hours", None)
+    hours = int(hours)
 
-        tf = tf_options["zscore"][duration]
+    hours_data = msgpack.unpackb(
+        r.execute_command("GET", f"zscore:binance:perpetual:{hours}"), raw=False
+    )
 
-        tf_data = msgpack.unpackb(
-            r.execute_command("GET", f"zscore:binance:perpetual:{tf}"), raw=False
-        )
+    response = format_z_score_matrix_response(
+        data=hours_data,
+        x_axis=x_axis,
+        y_axis=y_axis,
+    )
 
-        response = format_z_score_matrix_response(
-            data=tf_data,
-            x_axis=x_axis,
-            y_axis=y_axis,
-        )
-
-        return JsonResponse(response, safe=False)
-
-    return HttpResponse(status=405)
+    return JsonResponse(response, safe=False)
 
 
 @csrf_exempt
@@ -46,12 +37,9 @@ def get_z_score_heatmap(request):
         return HttpResponse(status=405)
 
     type = request.GET.get("type", None)
-    duration = request.GET.get("duration", None)
-    hours = tf_options["zscore"][duration]
+    hours = request.GET.get("hours", None)
+    hours = int(hours)
     # TODO: also add rolling hours select option
-
-    if type is None:
-        return JsonResponse(invalid_params_error, status=400)
 
     zscore_data = msgpack.unpackb(
         r.execute_command("GET", f"zscore:heatmap:binance:perpetual:{hours}")

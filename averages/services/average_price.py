@@ -1,5 +1,7 @@
 from django.http import JsonResponse
 from typing import Literal
+from django.utils import timezone
+from datetime import timedelta
 import numpy as np
 
 from core.constants import invalid_params_error
@@ -35,11 +37,8 @@ def calculate_dict_percentage(data, grouped_by):
     return calculated_data
 
 
-def average_price_change(
-    duration, symbol, start_time_utc, time_period: Literal["hour", "day"]
-):
-    if duration is None or symbol is None:
-        return JsonResponse(invalid_params_error, status=400)
+def average_price_change(hours, symbol, time_period: Literal["hour", "day"]):
+    start_time_utc = timezone.now() - timedelta(hours=hours)
 
     price_changes = get_average_symbol_data(
         symbol=symbol,
