@@ -2,6 +2,7 @@ import redis
 import msgpack
 import time
 import threading
+import gc
 from itertools import combinations, product
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -98,6 +99,7 @@ class IncrementalCorrelationCalculator:
                 )
 
         del symbols_data
+        gc.collect()
 
         return hours, correlation_batch
 
