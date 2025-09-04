@@ -36,48 +36,75 @@ class IncrementalCorrelationCalculator:
             yield iterable[i : i + size]
 
     def initialize_correlation_objects(self):
-        futures = []
+        """Initialize correlation objects with optimized data fetching - fetch each symbol's data only once per timeframe."""
         all_pairs = list(combinations(self.symbols, 2))
-        pair_batches = list(self.chunked_iterable(all_pairs, 8000))
+        total_pairs = len(all_pairs)
 
-        completed_futures = 0
-        total_futures = 0
+        print(
+            f"Initializing correlations for {len(self.symbols)} symbols ({total_pairs:,} pairs)"
+        )
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            for hours, pair_batch in product(
-                reversed(self.hours_options), pair_batches
-            ):
-                symbols = list({s for pair in pair_batch for s in pair})
+        for hours in reversed(self.hours_options):
+            print(f"Processing timeframe: {hours}h...")
 
-                futures.append(
-                    executor.submit(
-                        self.process_correlation_batch,
-                        hours=hours,
-                        batch_symbols=symbols,
-                        symbol_pairs=pair_batch,
-                    )
-                )
+            start_fetch = time.time()
+            symbols_data = get_historical_kline_data(hours=hours, symbols=self.symbols)
+            fetch_time = time.time() - start_fetch
+            print(f"  Data fetch completed in {fetch_time:.2f}s")
 
-            total_futures = len(futures)
+            pair_batches = list(self.chunked_iterable(all_pairs, 32000))
+            completed_batches = 0
+            total_batches = len(pair_batches)
 
-            for future in as_completed(futures):
-                tf, result = future.result()
+            with ThreadPoolExecutor() as executor:
+                futures = []
 
-                for tuple_key, data_type_dict in result.items():
-                    for data_type, hours_dict in data_type_dict.items():
-                        self.correlations.setdefault(tuple_key, {}).setdefault(
-                            data_type, {}
-                        ).update(hours_dict)
-
-                completed_futures += 1
-
-                with self.print_lock:
-                    print(
-                        f"TF {tf}, Batch done: {completed_futures}/{total_futures} ({(completed_futures/total_futures)*100:.1f}%), {len(result)} correlations"
+                for batch_idx, pair_batch in enumerate(pair_batches):
+                    futures.append(
+                        executor.submit(
+                            self.process_correlation_batch,
+                            hours=hours,
+                            symbols_data=symbols_data,
+                            symbol_pairs=pair_batch,
+                            batch_idx=batch_idx,
+                        )
                     )
 
-    def process_correlation_batch(self, hours, batch_symbols, symbol_pairs):
-        symbols_data = get_historical_kline_data(hours=hours, symbols=batch_symbols)
+                for future in as_completed(futures):
+                    batch_idx, batch_correlations = future.result()
+
+                    for pair_key, data_type_dict in batch_correlations.items():
+                        for data_type, correlation_obj in data_type_dict.items():
+                            self.correlations.setdefault(pair_key, {}).setdefault(
+                                data_type, {}
+                            )[hours] = correlation_obj
+
+                    completed_batches += 1
+                    with self.print_lock:
+                        print(
+                            f"  Batch {completed_batches}/{total_batches} complete "
+                            f"({(completed_batches/total_batches)*100:.1f}%) - "
+                            f"{len(batch_correlations)} correlations processed"
+                        )
+
+            del symbols_data
+            gc.collect()
+
+            print(f"  Timeframe {hours}h completed\n")
+
+    def process_correlation_batch(self, hours, symbols_data, symbol_pairs, batch_idx):
+        """
+        Process a batch of symbol pairs using pre-fetched symbols_data.
+
+        Args:
+            hours: Timeframe in hours
+            symbols_data: Pre-fetched historical data for all symbols
+            symbol_pairs: List of (symbol_a, symbol_b) tuples to process
+            batch_idx: Index of this batch (for logging)
+
+        Returns:
+            tuple: (batch_idx, correlation_batch_dict)
+        """
         window_size = hours * 60
         correlation_batch = {}
 
@@ -98,10 +125,7 @@ class IncrementalCorrelationCalculator:
                     hours=hours,
                 )
 
-        del symbols_data
-        gc.collect()
-
-        return hours, correlation_batch
+        return batch_idx, correlation_batch
 
     def update_correlations(self, hours, newest_values, oldest_values):
         for data_type in KLINE_FIELD_MAP.keys():
