@@ -97,6 +97,8 @@ class IncrementalCorrelationCalculator:
                     hours=hours,
                 )
 
+        del symbols_data
+
         return hours, correlation_batch
 
     def update_correlations(self, hours, newest_values, oldest_values):
