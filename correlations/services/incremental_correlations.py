@@ -43,7 +43,7 @@ class IncrementalCorrelationCalculator:
         completed_futures = 0
         total_futures = 0
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             for hours, pair_batch in product(
                 reversed(self.hours_options), pair_batches
             ):
