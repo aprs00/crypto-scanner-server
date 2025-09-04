@@ -37,12 +37,12 @@ class IncrementalCorrelationCalculator:
     def initialize_correlation_objects(self):
         futures = []
         all_pairs = list(combinations(self.symbols, 2))
-        pair_batches = list(self.chunked_iterable(all_pairs, 32000))
+        pair_batches = list(self.chunked_iterable(all_pairs, 8000))
 
         completed_futures = 0
         total_futures = 0
 
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             for hours, pair_batch in product(
                 reversed(self.hours_options), pair_batches
             ):
