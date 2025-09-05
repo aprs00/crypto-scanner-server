@@ -112,17 +112,17 @@ class IncrementalCorrelationCalculator:
             for symbol_pair in symbol_pairs:
                 symbol_a, symbol_b = symbol_pair
 
-                correlation_batch.setdefault(symbol_pair, {}).setdefault(data_type, {})[
-                    hours
-                ] = IncrementalPearsonCorrelation(
-                    window_size=window_size,
-                    x_initial=symbols_data[symbol_a][data_type],
-                    y_initial=symbols_data[symbol_b][data_type],
-                    sum_cache=self.sum_cache,
-                    x_symbol=symbol_a,
-                    y_symbol=symbol_b,
-                    data_type=data_type,
-                    hours=hours,
+                correlation_batch.setdefault(symbol_pair, {})[data_type] = (
+                    IncrementalPearsonCorrelation(
+                        window_size=window_size,
+                        x_initial=symbols_data[symbol_a][data_type],
+                        y_initial=symbols_data[symbol_b][data_type],
+                        sum_cache=self.sum_cache,
+                        x_symbol=symbol_a,
+                        y_symbol=symbol_b,
+                        data_type=data_type,
+                        hours=hours,
+                    )
                 )
 
         return batch_idx, correlation_batch
