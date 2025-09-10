@@ -145,11 +145,7 @@ class IncrementalPearsonCorrelation:
         var_x = self.count * self.sum_xx - self.sum_x * self.sum_x
         var_y = self.count * self.sum_yy - self.sum_y * self.sum_y
 
-        var_x = max(0.0, var_x)
-        var_y = max(0.0, var_y)
-
-        if var_x == 0.0 or var_y == 0.0:
-            print("Variance is zero, correlation undefined. Returning 0.0")
+        if var_x <= 0 or var_y <= 0:
             return 0.0
 
         numerator = (self.count * self.sum_xy) - (self.sum_x * self.sum_y)
