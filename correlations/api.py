@@ -1,10 +1,11 @@
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import msgpack
+import logging
 
 from core.redis_config import get_redis_connection
 
-
+logger = logging.getLogger(__name__)
 r = get_redis_connection()
 
 
@@ -15,20 +16,36 @@ def get_pearson_correlation(request):
 
     data_type = request.GET.get("type", None)
     hours = request.GET.get("hours", None)
-    hours = int(hours)
 
-    symbols = msgpack.unpackb(
-        r.execute_command("GET", "correlations:symbols:binance:perpetual")
-    )
+    try:
+        symbols_data = r.execute_command(
+            "GET", "correlations:symbols:binance:perpetual"
+        )
+        if not symbols_data:
+            logger.error("Symbols data not found in Redis")
+            return JsonResponse({"error": "Correlation data not available"}, status=503)
 
-    pearson_correlations = msgpack.unpackb(
-        r.execute_command("GET", f"correlations:{data_type}:{hours}:binance:perpetual")
-    )
+        symbols = msgpack.unpackb(symbols_data)
 
-    response = {
-        "axis": [ticker[:-4] for ticker in symbols],
-        "data": pearson_correlations,
-        "type": "correlation",
-    }
+        correlation_key = f"correlations:{data_type}:{hours}:binance:perpetual"
+        correlation_data = r.execute_command("GET", correlation_key)
+        if not correlation_data:
+            logger.error(f"Correlation data not found for key: {correlation_key}")
+            return JsonResponse(
+                {"error": "Correlation data not available for specified parameters"},
+                status=503,
+            )
 
-    return JsonResponse(response, safe=False)
+        pearson_correlations = msgpack.unpackb(correlation_data)
+
+        response = {
+            "axis": [ticker[:-4] for ticker in symbols],
+            "data": pearson_correlations,
+            "type": "correlation",
+        }
+
+        return JsonResponse(response, safe=False)
+
+    except Exception as e:
+        logger.error(f"Error in get_pearson_correlation: {str(e)}")
+        return JsonResponse({"error": "Internal server error"}, status=500)
