@@ -46,7 +46,7 @@ class KlinesSocketManager:
         time.sleep(5)
         self.start()
 
-    def fetch_futures_symbols(self, test_add_symbol=False):
+    def fetch_futures_symbols(self):
         """Fetch all futures symbols from Binance API and return both list and set."""
         try:
             client = Client()
@@ -58,9 +58,6 @@ class KlinesSocketManager:
                 if symbol["contractType"] == ContractType.PERPETUAL.value.upper()
                 and symbol["status"] == BinanceContractStatus.TRADING.value
             ]
-
-            if test_add_symbol and "SOLUSDT" in active_symbols:
-                active_symbols.remove("SOLUSDT")
 
             self.r.execute_command("DEL", "symbols:binance:perpetual")
             self.r.execute_command("SADD", "symbols:binance:perpetual", *active_symbols)
@@ -171,7 +168,7 @@ class KlinesSocketManager:
                     or datetime.now() - self.last_symbol_check
                     > timedelta(seconds=self.symbol_check_interval)
                 ):
-                    self.fetch_futures_symbols(test_add_symbol=True)
+                    self.fetch_futures_symbols()
             except Exception as e:
                 self.store_error(f"Error in symbol monitor thread: {str(e)}")
 
