@@ -8,6 +8,8 @@ invalid_params_error = {
 
 class RedisPubMessages(Enum):
     KLINE_SAVED_TO_DB = b"KLINE_SAVED_TO_DB"
+    SYMBOL_DELISTED = b"SYMBOL_DELISTED"
+    SYMBOL_ADDED = b"SYMBOL_ADDED"
 
 
 tf_options = {

@@ -3,6 +3,7 @@ from binance.enums import ContractType, KLINE_INTERVAL_1MINUTE
 import time
 import threading
 from django.conf import settings
+from datetime import datetime, timedelta
 
 from exchange_connections.constants import BinanceContractStatus
 from core.constants import RedisPubMessages
@@ -22,12 +23,19 @@ class KlinesSocketManager:
         self.message_batch = []
         self.symbols = []
         self.symbols_count = 0
+        self.active_symbols_set = set()
+        self.symbol_check_interval = 1800
+        self.last_symbol_check = None
+        self.reconnect_event = threading.Event()
 
     def store_error(self, error):
         self.r.execute_command(f"LPUSH error_log {str(error)}")
 
     def initialize(self):
         self.twm.start()
+        monitor_thread = threading.Thread(target=self.monitor_symbol_changes)
+        monitor_thread.daemon = True
+        monitor_thread.start()
 
     def stop(self):
         self.twm.stop_socket(self.stream_name)
@@ -38,27 +46,141 @@ class KlinesSocketManager:
         time.sleep(5)
         self.start()
 
-    def fetch_futures_symbols(self):
-        """Fetch all futures symbols from Binance API."""
+    def fetch_futures_symbols(self, test_add_symbol=False):
+        """Fetch all futures symbols from Binance API and return both list and set."""
         try:
             client = Client()
             exchange_info = client.futures_exchange_info()
 
-            self.symbols = [
+            active_symbols = [
                 symbol["symbol"]
                 for symbol in exchange_info["symbols"]
                 if symbol["contractType"] == ContractType.PERPETUAL.value.upper()
                 and symbol["status"] == BinanceContractStatus.TRADING.value
             ]
+
+            if test_add_symbol and "SOLUSDT" in active_symbols:
+                active_symbols.remove("SOLUSDT")
+
+            self.r.execute_command("DEL", "symbols:binance:perpetual")
+            self.r.execute_command("SADD", "symbols:binance:perpetual", *active_symbols)
+
+            self.symbols = active_symbols
             self.symbols_count = len(self.symbols)
 
+            new_active_set = set(active_symbols)
+            should_reconnect = False
+
+            if self.active_symbols_set:
+                needs_reconnect = self.handle_symbol_changes(
+                    self.active_symbols_set, new_active_set
+                )
+                if needs_reconnect:
+                    self.active_symbols_set = new_active_set
+                    should_reconnect = True
+
+            self.active_symbols_set = new_active_set
+
+            if should_reconnect:
+                self.reconnect_event.set()
+
+            self.last_symbol_check = datetime.now()
+
             client.close_connection()
+
         except Exception as e:
             self.store_error(f"Error fetching futures symbols: {str(e)}")
+            print(f"Error fetching symbols, falling back to default symbols: {str(e)}")
+            self.symbols_count = len(self.symbols)
+            return []
+
+    def handle_symbol_changes(self, old_symbols, new_symbols):
+        """Handle added and removed symbols."""
+        removed_symbols = old_symbols - new_symbols
+        added_symbols = new_symbols - old_symbols
+
+        if removed_symbols:
+            print(f"Symbols removed from Binance: {removed_symbols}")
+            self.handle_delisted_symbols(removed_symbols)
+            return True  # TODO: potentially remove this since it is not required to reconnect on delist
+
+        if added_symbols:
+            print(f"New symbols added to Binance: {added_symbols}")
+            self.handle_new_symbols(added_symbols)
+            return True
+
+        return False
+
+    def handle_delisted_symbols(self, symbols):
+        """Handle delisted symbols - mark or delete from database."""
+        for symbol in symbols:
+            try:
+                self.delete_symbol_data(symbol)
+
+                self.r.sadd("delisted_symbols", symbol)
+                self.r.set(f"delisted:{symbol}:timestamp", datetime.now().isoformat())
+
+                self.r.publish(
+                    RedisPubMessages.SYMBOL_DELISTED.value,
+                    f"{symbol}:{datetime.now().isoformat()}",
+                )
+
+            except Exception as e:
+                self.store_error(f"Error handling delisted symbol {symbol}: {str(e)}")
+
+    def delete_symbol_data(self, symbol):
+        """Delete symbol data from database - use with caution."""
+        try:
+            # Delete in batches to avoid locking
+            # batch_size = 1000
+            # while True:
+            #     deleted = Kline.objects.filter(symbol=symbol)[:batch_size].delete()
+            #     if deleted[0] == 0:
+            #         break
+            #     time.sleep(0.1)  # Small delay between batches
+
+            print(f"Deleted all data for {symbol}")
+
+        except Exception as e:
+            self.store_error(f"Error deleting symbol {symbol}: {str(e)}")
+
+    def handle_new_symbols(self, symbols):
+        """Handle newly listed symbols."""
+        for symbol in symbols:
+            try:
+                self.r.sadd("newly_listed_symbols", symbol)
+                self.r.set(f"listed:{symbol}:timestamp", datetime.now().isoformat())
+
+                self.r.publish(
+                    RedisPubMessages.SYMBOL_ADDED.value,
+                    f"{symbol}:{datetime.now().isoformat()}",
+                )
+
+            except Exception as e:
+                self.store_error(f"Error handling new symbol {symbol}: {str(e)}")
+
+    def monitor_symbol_changes(self):
+        """Background thread to periodically check for symbol changes."""
+        # Wait for initial start() to complete to avoid race condition
+        time.sleep(5)
+
+        while True:
+            try:
+                if (
+                    self.last_symbol_check is None
+                    or datetime.now() - self.last_symbol_check
+                    > timedelta(seconds=self.symbol_check_interval)
+                ):
+                    self.fetch_futures_symbols(test_add_symbol=True)
+            except Exception as e:
+                self.store_error(f"Error in symbol monitor thread: {str(e)}")
+
+            time.sleep(60)
 
     def start(self):
         self.fetch_futures_symbols()
         try:
+            print("Starting KlinesSocketManager with symbols:", self.symbols)
             self.stream_name = self.twm.start_futures_multiplex_socket(
                 callback=self.handle_message,
                 streams=[
@@ -69,34 +191,27 @@ class KlinesSocketManager:
         except Exception as e:
             self.store_error(str(e))
 
+    def check_reconnection_signal(self):
+        """Check if reconnection has been signaled from another thread."""
+        if self.reconnect_event.is_set():
+            print("Reconnection signal detected, executing reconnection")
+            self.reconnect_event.clear()
+            self.reconnect()
+            return True
+        return False
+
     def handle_message(self, msg):
-        """
-        {
-            "e": "kline",                     # event type
-            "E": 1499404907056,               # event time
-            "s": "ETHBTC",                    # symbol
-            "k": {
-                "t": 1499404860000,           # start time of this bar
-                "T": 1499404919999,           # end time of this bar
-                "s": "ETHBTC",                # symbol
-                "i": "1m",                    # interval
-                "f": 77462,                   # first trade id
-                "L": 77465,                   # last trade id
-                "o": "0.10278577",            # open
-                "c": "0.10278645",            # close
-                "h": "0.10278712",            # high
-                "l": "0.10278518",            # low
-                "v": "17.47929838",           # volume
-                "n": 4,                       # number of trades
-                "x": false,                   # whether this bar is final
-                "q": "1.79662878",            # quote volume
-                "V": "2.34879839",            # volume of active buy
-                "Q": "0.24142166",            # quote volume of active buy
-                "B": "13279784.01349473"      # can be ignored
-            }
-        }
-        """
+        """Handle incoming websocket messages."""
+        if self.check_reconnection_signal():
+            return
+
         if self.is_message_error(msg):
+            error_code = msg.get("code", "")
+            error_msg = msg.get("msg", "")
+
+            if "Invalid symbol" in error_msg or error_code == -1121:
+                self.handle_invalid_symbol_error(msg)
+
             self.store_error(str(msg))
             self.reconnect()
             return
@@ -115,11 +230,20 @@ class KlinesSocketManager:
                 )
                 thread.start()
 
-                print("SENDING MESSAGE")
-
                 self.r.publish(
                     RedisPubMessages.KLINE_SAVED_TO_DB.value, kline_data["t"]
                 )
+
+    def handle_invalid_symbol_error(self, error_msg):
+        """Handle specific invalid symbol errors."""
+        try:
+            error_str = str(error_msg)
+            print("Invalid symbol error detected:", error_str)
+            if "symbol" in error_str.lower():
+                self.fetch_futures_symbols()
+
+        except Exception as e:
+            self.store_error(f"Error handling invalid symbol: {str(e)}")
 
     def _save_batch_sync(self, batch):
         try:
@@ -150,14 +274,3 @@ class KlinesSocketManager:
 def main():
     ksm = KlinesSocketManager()
     ksm.main()
-
-
-"""
-ts.range 250ms:BTCUSDT:sum - + +
-TS.MRANGE - + FILTER symbol=BTCUSDT
-TS.MRANGE - + FILTER aggregation_type=sum
-
-ts.REVRANGE 250ms:BTCUSDT - + AGGREGATION sum 15000
-
-ts.madd 250ms:trades:BTCUSDT 10000 10
-"""
