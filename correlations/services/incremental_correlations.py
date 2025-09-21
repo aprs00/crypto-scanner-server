@@ -3,7 +3,7 @@ import msgpack
 import time
 import threading
 import gc
-from itertools import combinations, product
+from itertools import combinations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from exchange_connections.constants import KLINE_FIELD_MAP
@@ -215,13 +215,80 @@ class IncrementalCorrelationCalculator:
             print(f"Processing {message_count} pending messages...")
 
             start_time = time.time()
-            for i in range(message_count):
+            for _ in range(message_count):
                 self.update_and_cache_incremental_correlations()
             elapsed = time.time() - start_time
 
             self.pending_message_count = 0
 
             print(f"Processed {message_count} pending messages in {elapsed:.2f}s")
+
+    def add_new_symbol(self, symbol_name):
+        """Add a new symbol to correlation tracking"""
+        if symbol_name in self.symbols:
+            print(f"Symbol {symbol_name} already being tracked in correlations")
+            return
+
+        print(f"Adding {symbol_name} to correlation tracking")
+
+        new_pairs = []
+        for existing_symbol in self.symbols:
+            if symbol_name < existing_symbol:
+                new_pairs.append((symbol_name, existing_symbol))
+            else:
+                new_pairs.append((existing_symbol, symbol_name))
+
+        self.symbols.append(symbol_name)
+        self.symbol_pairs.extend(new_pairs)
+
+        for hours in self.hours_options:
+            symbols_needed = [symbol_name] + [
+                pair[0] if pair[1] == symbol_name else pair[1] for pair in new_pairs
+            ]
+            symbols_needed = list(set(symbols_needed))
+            symbols_data = get_historical_kline_data(
+                hours=hours, symbols=symbols_needed
+            )
+
+            for pair_key in new_pairs:
+                if pair_key in self.correlations:
+                    continue
+
+                symbol_a, symbol_b = pair_key
+                window_size = hours * 60
+
+                for data_type in KLINE_FIELD_MAP.keys():
+                    print("SETTING HERE", pair_key, data_type, hours)
+                    correlation_obj = IncrementalPearsonCorrelation(
+                        window_size=window_size,
+                        x_initial=symbols_data.get(symbol_a, {}).get(data_type, []),
+                        y_initial=symbols_data.get(symbol_b, {}).get(data_type, []),
+                        sum_cache=self.sum_cache,
+                        x_symbol=symbol_a,
+                        y_symbol=symbol_b,
+                        data_type=data_type,
+                        hours=hours,
+                    )
+
+                    self.correlations.setdefault(pair_key, {}).setdefault(
+                        data_type, {}
+                    )[hours] = correlation_obj
+
+    def remove_symbol(self, symbol_name):
+        """Remove a symbol from correlation tracking"""
+        if symbol_name not in self.symbols:
+            print(f"Symbol {symbol_name} not being tracked in correlations")
+            return
+
+        print(f"Removing symbol {symbol_name} from correlation tracking")
+
+        self.symbols.remove(symbol_name)
+
+        pairs_to_remove = [pair for pair in self.symbol_pairs if symbol_name in pair]
+        for pair in pairs_to_remove:
+            self.symbol_pairs.remove(pair)
+            if pair in self.correlations:
+                del self.correlations[pair]
 
     def start_pubsub_listener(self):
         retries = 0
@@ -230,32 +297,49 @@ class IncrementalCorrelationCalculator:
             try:
                 print("Subscribing to Redis channels...")
                 pubsub = self.r.pubsub()
-                pubsub.subscribe(RedisPubMessages.KLINE_SAVED_TO_DB.value)
+                pubsub.subscribe(
+                    RedisPubMessages.KLINE_SAVED_TO_DB.value,
+                    RedisPubMessages.SYMBOL_ADDED.value,
+                    RedisPubMessages.SYMBOL_DELISTED.value,
+                )
                 pubsub.get_message()
 
                 for message in pubsub.listen():
-                    if (
-                        message["type"] == "message"
-                        and message["channel"]
-                        == RedisPubMessages.KLINE_SAVED_TO_DB.value
-                    ):
-                        print(f'CORRELATIONS {message["channel"]}')
+                    if message["type"] == "message":
+                        channel = message["channel"]
 
-                        if not self.initialization_complete:
-                            with self.pending_messages_lock:
-                                self.pending_message_count += 1
+                        if channel == RedisPubMessages.KLINE_SAVED_TO_DB.value:
+                            print(f'CORRELATIONS {message["channel"]}')
+
+                            if not self.initialization_complete:
+                                with self.pending_messages_lock:
+                                    self.pending_message_count += 1
+                                    print(
+                                        f"Queued message during initialization. Queue size: {self.pending_message_count}"
+                                    )
+                                continue
+
+                            start_time = time.time()
+                            self.update_and_cache_incremental_correlations()
+                            elapsed = time.time() - start_time
+                            with self.print_lock:
                                 print(
-                                    f"Queued message during initialization. Queue size: {self.pending_message_count}"
+                                    f"update_and_cache_incremental_correlations finished in {elapsed:.2f}s"
                                 )
-                            continue
 
-                        start_time = time.time()
-                        self.update_and_cache_incremental_correlations()
-                        elapsed = time.time() - start_time
-                        with self.print_lock:
+                        elif channel == RedisPubMessages.SYMBOL_ADDED.value:
+                            data = message.get("data", b"").decode("utf-8")
+                            print(f"CORRELATIONS: Received symbol added event: {data}")
+                            symbol_name = data.split(":")[0]
+                            self.add_new_symbol(symbol_name)
+
+                        elif channel == RedisPubMessages.SYMBOL_DELISTED.value:
+                            data = message.get("data", b"").decode("utf-8")
                             print(
-                                f"update_and_cache_incremental_correlations finished in {elapsed:.2f}s"
+                                f"CORRELATIONS: Received symbol delisted event: {data}"
                             )
+                            symbol_name = data.split(":")[0]
+                            self.remove_symbol(symbol_name)
 
                 retries = 0
 
@@ -280,12 +364,6 @@ class IncrementalCorrelationCalculator:
         self.hours_options = list(tf_options["correlation"].values())
         self.symbols = get_exchange_symbols()
         self.symbol_pairs = list(combinations(self.symbols, 2))
-
-        self.r.execute_command(
-            "SET",
-            f"correlations:symbols:binance:perpetual",
-            msgpack.packb(self.symbols),
-        )
 
         print("Starting pubsub listener thread...")
         pubsub_thread = threading.Thread(target=self.start_pubsub_listener)

@@ -4,6 +4,7 @@ import msgpack
 import logging
 
 from core.redis_config import get_redis_connection
+from exchange_connections.selectors import get_exchange_symbols
 
 logger = logging.getLogger(__name__)
 r = get_redis_connection()
@@ -18,14 +19,10 @@ def get_pearson_correlation(request):
     hours = request.GET.get("hours", None)
 
     try:
-        symbols_data = r.execute_command(
-            "GET", "correlations:symbols:binance:perpetual"
-        )
-        if not symbols_data:
+        symbols = get_exchange_symbols()
+        if not symbols:
             logger.error("Symbols data not found in Redis")
-            return JsonResponse({"error": "Correlation data not available"}, status=503)
-
-        symbols = msgpack.unpackb(symbols_data)
+            return JsonResponse({"error": "Symbols data not available"}, status=503)
 
         correlation_key = f"correlations:{data_type}:{hours}:binance:perpetual"
         correlation_data = r.execute_command("GET", correlation_key)

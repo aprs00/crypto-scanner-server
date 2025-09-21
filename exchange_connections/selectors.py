@@ -5,20 +5,16 @@ from typing import Optional
 from django.db import connection
 from collections import defaultdict
 
-from exchange_connections.models import Kline1m, Symbol
+from exchange_connections.models import Kline1m
 from exchange_connections.constants import KLINE_FIELD_MAP
+from core.redis_config import get_redis_connection
+
+r = get_redis_connection()
 
 
 def get_exchange_symbols(exchange="binance", contract_type="perpetual"):
-    return list(
-        Symbol.objects.filter(
-            exchange__name=exchange,
-            contract_type__name=contract_type,
-        )
-        .order_by("name")
-        .distinct("name")
-        .values_list("name", flat=True)
-    )
+    symbols_b = r.execute_command("SMEMBERS", f"symbols:{exchange}:{contract_type}")
+    return sorted([symbol.decode("utf-8") for symbol in symbols_b])
 
 
 def get_historical_kline_data(hours, symbols):

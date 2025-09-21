@@ -52,13 +52,12 @@ class IncrementalZScore:
         self.M2 -= delta * (value - self.mean)
 
     def add_data_point(self, value):
+        self.count += 1
         delta = value - self.mean
-        delta2 = value - self.mean
-
         self.mean += delta / self.count
+        delta2 = value - self.mean
         self.M2 += delta * delta2
         self.current_value = value
-        self.count += 1
 
     def update_data_point(self, old_value, new_value):
         if self.count == 0:
@@ -194,6 +193,45 @@ class ZScoreProcessor:
         if db_entries and settings.STORE_TO_DB:
             ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
 
+    def add_new_symbol(self, symbol_name):
+        """Add a new symbol to zscore tracking"""
+        if symbol_name in self.symbols:
+            print(f"Symbol {symbol_name} already being tracked")
+            return
+
+        print(f"Adding {symbol_name} to zscore tracking")
+
+        self.symbols.append(symbol_name)
+
+        for data_type in KLINE_FIELD_MAP.keys():
+            for hours in self.hours_options:
+                self.incremental_zscores.setdefault(symbol_name, {}).setdefault(
+                    data_type, {}
+                )[hours] = IncrementalZScore(hours * 60)
+
+                historical_data = get_historical_kline_data(
+                    hours=hours, symbols=[symbol_name]
+                )
+                series = historical_data.get(symbol_name, {}).get(data_type, [])
+
+                if series and len(series) > 0:
+                    self.incremental_zscores[symbol_name][data_type][
+                        hours
+                    ].initialize_from_data(series)
+
+    def remove_symbol(self, symbol_name):
+        """Remove a symbol from zscore tracking"""
+        if symbol_name not in self.symbols:
+            print(f"Symbol {symbol_name} not being tracked")
+            return
+
+        print(f"Removing symbol {symbol_name} from zscore tracking")
+
+        self.symbols.remove(symbol_name)
+
+        if symbol_name in self.incremental_zscores:
+            del self.incremental_zscores[symbol_name]
+
     def fetch_and_store_zscore_history_data(self, redis_pipeline):
         for hours in self.hours_options:
             zscore_heatmap_data = get_zscore_history_data(hours)
@@ -214,31 +252,46 @@ class ZScoreProcessor:
             try:
                 print("Subscribing to Redis channels...")
                 pubsub = r.pubsub()
-                pubsub.subscribe(RedisPubMessages.KLINE_SAVED_TO_DB.value)
+                pubsub.subscribe(
+                    RedisPubMessages.KLINE_SAVED_TO_DB.value,
+                    RedisPubMessages.SYMBOL_ADDED.value,
+                    RedisPubMessages.SYMBOL_DELISTED.value,
+                )
                 pubsub.get_message()
 
                 for message in pubsub.listen():
-                    if (
-                        message["type"] == "message"
-                        and message["channel"]
-                        == RedisPubMessages.KLINE_SAVED_TO_DB.value
-                    ):
-                        print(f'ZSCORE {message["channel"]}')
-                        self.update_zscores()
-                        results = self.create_z_score_results()
+                    if message["type"] == "message":
+                        channel = message["channel"]
 
-                        pipeline = r.pipeline()
-                        for tf, tf_data in results.items():
-                            pipeline.execute_command(
-                                "SET",
-                                f"zscore:binance:perpetual:{tf}",
-                                msgpack.packb(tf_data),
+                        if channel == RedisPubMessages.KLINE_SAVED_TO_DB.value:
+                            print(f'ZSCORE {message["channel"]}')
+                            self.update_zscores()
+                            results = self.create_z_score_results()
+
+                            pipeline = r.pipeline()
+                            for tf, tf_data in results.items():
+                                pipeline.execute_command(
+                                    "SET",
+                                    f"zscore:binance:perpetual:{tf}",
+                                    msgpack.packb(tf_data),
+                                )
+                            self.store_z_score_results(results)
+                            self.fetch_and_store_zscore_history_data(
+                                redis_pipeline=pipeline
                             )
-                        self.store_z_score_results(results)
-                        self.fetch_and_store_zscore_history_data(
-                            redis_pipeline=pipeline
-                        )
-                        pipeline.execute()
+                            pipeline.execute()
+
+                        elif channel == RedisPubMessages.SYMBOL_ADDED.value:
+                            data = message.get("data", b"").decode("utf-8")
+                            print(f"ZSCORE: Received symbol added event: {data}")
+                            symbol_name = data.split(":")[0]
+                            self.add_new_symbol(symbol_name)
+
+                        elif channel == RedisPubMessages.SYMBOL_DELISTED.value:
+                            data = message.get("data", b"").decode("utf-8")
+                            print(f"ZSCORE: Received symbol delisted event: {data}")
+                            symbol_name = data.split(":")[0]
+                            self.remove_symbol(symbol_name)
 
                 retries = 0
 
