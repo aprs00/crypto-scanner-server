@@ -180,7 +180,6 @@ class KlinesSocketManager:
     def start(self):
         self.fetch_futures_symbols()
         try:
-            print("Starting KlinesSocketManager with symbols:", self.symbols)
             self.stream_name = self.twm.start_futures_multiplex_socket(
                 callback=self.handle_message,
                 streams=[
