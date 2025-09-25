@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 from correlations.services.incremental_correlations import (
-    IncrementalCorrelationCalculator,
+    MatrixCorrelationCalculator,
 )
 
 
@@ -9,5 +9,5 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self.stdout.write(self.style.SUCCESS("Starting correlations calculations..."))
-        calculator = IncrementalCorrelationCalculator()
+        calculator = MatrixCorrelationCalculator()
         calculator.run()

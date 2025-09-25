@@ -1,11 +1,10 @@
-import numpy as np
 from django.utils import timezone
 from datetime import timedelta
-from typing import Optional
+from typing import Optional, List
 from django.db import connection
 from collections import defaultdict
 
-from exchange_connections.models import Kline1m
+from exchange_connections.models import Kline1m, Exchange, Symbol
 from exchange_connections.constants import KLINE_FIELD_MAP
 from core.redis_config import get_redis_connection
 
@@ -23,13 +22,19 @@ def get_historical_kline_data(hours, symbols):
     end_time = timezone.now()
     start_time = end_time - timedelta(hours=hours)
 
+    exchange = Exchange.objects.get(name="binance")
+    symbol_ids = Symbol.objects.filter(name__in=symbols, exchange=exchange).values_list(
+        "id", flat=True
+    )
+
     klines = (
         Kline1m.objects.filter(
-            symbol__name__in=symbols,
+            exchange=exchange,
+            symbol_id__in=symbol_ids,
             start_time__gte=start_time.astimezone(timezone.utc),
             start_time__lte=end_time.astimezone(timezone.utc),
-            exchange__name="binance",
         )
+        .select_related("symbol")
         .values(
             "symbol__name", "start_time", "close", "base_volume", "number_of_trades"
         )
@@ -43,6 +48,108 @@ def get_historical_kline_data(hours, symbols):
             klines_data[item["symbol__name"]][data_type].append(float(item[field_name]))
 
     return dict(klines_data)
+
+
+def get_symbol_kline_data_batch(
+    symbols: list, exchange: str, contract_type: str, hours_list: Optional[List[int]] = None
+):
+    """Batch version of get_symbol_kline_data that fetches data for multiple timeframes at once."""
+    symbol_placeholders = ",".join(["%s"] * len(symbols))
+
+    if hours_list is None:
+        # Single query for latest data
+        query = f"""
+            SELECT
+                s.name AS symbol_name,
+                k.close,
+                k.base_volume,
+                k.number_of_trades,
+                NULL as hours
+            FROM cs_symbols s
+            JOIN cs_exchanges e ON s.exchange_id = e.id
+            JOIN cs_contract_types ct ON s.contract_type_id = ct.id
+            CROSS JOIN LATERAL (
+                SELECT close, base_volume, number_of_trades
+                FROM cs_klines_1m k
+                WHERE
+                    k.symbol_id = s.id
+                    AND k.exchange_id = e.id
+                ORDER BY k.start_time DESC
+                LIMIT 1
+            ) k
+            WHERE
+                e.name = %s
+                AND ct.name = %s
+                AND s.name IN ({symbol_placeholders})
+        """
+        params = [exchange, contract_type] + symbols
+
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+            return {
+                row[0]: {
+                    "price": float(row[1]),
+                    "volume": float(row[2]),
+                    "trades": float(row[3]),
+                }
+                for row in rows
+            }
+    else:
+        # Query for multiple timeframes using UNION ALL
+        time_conditions = []
+        params = []
+
+        for hours in hours_list:
+            target_time = timezone.now() - timezone.timedelta(hours=hours)
+            time_conditions.append(f"""
+                SELECT
+                    s.name AS symbol_name,
+                    k.close,
+                    k.base_volume,
+                    k.number_of_trades,
+                    %s as hours
+                FROM cs_symbols s
+                JOIN cs_exchanges e ON s.exchange_id = e.id
+                JOIN cs_contract_types ct ON s.contract_type_id = ct.id
+                CROSS JOIN LATERAL (
+                    SELECT close, base_volume, number_of_trades
+                    FROM cs_klines_1m k
+                    WHERE
+                        k.symbol_id = s.id
+                        AND k.exchange_id = e.id
+                        AND k.start_time <= %s
+                    ORDER BY k.start_time DESC
+                    LIMIT 1
+                ) k
+                WHERE
+                    e.name = %s
+                    AND ct.name = %s
+                    AND s.name IN ({symbol_placeholders})
+            """)
+            params.extend([hours, target_time, exchange, contract_type] + symbols)
+
+        query = " UNION ALL ".join(time_conditions)
+
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+            # Organize results by hours
+            results = {}
+            for row in rows:
+                hours = row[4]
+                if hours not in results:
+                    results[hours] = {}
+
+                results[hours][row[0]] = {
+                    "price": float(row[1]),
+                    "volume": float(row[2]),
+                    "trades": float(row[3]),
+                }
+
+            return results
 
 
 def get_symbol_kline_data(
