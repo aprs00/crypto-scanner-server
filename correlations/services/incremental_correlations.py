@@ -464,7 +464,3 @@ class MatrixCorrelationCalculator:
             pubsub_thread.join()
         except KeyboardInterrupt:
             print("Shutting down...")
-
-
-# For backwards compatibility
-IncrementalCorrelationCalculator = MatrixCorrelationCalculator
