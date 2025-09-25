@@ -3,8 +3,8 @@ import msgpack
 import time
 import threading
 import gc
-from itertools import combinations
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import numpy as np
+from typing import Dict, List, Optional
 
 from exchange_connections.constants import KLINE_FIELD_MAP
 from exchange_connections.selectors import (
@@ -12,188 +12,251 @@ from exchange_connections.selectors import (
     get_historical_kline_data,
     get_symbol_kline_data,
 )
-from correlations.formulas.pearson import IncrementalPearsonCorrelation, SumCache
 from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
 
 
-class IncrementalCorrelationCalculator:
+class MatrixCorrelationTracker:
+    """
+    Optimized correlation tracker using dense NumPy arrays.
+    For N symbols, stores:
+    - N values for sum_x, sum_xx (per symbol)
+    - N×N dense matrix for sum_xy (upper triangle used)
+    - Single count value
+    """
+
+    def __init__(self, window_size: int, n_symbols: int):
+        self.window_size = window_size
+        self.n_symbols = n_symbols
+        self.count = 0
+
+        # Per-symbol statistics
+        self.sum_x = np.zeros(n_symbols, dtype=np.float64)
+        self.sum_xx = np.zeros(n_symbols, dtype=np.float64)
+
+        # Dense sum_xy matrix
+        self.sum_xy = np.zeros((n_symbols, n_symbols), dtype=np.float64)
+
+        # Precompute upper-triangle indices once
+        self.upper_i, self.upper_j = np.triu_indices(n_symbols, k=1)
+
+    def initialize_from_data(self, symbol_data: Dict[int, np.ndarray]):
+        """Initialize statistics from historical data."""
+        min_length = min(len(data) for data in symbol_data.values())
+        if min_length == 0:
+            return
+
+        for idx, data in symbol_data.items():
+            data = data[:min_length]
+            self.sum_x[idx] = np.sum(data)
+            self.sum_xx[idx] = np.sum(data * data)
+
+        arr = np.vstack([symbol_data[i][:min_length] for i in range(self.n_symbols)])
+        self.sum_xy = arr @ arr.T
+
+        self.count = min_length
+
+    def update(self, new_values: np.ndarray, old_values: Optional[np.ndarray] = None):
+        """Update statistics with new values (vectorized)."""
+        # Remove old values if window is full
+        if self.count >= self.window_size and old_values is not None:
+            mask = ~np.isnan(old_values)
+            if np.any(mask):
+                vals = old_values[mask]
+
+                self.sum_x[mask] -= vals
+                self.sum_xx[mask] -= vals * vals
+
+                self.sum_xy[np.ix_(mask, mask)] -= np.outer(vals, vals)
+
+            self.count -= 1
+
+        # Add new values
+        mask = ~np.isnan(new_values)
+        if np.any(mask):
+            vals = new_values[mask]
+
+            # Per-symbol
+            self.sum_x[mask] += vals
+            self.sum_xx[mask] += vals * vals
+
+            # Pairwise update
+            self.sum_xy[np.ix_(mask, mask)] += np.outer(vals, vals)
+
+        self.count = min(self.count + 1, self.window_size)
+
+    def get_correlation(self, i: int, j: int) -> float:
+        """Compute correlation between symbols i and j."""
+        if self.count == 0:
+            return 0.0
+        if i == j:
+            return 1.0
+
+        sum_xy = self.sum_xy[i, j]
+        var_x = self.count * self.sum_xx[i] - self.sum_x[i] ** 2
+        var_y = self.count * self.sum_xx[j] - self.sum_x[j] ** 2
+
+        if var_x <= 0 or var_y <= 0:
+            return 0.0
+
+        numerator = self.count * sum_xy - self.sum_x[i] * self.sum_x[j]
+        denominator = np.sqrt(var_x * var_y)
+
+        if denominator == 0:
+            return 0.0
+        return float(numerator / denominator)
+
+    def get_correlation_matrix_upper(self, symbol_indices: List[int]) -> List[float]:
+        """Get upper triangle of correlation matrix as flat list."""
+        results = []
+        n = len(symbol_indices)
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                corr = self.get_correlation(symbol_indices[i], symbol_indices[j])
+                results.append(round(corr, 2))
+
+        return results
+
+
+class MatrixCorrelationCalculator:
     def __init__(self):
         self.r = get_redis_connection()
         self.print_lock = threading.Lock()
         self.symbols = []
-        self.symbol_pairs = []
+        self.symbol_to_idx = {}
+        self.idx_to_symbol = {}
         self.hours_options = []
-        self.correlations = {}
+        self.trackers = {}  # {(hours, data_type): MatrixCorrelationTracker}
         self.initialization_complete = False
         self.pending_message_count = 0
         self.pending_messages_lock = threading.Lock()
-        self.sum_cache = SumCache()
 
-    def chunked_iterable(self, iterable, size):
-        """Yield successive chunks from iterable of given size."""
-        for i in range(0, len(iterable), size):
-            yield iterable[i : i + size]
-
-    def initialize_correlation_objects(self):
-        """Initialize correlation objects with optimized data fetching - fetch each symbol's data only once per timeframe."""
-        all_pairs = list(combinations(self.symbols, 2))
-        total_pairs = len(all_pairs)
-
+    def initialize_correlation_trackers(self):
+        """Initialize correlation trackers with optimized data fetching."""
+        n_symbols = len(self.symbols)
         print(
-            f"Initializing correlations for {len(self.symbols)} symbols ({total_pairs:,} pairs)"
+            f"Initializing correlations for {n_symbols} symbols ({n_symbols*(n_symbols-1)//2:,} pairs)"
         )
 
-        for hours in reversed(self.hours_options):
+        sorted_hours = sorted(self.hours_options, reverse=True)
+        max_hours = sorted_hours[0]
+
+        print(f"Fetching data for largest timeframe: {max_hours}h...")
+        start_fetch = time.time()
+
+        max_symbols_data = get_historical_kline_data(
+            hours=max_hours, symbols=self.symbols
+        )
+
+        fetch_time = time.time() - start_fetch
+        print(f"  Data fetch completed in {fetch_time:.2f}s")
+
+        for hours in sorted_hours:
             print(f"Processing timeframe: {hours}h...")
 
-            start_fetch = time.time()
-            symbols_data = get_historical_kline_data(hours=hours, symbols=self.symbols)
-            fetch_time = time.time() - start_fetch
-            print(f"  Data fetch completed in {fetch_time:.2f}s")
+            window_size = hours * 60
 
-            pair_batches = list(self.chunked_iterable(all_pairs, 32000))
-            completed_batches = 0
-            total_batches = len(pair_batches)
+            if hours == max_hours:
+                symbols_data = max_symbols_data
+            else:
+                symbols_data = {}
+                for symbol in self.symbols:
+                    if symbol in max_symbols_data:
+                        symbols_data[symbol] = {}
+                        for data_type, data in max_symbols_data[symbol].items():
+                            symbols_data[symbol][data_type] = (
+                                data[-window_size:]
+                                if len(data) >= window_size
+                                else data
+                            )
 
-            with ThreadPoolExecutor() as executor:
-                futures = []
+            for data_type in KLINE_FIELD_MAP.keys():
+                tracker = MatrixCorrelationTracker(window_size, n_symbols)
 
-                for batch_idx, pair_batch in enumerate(pair_batches):
-                    futures.append(
-                        executor.submit(
-                            self.process_correlation_batch,
-                            hours=hours,
-                            symbols_data=symbols_data,
-                            symbol_pairs=pair_batch,
-                            batch_idx=batch_idx,
+                indexed_data = {}
+                for symbol in self.symbols:
+                    if symbol in symbols_data and data_type in symbols_data[symbol]:
+                        idx = self.symbol_to_idx[symbol]
+                        data = np.asarray(
+                            symbols_data[symbol][data_type], dtype=np.float64
                         )
-                    )
+                        indexed_data[idx] = data
 
-                for future in as_completed(futures):
-                    batch_idx, batch_correlations = future.result()
+                if indexed_data:
+                    tracker.initialize_from_data(indexed_data)
 
-                    for pair_key, data_type_dict in batch_correlations.items():
-                        for data_type, correlation_obj in data_type_dict.items():
-                            self.correlations.setdefault(pair_key, {}).setdefault(
-                                data_type, {}
-                            )[hours] = correlation_obj
-
-                    completed_batches += 1
-                    with self.print_lock:
-                        print(
-                            f"  Batch {completed_batches}/{total_batches} complete "
-                            f"({(completed_batches/total_batches)*100:.1f}%) - "
-                            f"{len(batch_correlations)} correlations processed"
-                        )
-
-            del symbols_data
-            gc.collect()
+                self.trackers[(hours, data_type)] = tracker
 
             print(f"  Timeframe {hours}h completed\n")
 
-    def process_correlation_batch(self, hours, symbols_data, symbol_pairs, batch_idx):
-        """
-        Process a batch of symbol pairs using pre-fetched symbols_data.
+        del max_symbols_data
+        gc.collect()
+        print("All timeframes initialization completed\n")
 
-        Args:
-            hours: Timeframe in hours
-            symbols_data: Pre-fetched historical data for all symbols
-            symbol_pairs: List of (symbol_a, symbol_b) tuples to process
-            batch_idx: Index of this batch (for logging)
-
-        Returns:
-            tuple: (batch_idx, correlation_batch_dict)
-        """
+    def update_correlations(self, hours: int, newest_values: dict, oldest_values: dict):
+        """Update correlation trackers with new data."""
         window_size = hours * 60
-        correlation_batch = {}
 
         for data_type in KLINE_FIELD_MAP.keys():
-            for symbol_pair in symbol_pairs:
-                symbol_a, symbol_b = symbol_pair
+            tracker = self.trackers.get((hours, data_type))
+            if tracker is None:
+                print(f"Missing tracker for {hours}h {data_type}")
+                continue
 
-                correlation_batch.setdefault(symbol_pair, {})[data_type] = (
-                    IncrementalPearsonCorrelation(
-                        window_size=window_size,
-                        x_initial=symbols_data[symbol_a][data_type],
-                        y_initial=symbols_data[symbol_b][data_type],
-                        sum_cache=self.sum_cache,
-                        x_symbol=symbol_a,
-                        y_symbol=symbol_b,
-                        data_type=data_type,
-                        hours=hours,
-                    )
-                )
+            n_symbols = len(self.symbols)
+            new_vals = np.full(n_symbols, np.nan, dtype=np.float64)
+            old_vals = np.full(n_symbols, np.nan, dtype=np.float64)
 
-        return batch_idx, correlation_batch
+            for symbol in self.symbols:
+                idx = self.symbol_to_idx[symbol]
 
-    def update_correlations(self, hours, newest_values, oldest_values):
-        for data_type in KLINE_FIELD_MAP.keys():
-            for pair_key in self.symbol_pairs:
-                a, b = pair_key
-                val_a = newest_values.get(a, {}).get(data_type)
-                val_b = newest_values.get(b, {}).get(data_type)
+                if symbol in newest_values and data_type in newest_values[symbol]:
+                    new_vals[idx] = float(newest_values[symbol][data_type])
 
-                if val_a is None or val_b is None:
-                    continue
+                if tracker.count >= window_size:
+                    if symbol in oldest_values and data_type in oldest_values[symbol]:
+                        old_vals[idx] = float(oldest_values[symbol][data_type])
 
-                correlation_obj = (
-                    self.correlations.get(pair_key, {}).get(data_type, {}).get(hours)
-                )
+            if tracker.count >= window_size:
+                tracker.update(new_vals, old_vals)
+            else:
+                tracker.update(new_vals)
 
-                if correlation_obj is None:
-                    print(
-                        f"Missing correlation object for {pair_key} {data_type} {hours}h"
-                    )
-                    continue
+    def create_correlation_matrix(self, hours: int, data_type: str) -> List[float]:
+        """Create correlation matrix for specific hours/data_type."""
+        tracker = self.trackers.get((hours, data_type))
+        if tracker is None:
+            return []
 
-                x_old = y_old = None
-
-                if correlation_obj.count >= correlation_obj.window_size:
-                    x_old = oldest_values.get(a, {}).get(data_type, 0.0)
-                    y_old = oldest_values.get(b, {}).get(data_type, 0.0)
-
-                correlation_obj.add_data_point(float(val_a), float(val_b), x_old, y_old)
-
-    def create_correlation_matrix(self, hours, data_type, is_upper_triangle=True):
-        results = []
-
-        for i in range(len(self.symbols)):
-            for j in range(i + 1, len(self.symbols)) if is_upper_triangle else range(i):
-                corr_obj = (
-                    self.correlations.get((self.symbols[i], self.symbols[j]), {})
-                    .get(data_type, {})
-                    .get(hours)
-                )
-                val = round(corr_obj.get_correlation(), 2) if corr_obj else 0.0
-                results.append(val)
-
-        return results
+        symbol_indices = [self.symbol_to_idx[s] for s in self.symbols]
+        return tracker.get_correlation_matrix_upper(symbol_indices)
 
     def update_and_cache_incremental_correlations(self):
-        set_pipeline = self.r.pipeline()
-
+        """Update correlations and cache to Redis."""
         newest_values = get_symbol_kline_data(
             symbols=self.symbols, exchange="binance", contract_type="perpetual"
         )
 
+        set_pipeline = self.r.pipeline()
+
         for hours in self.hours_options:
+            start_oldest = time.time()
             oldest_values = get_symbol_kline_data(
                 symbols=self.symbols,
-                hours=hours,
                 exchange="binance",
                 contract_type="perpetual",
+                hours=hours,
             )
+            oldest_time = time.time() - start_oldest
+            print(f"Getting oldest_values for {hours}h took {oldest_time:.3f}s")
+
             self.update_correlations(
                 hours=hours, newest_values=newest_values, oldest_values=oldest_values
             )
 
             for data_type in KLINE_FIELD_MAP.keys():
-                correlation_matrix = self.create_correlation_matrix(
-                    hours=hours,
-                    data_type=data_type,
-                    is_upper_triangle=True,
-                )
+                correlation_matrix = self.create_correlation_matrix(hours, data_type)
 
                 set_pipeline.execute_command(
                     "SET",
@@ -203,6 +266,88 @@ class IncrementalCorrelationCalculator:
 
         set_pipeline.execute()
 
+    def add_new_symbol(self, symbol_name: str):
+        """Add a new symbol to correlation tracking."""
+        if symbol_name in self.symbols:
+            print(f"Symbol {symbol_name} already being tracked in correlations")
+            return
+
+        print(f"Adding {symbol_name} to correlation tracking")
+
+        new_idx = len(self.symbols)
+        self.symbols.append(symbol_name)
+        self.symbol_to_idx[symbol_name] = new_idx
+        self.idx_to_symbol[new_idx] = symbol_name
+
+        # Extend all trackers
+        for (hours, data_type), tracker in self.trackers.items():
+            new_sum_x = np.zeros(len(self.symbols), dtype=np.float64)
+            new_sum_xx = np.zeros(len(self.symbols), dtype=np.float64)
+
+            new_sum_x[:new_idx] = tracker.sum_x
+            new_sum_xx[:new_idx] = tracker.sum_xx
+
+            tracker.sum_x = new_sum_x
+            tracker.sum_xx = new_sum_xx
+            tracker.n_symbols = len(self.symbols)
+
+            # Sparse matrix automatically handles new dimensions
+
+            # Initialize new symbol's statistics from historical data
+            symbol_data = get_historical_kline_data(hours=hours, symbols=[symbol_name])
+            if symbol_name in symbol_data and data_type in symbol_data[symbol_name]:
+                data = np.asarray(symbol_data[symbol_name][data_type], dtype=np.float64)
+                data = data[: tracker.count]  # Match existing data length
+
+                if len(data) == tracker.count:
+                    tracker.sum_x[new_idx] = np.sum(data)
+                    tracker.sum_xx[new_idx] = np.sum(data * data)
+
+                    # Compute sum_xy with all existing symbols
+                    for existing_idx in range(new_idx):
+                        existing_symbol = self.idx_to_symbol[existing_idx]
+                        existing_data = get_historical_kline_data(
+                            hours=hours, symbols=[existing_symbol]
+                        )
+                        if (
+                            existing_symbol in existing_data
+                            and data_type in existing_data[existing_symbol]
+                        ):
+                            other_data = np.asarray(
+                                existing_data[existing_symbol][data_type][
+                                    : tracker.count
+                                ],
+                                dtype=np.float64,
+                            )
+                            tracker.sum_xy[existing_idx, new_idx] = np.sum(
+                                other_data * data
+                            )
+
+    def remove_symbol(self, symbol_name: str):
+        """Remove a symbol from correlation tracking."""
+        if symbol_name not in self.symbols:
+            print(f"Symbol {symbol_name} not being tracked in correlations")
+            return
+
+        print(f"Removing symbol {symbol_name} from correlation tracking")
+
+        idx_to_remove = self.symbol_to_idx[symbol_name]
+
+        # Remove from symbol lists/mappings
+        self.symbols.remove(symbol_name)
+        self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
+        self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
+
+        # Shrink arrays by removing the row/column
+        self.sum_x = np.delete(self.sum_x, idx_to_remove)
+        self.sum_xx = np.delete(self.sum_xx, idx_to_remove)
+        self.sum_xy = np.delete(self.sum_xy, idx_to_remove, axis=0)
+        self.sum_xy = np.delete(self.sum_xy, idx_to_remove, axis=1)
+
+        self.n_symbols = len(self.symbols)
+
+        self.upper_i, self.upper_j = np.triu_indices(self.n_symbols, k=1)
+
     def process_pending_messages(self):
         """Process any messages that were queued during initialization."""
         with self.pending_messages_lock:
@@ -211,7 +356,6 @@ class IncrementalCorrelationCalculator:
                 return
 
             message_count = self.pending_message_count
-
             print(f"Processing {message_count} pending messages...")
 
             start_time = time.time()
@@ -220,77 +364,10 @@ class IncrementalCorrelationCalculator:
             elapsed = time.time() - start_time
 
             self.pending_message_count = 0
-
             print(f"Processed {message_count} pending messages in {elapsed:.2f}s")
 
-    def add_new_symbol(self, symbol_name):
-        """Add a new symbol to correlation tracking"""
-        if symbol_name in self.symbols:
-            print(f"Symbol {symbol_name} already being tracked in correlations")
-            return
-
-        print(f"Adding {symbol_name} to correlation tracking")
-
-        new_pairs = []
-        for existing_symbol in self.symbols:
-            if symbol_name < existing_symbol:
-                new_pairs.append((symbol_name, existing_symbol))
-            else:
-                new_pairs.append((existing_symbol, symbol_name))
-
-        self.symbols.append(symbol_name)
-        self.symbol_pairs.extend(new_pairs)
-
-        for hours in self.hours_options:
-            symbols_needed = [symbol_name] + [
-                pair[0] if pair[1] == symbol_name else pair[1] for pair in new_pairs
-            ]
-            symbols_needed = list(set(symbols_needed))
-            symbols_data = get_historical_kline_data(
-                hours=hours, symbols=symbols_needed
-            )
-
-            for pair_key in new_pairs:
-                if pair_key in self.correlations:
-                    continue
-
-                symbol_a, symbol_b = pair_key
-                window_size = hours * 60
-
-                for data_type in KLINE_FIELD_MAP.keys():
-                    print("SETTING HERE", pair_key, data_type, hours)
-                    correlation_obj = IncrementalPearsonCorrelation(
-                        window_size=window_size,
-                        x_initial=symbols_data.get(symbol_a, {}).get(data_type, []),
-                        y_initial=symbols_data.get(symbol_b, {}).get(data_type, []),
-                        sum_cache=self.sum_cache,
-                        x_symbol=symbol_a,
-                        y_symbol=symbol_b,
-                        data_type=data_type,
-                        hours=hours,
-                    )
-
-                    self.correlations.setdefault(pair_key, {}).setdefault(
-                        data_type, {}
-                    )[hours] = correlation_obj
-
-    def remove_symbol(self, symbol_name):
-        """Remove a symbol from correlation tracking"""
-        if symbol_name not in self.symbols:
-            print(f"Symbol {symbol_name} not being tracked in correlations")
-            return
-
-        print(f"Removing symbol {symbol_name} from correlation tracking")
-
-        self.symbols.remove(symbol_name)
-
-        pairs_to_remove = [pair for pair in self.symbol_pairs if symbol_name in pair]
-        for pair in pairs_to_remove:
-            self.symbol_pairs.remove(pair)
-            if pair in self.correlations:
-                del self.correlations[pair]
-
     def start_pubsub_listener(self):
+        """Listen for Redis pubsub messages with reconnection logic."""
         retries = 0
 
         while True:
@@ -356,14 +433,14 @@ class IncrementalCorrelationCalculator:
                 time.sleep(5)
 
     def run(self):
-        """
-        Calculate and cache large correlations for all combinations of correlation types,
-        timeframes, and data types, and listen for Redis pubsub messages with reconnection logic.
-        """
-
+        """Main entry point to start the correlation calculator."""
         self.hours_options = list(tf_options["correlation"].values())
         self.symbols = get_exchange_symbols()
-        self.symbol_pairs = list(combinations(self.symbols, 2))
+
+        # Build symbol index mappings
+        for i, symbol in enumerate(self.symbols):
+            self.symbol_to_idx[symbol] = i
+            self.idx_to_symbol[i] = symbol
 
         print("Starting pubsub listener thread...")
         pubsub_thread = threading.Thread(target=self.start_pubsub_listener)
@@ -371,24 +448,23 @@ class IncrementalCorrelationCalculator:
 
         time.sleep(2)
 
-        print("Starting correlation objects initialization...")
+        print("Starting correlation trackers initialization...")
         start_time = time.time()
-        self.initialize_correlation_objects()
+        self.initialize_correlation_trackers()
         elapsed = time.time() - start_time
-        print(f"Correlation objects initialization completed in {elapsed:.2f}s")
+        print(f"Correlation trackers initialization completed in {elapsed:.2f}s")
 
         self.initialization_complete = True
         print("Initialization complete - now processing any pending messages")
 
-        print("Clearing sum cache to free memory...")
-        self.sum_cache.clear()
-        print("Sum cache cleared")
-
-        self.process_pending_messages()
-
+        # self.process_pending_messages() // TODO: Uncomment
         print("Ready for real-time message processing")
 
         try:
             pubsub_thread.join()
         except KeyboardInterrupt:
             print("Shutting down...")
+
+
+# For backwards compatibility
+IncrementalCorrelationCalculator = MatrixCorrelationCalculator

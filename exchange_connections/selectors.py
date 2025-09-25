@@ -1,11 +1,10 @@
-import numpy as np
 from django.utils import timezone
 from datetime import timedelta
-from typing import Optional
+from typing import Optional, List
 from django.db import connection
 from collections import defaultdict
 
-from exchange_connections.models import Kline1m
+from exchange_connections.models import Kline1m, Exchange, Symbol
 from exchange_connections.constants import KLINE_FIELD_MAP
 from core.redis_config import get_redis_connection
 
@@ -23,13 +22,19 @@ def get_historical_kline_data(hours, symbols):
     end_time = timezone.now()
     start_time = end_time - timedelta(hours=hours)
 
+    exchange = Exchange.objects.get(name="binance")
+    symbol_ids = Symbol.objects.filter(name__in=symbols, exchange=exchange).values_list(
+        "id", flat=True
+    )
+
     klines = (
         Kline1m.objects.filter(
-            symbol__name__in=symbols,
+            exchange=exchange,
+            symbol_id__in=symbol_ids,
             start_time__gte=start_time.astimezone(timezone.utc),
             start_time__lte=end_time.astimezone(timezone.utc),
-            exchange__name="binance",
         )
+        .select_related("symbol")
         .values(
             "symbol__name", "start_time", "close", "base_volume", "number_of_trades"
         )
@@ -39,8 +44,11 @@ def get_historical_kline_data(hours, symbols):
     klines_data = defaultdict(lambda: {field: [] for field in KLINE_FIELD_MAP.keys()})
 
     for item in klines:
-        for data_type, field_name in KLINE_FIELD_MAP.items():
-            klines_data[item["symbol__name"]][data_type].append(float(item[field_name]))
+        symbol_name = item["symbol__name"]
+        symbol_data = klines_data[symbol_name]
+        symbol_data["price"].append(float(item["close"]))
+        symbol_data["volume"].append(float(item["base_volume"]))
+        symbol_data["trades"].append(float(item["number_of_trades"]))
 
     return dict(klines_data)
 
