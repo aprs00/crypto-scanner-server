@@ -4,7 +4,6 @@ import time
 import threading
 import gc
 import numpy as np
-from scipy.sparse import dok_matrix
 from typing import Dict, List, Optional
 
 from exchange_connections.constants import KLINE_FIELD_MAP
@@ -12,7 +11,6 @@ from exchange_connections.selectors import (
     get_exchange_symbols,
     get_historical_kline_data,
     get_symbol_kline_data,
-    get_symbol_kline_data_batch,
 )
 from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
@@ -20,11 +18,11 @@ from core.redis_config import get_redis_connection
 
 class MatrixCorrelationTracker:
     """
-    Tracks correlation statistics using matrices instead of individual objects.
+    Optimized correlation tracker using dense NumPy arrays.
     For N symbols, stores:
     - N values for sum_x, sum_xx (per symbol)
-    - N×N sparse matrix for sum_xy (only upper triangle stored)
-    - Single count value (shared across all pairs in same timeframe)
+    - N×N dense matrix for sum_xy (upper triangle used)
+    - Single count value
     """
 
     def __init__(self, window_size: int, n_symbols: int):
@@ -32,89 +30,58 @@ class MatrixCorrelationTracker:
         self.n_symbols = n_symbols
         self.count = 0
 
-        # Per-symbol statistics (each symbol has its own sum and sum of squares)
+        # Per-symbol statistics
         self.sum_x = np.zeros(n_symbols, dtype=np.float64)
         self.sum_xx = np.zeros(n_symbols, dtype=np.float64)
 
-        self.sum_xy = dok_matrix((n_symbols, n_symbols), dtype=np.float64)
+        # Dense sum_xy matrix
+        self.sum_xy = np.zeros((n_symbols, n_symbols), dtype=np.float64)
+
+        # Precompute upper-triangle indices once
+        self.upper_i, self.upper_j = np.triu_indices(n_symbols, k=1)
 
     def initialize_from_data(self, symbol_data: Dict[int, np.ndarray]):
         """Initialize statistics from historical data."""
-        # Find minimum length across all symbols
         min_length = min(len(data) for data in symbol_data.values())
         if min_length == 0:
             return
 
-        # Truncate all data to same length
         for idx, data in symbol_data.items():
             data = data[:min_length]
             self.sum_x[idx] = np.sum(data)
             self.sum_xx[idx] = np.sum(data * data)
 
-        # Compute pairwise sum_xy (only upper triangle)
-        for i in symbol_data:
-            data_i = symbol_data[i][:min_length]
-            for j in symbol_data:
-                if j > i:  # Only compute upper triangle
-                    data_j = symbol_data[j][:min_length]
-                    self.sum_xy[i, j] = np.sum(data_i * data_j)
+        arr = np.vstack([symbol_data[i][:min_length] for i in range(self.n_symbols)])
+        self.sum_xy = arr @ arr.T
 
         self.count = min_length
 
     def update(self, new_values: np.ndarray, old_values: Optional[np.ndarray] = None):
-        """Update statistics with new values (and remove old if at window size)."""
+        """Update statistics with new values (vectorized)."""
         # Remove old values if window is full
         if self.count >= self.window_size and old_values is not None:
-            valid_mask = ~np.isnan(old_values)
-            valid_indices = np.where(valid_mask)[0]
+            mask = ~np.isnan(old_values)
+            if np.any(mask):
+                vals = old_values[mask]
 
-            if len(valid_indices) > 0:
-                # Update single-symbol statistics
-                self.sum_x[valid_mask] -= old_values[valid_mask]
-                self.sum_xx[valid_mask] -= old_values[valid_mask] ** 2
+                self.sum_x[mask] -= vals
+                self.sum_xx[mask] -= vals * vals
 
-                # Vectorized update of sum_xy using meshgrid
-                # Get all pairs of valid indices where j > i
-                i_indices, j_indices = np.meshgrid(
-                    valid_indices, valid_indices, indexing="ij"
-                )
-                mask_upper = j_indices > i_indices
-
-                # Extract valid pairs
-                i_vals = i_indices[mask_upper]
-                j_vals = j_indices[mask_upper]
-
-                # Compute products and update sparse matrix in batch
-                products = old_values[i_vals] * old_values[j_vals]
-                for i, j, prod in zip(i_vals, j_vals, products):
-                    self.sum_xy[i, j] -= prod
+                self.sum_xy[np.ix_(mask, mask)] -= np.outer(vals, vals)
 
             self.count -= 1
 
         # Add new values
-        valid_mask = ~np.isnan(new_values)
-        valid_indices = np.where(valid_mask)[0]
+        mask = ~np.isnan(new_values)
+        if np.any(mask):
+            vals = new_values[mask]
 
-        if len(valid_indices) > 0:
-            # Update single-symbol statistics
-            self.sum_x[valid_mask] += new_values[valid_mask]
-            self.sum_xx[valid_mask] += new_values[valid_mask] ** 2
+            # Per-symbol
+            self.sum_x[mask] += vals
+            self.sum_xx[mask] += vals * vals
 
-            # Vectorized update of sum_xy using meshgrid
-            # Get all pairs of valid indices where j > i
-            i_indices, j_indices = np.meshgrid(
-                valid_indices, valid_indices, indexing="ij"
-            )
-            mask_upper = j_indices > i_indices
-
-            # Extract valid pairs
-            i_vals = i_indices[mask_upper]
-            j_vals = j_indices[mask_upper]
-
-            # Compute products and update sparse matrix in batch
-            products = new_values[i_vals] * new_values[j_vals]
-            for i, j, prod in zip(i_vals, j_vals, products):
-                self.sum_xy[i, j] += prod
+            # Pairwise update
+            self.sum_xy[np.ix_(mask, mask)] += np.outer(vals, vals)
 
         self.count = min(self.count + 1, self.window_size)
 
@@ -122,29 +89,21 @@ class MatrixCorrelationTracker:
         """Compute correlation between symbols i and j."""
         if self.count == 0:
             return 0.0
-
-        # Get sum_xy (handle both triangle cases)
-        if i < j:
-            sum_xy = self.sum_xy[i, j]
-        elif i > j:
-            sum_xy = self.sum_xy[j, i]
-        else:  # i == j
+        if i == j:
             return 1.0
 
-        # Compute variance components
+        sum_xy = self.sum_xy[i, j]
         var_x = self.count * self.sum_xx[i] - self.sum_x[i] ** 2
         var_y = self.count * self.sum_xx[j] - self.sum_x[j] ** 2
 
         if var_x <= 0 or var_y <= 0:
             return 0.0
 
-        # Compute correlation
         numerator = self.count * sum_xy - self.sum_x[i] * self.sum_x[j]
         denominator = np.sqrt(var_x * var_y)
 
         if denominator == 0:
             return 0.0
-
         return float(numerator / denominator)
 
     def get_correlation_matrix_upper(self, symbol_indices: List[int]) -> List[float]:
@@ -154,9 +113,7 @@ class MatrixCorrelationTracker:
 
         for i in range(n):
             for j in range(i + 1, n):
-                idx_i = symbol_indices[i]
-                idx_j = symbol_indices[j]
-                corr = self.get_correlation(idx_i, idx_j)
+                corr = self.get_correlation(symbol_indices[i], symbol_indices[j])
                 results.append(round(corr, 2))
 
         return results
@@ -277,13 +234,6 @@ class MatrixCorrelationCalculator:
 
     def update_and_cache_incremental_correlations(self):
         """Update correlations and cache to Redis."""
-        batch_results = get_symbol_kline_data_batch(
-            symbols=self.symbols,
-            exchange="binance",
-            contract_type="perpetual",
-            hours_list=self.hours_options,
-        )
-
         newest_values = get_symbol_kline_data(
             symbols=self.symbols, exchange="binance", contract_type="perpetual"
         )
@@ -291,7 +241,15 @@ class MatrixCorrelationCalculator:
         set_pipeline = self.r.pipeline()
 
         for hours in self.hours_options:
-            oldest_values = batch_results.get(hours, {})
+            start_oldest = time.time()
+            oldest_values = get_symbol_kline_data(
+                symbols=self.symbols,
+                exchange="binance",
+                contract_type="perpetual",
+                hours=hours,
+            )
+            oldest_time = time.time() - start_oldest
+            print(f"Getting oldest_values for {hours}h took {oldest_time:.3f}s")
 
             self.update_correlations(
                 hours=hours, newest_values=newest_values, oldest_values=oldest_values
@@ -375,43 +333,20 @@ class MatrixCorrelationCalculator:
 
         idx_to_remove = self.symbol_to_idx[symbol_name]
 
+        # Remove from symbol lists/mappings
         self.symbols.remove(symbol_name)
+        self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
+        self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
 
-        self.symbol_to_idx = {}
-        self.idx_to_symbol = {}
-        for i, sym in enumerate(self.symbols):
-            self.symbol_to_idx[sym] = i
-            self.idx_to_symbol[i] = sym
+        # Shrink arrays by removing the row/column
+        self.sum_x = np.delete(self.sum_x, idx_to_remove)
+        self.sum_xx = np.delete(self.sum_xx, idx_to_remove)
+        self.sum_xy = np.delete(self.sum_xy, idx_to_remove, axis=0)
+        self.sum_xy = np.delete(self.sum_xy, idx_to_remove, axis=1)
 
-        # Update all trackers
-        for tracker in self.trackers.values():
-            # Create new arrays without the removed symbol
-            mask = np.ones(tracker.n_symbols, dtype=bool)
-            mask[idx_to_remove] = False
+        self.n_symbols = len(self.symbols)
 
-            tracker.sum_x = tracker.sum_x[mask]
-            tracker.sum_xx = tracker.sum_xx[mask]
-            tracker.n_symbols = len(self.symbols)
-
-            # Recreate sparse matrix without removed symbol
-            new_sum_xy = dok_matrix(
-                (tracker.n_symbols, tracker.n_symbols), dtype=np.float64
-            )
-
-            old_to_new = {}
-            new_idx = 0
-            for old_idx in range(len(mask)):
-                if mask[old_idx]:
-                    old_to_new[old_idx] = new_idx
-                    new_idx += 1
-
-            for (i, j), val in tracker.sum_xy.items():
-                if i != idx_to_remove and j != idx_to_remove:
-                    new_i = old_to_new[i]
-                    new_j = old_to_new[j]
-                    new_sum_xy[new_i, new_j] = val
-
-            tracker.sum_xy = new_sum_xy
+        self.upper_i, self.upper_j = np.triu_indices(self.n_symbols, k=1)
 
     def process_pending_messages(self):
         """Process any messages that were queued during initialization."""
@@ -522,7 +457,7 @@ class MatrixCorrelationCalculator:
         self.initialization_complete = True
         print("Initialization complete - now processing any pending messages")
 
-        # self.process_pending_messages()
+        # self.process_pending_messages() // TODO: Uncomment
         print("Ready for real-time message processing")
 
         try:
