@@ -123,6 +123,7 @@ class MatrixCorrelationCalculator:
     def __init__(self):
         self.r = get_redis_connection()
         self.print_lock = threading.Lock()
+        self.correlation_lock = threading.RLock()
         self.symbols = []
         self.symbol_to_idx = {}
         self.idx_to_symbol = {}
@@ -134,68 +135,70 @@ class MatrixCorrelationCalculator:
 
     def initialize_correlation_trackers(self):
         """Initialize correlation trackers with optimized data fetching."""
-        n_symbols = len(self.symbols)
-        print(
-            f"Initializing correlations for {n_symbols} symbols ({n_symbols*(n_symbols-1)//2:,} pairs)"
-        )
+        with self.correlation_lock:
+            n_symbols = len(self.symbols)
+            print(
+                f"Initializing correlations for {n_symbols} symbols ({n_symbols*(n_symbols-1)//2:,} pairs)"
+            )
 
-        sorted_hours = sorted(self.hours_options, reverse=True)
-        max_hours = sorted_hours[0]
+            sorted_hours = sorted(self.hours_options, reverse=True)
+            max_hours = sorted_hours[0]
 
-        print(f"Fetching data for largest timeframe: {max_hours}h...")
-        start_fetch = time.time()
+            print(f"Fetching data for largest timeframe: {max_hours}h...")
+            start_fetch = time.time()
 
-        max_symbols_data = get_historical_kline_data(
-            hours=max_hours, symbols=self.symbols
-        )
+            max_symbols_data = get_historical_kline_data(
+                hours=max_hours, symbols=self.symbols
+            )
 
-        fetch_time = time.time() - start_fetch
-        print(f"  Data fetch completed in {fetch_time:.2f}s")
+            fetch_time = time.time() - start_fetch
+            print(f"  Data fetch completed in {fetch_time:.2f}s")
 
-        for hours in sorted_hours:
-            print(f"Processing timeframe: {hours}h...")
+            for hours in sorted_hours:
+                print(f"Processing timeframe: {hours}h...")
 
-            window_size = hours * 60
+                window_size = hours * 60
 
-            if hours == max_hours:
-                symbols_data = max_symbols_data
-            else:
-                symbols_data = {}
-                for symbol in self.symbols:
-                    if symbol in max_symbols_data:
-                        symbols_data[symbol] = {}
-                        for data_type, data in max_symbols_data[symbol].items():
-                            symbols_data[symbol][data_type] = (
-                                data[-window_size:]
-                                if len(data) >= window_size
-                                else data
+                if hours == max_hours:
+                    symbols_data = max_symbols_data
+                else:
+                    symbols_data = {}
+                    for symbol in self.symbols:
+                        if symbol in max_symbols_data:
+                            symbols_data[symbol] = {}
+                            for data_type, data in max_symbols_data[symbol].items():
+                                symbols_data[symbol][data_type] = (
+                                    data[-window_size:]
+                                    if len(data) >= window_size
+                                    else data
+                                )
+
+                for data_type in KLINE_FIELD_MAP.keys():
+                    tracker = MatrixCorrelationTracker(window_size, n_symbols)
+
+                    indexed_data = {}
+                    for symbol in self.symbols:
+                        if symbol in symbols_data and data_type in symbols_data[symbol]:
+                            idx = self.symbol_to_idx[symbol]
+                            data = np.asarray(
+                                symbols_data[symbol][data_type], dtype=np.float64
                             )
+                            indexed_data[idx] = data
 
-            for data_type in KLINE_FIELD_MAP.keys():
-                tracker = MatrixCorrelationTracker(window_size, n_symbols)
+                    if indexed_data:
+                        tracker.initialize_from_data(indexed_data)
 
-                indexed_data = {}
-                for symbol in self.symbols:
-                    if symbol in symbols_data and data_type in symbols_data[symbol]:
-                        idx = self.symbol_to_idx[symbol]
-                        data = np.asarray(
-                            symbols_data[symbol][data_type], dtype=np.float64
-                        )
-                        indexed_data[idx] = data
+                    self.trackers[(hours, data_type)] = tracker
 
-                if indexed_data:
-                    tracker.initialize_from_data(indexed_data)
+                print(f"  Timeframe {hours}h completed\n")
 
-                self.trackers[(hours, data_type)] = tracker
-
-            print(f"  Timeframe {hours}h completed\n")
-
-        del max_symbols_data
-        gc.collect()
-        print("All timeframes initialization completed\n")
+            del max_symbols_data
+            gc.collect()
+            print("All timeframes initialization completed\n")
 
     def update_correlations(self, hours: int, newest_values: dict, oldest_values: dict):
         """Update correlation trackers with new data."""
+        # NOTE: This method should only be called from within correlation_lock context
         window_size = hours * 60
 
         for data_type in KLINE_FIELD_MAP.keys():
@@ -234,119 +237,163 @@ class MatrixCorrelationCalculator:
 
     def update_and_cache_incremental_correlations(self):
         """Update correlations and cache to Redis."""
-        newest_values = get_symbol_kline_data(
-            symbols=self.symbols, exchange="binance", contract_type="perpetual"
-        )
-
-        set_pipeline = self.r.pipeline()
-
-        for hours in self.hours_options:
-            start_oldest = time.time()
-            oldest_values = get_symbol_kline_data(
-                symbols=self.symbols,
-                exchange="binance",
-                contract_type="perpetual",
-                hours=hours,
-            )
-            oldest_time = time.time() - start_oldest
-            print(f"Getting oldest_values for {hours}h took {oldest_time:.3f}s")
-
-            self.update_correlations(
-                hours=hours, newest_values=newest_values, oldest_values=oldest_values
+        with self.correlation_lock:
+            newest_values = get_symbol_kline_data(
+                symbols=self.symbols, exchange="binance", contract_type="perpetual"
             )
 
-            for data_type in KLINE_FIELD_MAP.keys():
-                correlation_matrix = self.create_correlation_matrix(hours, data_type)
+            set_pipeline = self.r.pipeline()
 
-                set_pipeline.execute_command(
-                    "SET",
-                    f"correlations:{data_type}:{hours}:binance:perpetual",
-                    msgpack.packb(correlation_matrix),
+            for hours in self.hours_options:
+                start_oldest = time.time()
+                oldest_values = get_symbol_kline_data(
+                    symbols=self.symbols,
+                    exchange="binance",
+                    contract_type="perpetual",
+                    hours=hours,
+                )
+                oldest_time = time.time() - start_oldest
+                print(f"Getting oldest_values for {hours}h took {oldest_time:.3f}s")
+
+                self.update_correlations(
+                    hours=hours,
+                    newest_values=newest_values,
+                    oldest_values=oldest_values,
                 )
 
-        set_pipeline.execute()
+                for data_type in KLINE_FIELD_MAP.keys():
+                    correlation_matrix = self.create_correlation_matrix(
+                        hours, data_type
+                    )
+
+                    set_pipeline.execute_command(
+                        "SET",
+                        f"correlations:{data_type}:{hours}:binance:perpetual",
+                        msgpack.packb(correlation_matrix),
+                    )
+
+            set_pipeline.execute()
 
     def add_new_symbol(self, symbol_name: str):
         """Add a new symbol to correlation tracking."""
-        if symbol_name in self.symbols:
-            print(f"Symbol {symbol_name} already being tracked in correlations")
-            return
+        with self.correlation_lock:
+            if symbol_name in self.symbols:
+                print(f"Symbol {symbol_name} already being tracked in correlations")
+                return
 
-        print(f"Adding {symbol_name} to correlation tracking")
+            print(f"Adding {symbol_name} to correlation tracking")
 
-        new_idx = len(self.symbols)
-        self.symbols.append(symbol_name)
-        self.symbol_to_idx[symbol_name] = new_idx
-        self.idx_to_symbol[new_idx] = symbol_name
+            new_idx = len(self.symbols)
+            self.symbols = get_exchange_symbols()
+            self.symbol_to_idx[symbol_name] = new_idx
+            self.idx_to_symbol[new_idx] = symbol_name
 
-        # Extend all trackers
-        for (hours, data_type), tracker in self.trackers.items():
-            new_sum_x = np.zeros(len(self.symbols), dtype=np.float64)
-            new_sum_xx = np.zeros(len(self.symbols), dtype=np.float64)
+            max_hours = max(self.hours_options)
+            symbol_data = get_historical_kline_data(
+                hours=max_hours, symbols=[symbol_name]
+            )
 
-            new_sum_x[:new_idx] = tracker.sum_x
-            new_sum_xx[:new_idx] = tracker.sum_xx
+            for (hours, data_type), tracker in self.trackers.items():
+                new_sum_x = np.zeros(len(self.symbols), dtype=np.float64)
+                new_sum_xx = np.zeros(len(self.symbols), dtype=np.float64)
 
-            tracker.sum_x = new_sum_x
-            tracker.sum_xx = new_sum_xx
-            tracker.n_symbols = len(self.symbols)
+                new_sum_x[:new_idx] = tracker.sum_x
+                new_sum_xx[:new_idx] = tracker.sum_xx
 
-            # Sparse matrix automatically handles new dimensions
+                tracker.sum_x = new_sum_x
+                tracker.sum_xx = new_sum_xx
 
-            # Initialize new symbol's statistics from historical data
-            symbol_data = get_historical_kline_data(hours=hours, symbols=[symbol_name])
-            if symbol_name in symbol_data and data_type in symbol_data[symbol_name]:
-                data = np.asarray(symbol_data[symbol_name][data_type], dtype=np.float64)
-                data = data[: tracker.count]  # Match existing data length
+                new_sum_xy = np.zeros(
+                    (len(self.symbols), len(self.symbols)), dtype=np.float64
+                )
+                new_sum_xy[:new_idx, :new_idx] = tracker.sum_xy
+                tracker.sum_xy = new_sum_xy
 
-                if len(data) == tracker.count:
-                    tracker.sum_x[new_idx] = np.sum(data)
-                    tracker.sum_xx[new_idx] = np.sum(data * data)
+                tracker.n_symbols = len(self.symbols)
+                tracker.upper_i, tracker.upper_j = np.triu_indices(
+                    tracker.n_symbols, k=1
+                )
 
-                    # Compute sum_xy with all existing symbols
-                    for existing_idx in range(new_idx):
-                        existing_symbol = self.idx_to_symbol[existing_idx]
-                        existing_data = get_historical_kline_data(
-                            hours=hours, symbols=[existing_symbol]
-                        )
-                        if (
-                            existing_symbol in existing_data
-                            and data_type in existing_data[existing_symbol]
-                        ):
-                            other_data = np.asarray(
-                                existing_data[existing_symbol][data_type][
-                                    : tracker.count
-                                ],
-                                dtype=np.float64,
-                            )
-                            tracker.sum_xy[existing_idx, new_idx] = np.sum(
-                                other_data * data
-                            )
+                if symbol_name in symbol_data and data_type in symbol_data[symbol_name]:
+                    data = np.asarray(
+                        symbol_data[symbol_name][data_type], dtype=np.float64
+                    )
+
+                    window_size = hours * 60
+                    if len(data) > window_size:
+                        data = data[-window_size:]
+
+                    if tracker.count > 0 and len(data) >= tracker.count:
+                        data = data[-tracker.count :]
+
+                        if len(data) == tracker.count:
+                            tracker.sum_x[new_idx] = np.sum(data)
+                            tracker.sum_xx[new_idx] = np.sum(data * data)
+
+                            tracker.sum_xy[new_idx, new_idx] = np.sum(data * data)
+
+                            for existing_idx in range(new_idx):
+                                existing_symbol = self.idx_to_symbol[existing_idx]
+
+                                existing_data = get_historical_kline_data(
+                                    hours=hours, symbols=[existing_symbol]
+                                )
+
+                                if (
+                                    existing_symbol in existing_data
+                                    and data_type in existing_data[existing_symbol]
+                                ):
+
+                                    other_data = np.asarray(
+                                        existing_data[existing_symbol][data_type][
+                                            -tracker.count :
+                                        ],
+                                        dtype=np.float64,
+                                    )
+
+                                    if len(other_data) == len(data):
+                                        cross_product = np.sum(other_data * data)
+                                        tracker.sum_xy[existing_idx, new_idx] = (
+                                            cross_product
+                                        )
+                                        tracker.sum_xy[new_idx, existing_idx] = (
+                                            cross_product
+                                        )
+
+            print(f"Successfully added {symbol_name} to {len(self.trackers)} trackers")
 
     def remove_symbol(self, symbol_name: str):
         """Remove a symbol from correlation tracking."""
-        if symbol_name not in self.symbols:
-            print(f"Symbol {symbol_name} not being tracked in correlations")
-            return
+        with self.correlation_lock:
+            if symbol_name not in self.symbols:
+                print(f"Symbol {symbol_name} not being tracked in correlations")
+                return
 
-        print(f"Removing symbol {symbol_name} from correlation tracking")
+            print(f"Removing symbol {symbol_name} from correlation tracking")
 
-        idx_to_remove = self.symbol_to_idx[symbol_name]
+            idx_to_remove = self.symbol_to_idx[symbol_name]
 
-        # Remove from symbol lists/mappings
-        self.symbols.remove(symbol_name)
-        self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
-        self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
+            self.symbols.remove(symbol_name)
 
-        # Shrink arrays by removing the row/column
-        self.sum_x = np.delete(self.sum_x, idx_to_remove)
-        self.sum_xx = np.delete(self.sum_xx, idx_to_remove)
-        self.sum_xy = np.delete(self.sum_xy, idx_to_remove, axis=0)
-        self.sum_xy = np.delete(self.sum_xy, idx_to_remove, axis=1)
+            self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
+            self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
 
-        self.n_symbols = len(self.symbols)
+            for tracker in self.trackers.values():
+                tracker.sum_x = np.delete(tracker.sum_x, idx_to_remove)
+                tracker.sum_xx = np.delete(tracker.sum_xx, idx_to_remove)
 
-        self.upper_i, self.upper_j = np.triu_indices(self.n_symbols, k=1)
+                tracker.sum_xy = np.delete(tracker.sum_xy, idx_to_remove, axis=0)
+                tracker.sum_xy = np.delete(tracker.sum_xy, idx_to_remove, axis=1)
+
+                tracker.n_symbols = len(self.symbols)
+                if tracker.n_symbols > 0:
+                    tracker.upper_i, tracker.upper_j = np.triu_indices(
+                        tracker.n_symbols, k=1
+                    )
+
+            print(
+                f"Successfully removed {symbol_name} from {len(self.trackers)} trackers"
+            )
 
     def process_pending_messages(self):
         """Process any messages that were queued during initialization."""

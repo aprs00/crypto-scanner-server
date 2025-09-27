@@ -99,7 +99,7 @@ class KlinesSocketManager:
         if removed_symbols:
             print(f"Symbols removed from Binance: {removed_symbols}")
             self.handle_delisted_symbols(removed_symbols)
-            return True  # TODO: potentially remove this since it is not required to reconnect on delist
+            return True
 
         if added_symbols:
             print(f"New symbols added to Binance: {added_symbols}")
