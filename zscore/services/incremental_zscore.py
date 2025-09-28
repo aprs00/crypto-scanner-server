@@ -16,6 +16,7 @@ from core.constants import RedisPubMessages, tf_options
 from zscore.models import ZScoreHistory
 from exchange_connections.models import Symbol, Exchange, ContractType
 from core.redis_config import get_redis_connection
+from core.notifications import notification_service
 
 r = get_redis_connection()
 
@@ -280,6 +281,8 @@ class ZScoreProcessor:
                                 redis_pipeline=pipeline
                             )
                             pipeline.execute()
+
+                            notification_service.send_zscore_update()
 
                         elif channel == RedisPubMessages.SYMBOL_ADDED.value:
                             data = message.get("data", b"").decode("utf-8")

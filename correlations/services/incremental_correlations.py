@@ -14,6 +14,7 @@ from exchange_connections.selectors import (
 )
 from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
+from core.notifications import notification_service
 
 
 class MatrixCorrelationTracker:
@@ -274,19 +275,24 @@ class MatrixCorrelationCalculator:
 
             set_pipeline.execute()
 
+            notification_service.send_correlation_update()
+
     def add_new_symbol(self, symbol_name: str):
         """Add a new symbol to correlation tracking."""
         with self.correlation_lock:
+            start_time = time.time()
             if symbol_name in self.symbols:
                 print(f"Symbol {symbol_name} already being tracked in correlations")
                 return
 
             print(f"Adding {symbol_name} to correlation tracking")
 
-            new_idx = len(self.symbols)
             self.symbols = get_exchange_symbols()
-            self.symbol_to_idx[symbol_name] = new_idx
-            self.idx_to_symbol[new_idx] = symbol_name
+
+            self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
+            self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
+
+            new_idx = self.symbol_to_idx[symbol_name]
 
             max_hours = max(self.hours_options)
             symbol_data = get_historical_kline_data(
@@ -294,73 +300,62 @@ class MatrixCorrelationCalculator:
             )
 
             for (hours, data_type), tracker in self.trackers.items():
-                new_sum_x = np.zeros(len(self.symbols), dtype=np.float64)
-                new_sum_xx = np.zeros(len(self.symbols), dtype=np.float64)
+                old_n = tracker.n_symbols
+                new_n = len(self.symbols)
 
-                new_sum_x[:new_idx] = tracker.sum_x
-                new_sum_xx[:new_idx] = tracker.sum_xx
-
+                new_sum_x = np.zeros(new_n, dtype=np.float64)
+                new_sum_xx = np.zeros(new_n, dtype=np.float64)
+                new_sum_x[:old_n] = tracker.sum_x
+                new_sum_xx[:old_n] = tracker.sum_xx
                 tracker.sum_x = new_sum_x
                 tracker.sum_xx = new_sum_xx
 
-                new_sum_xy = np.zeros(
-                    (len(self.symbols), len(self.symbols)), dtype=np.float64
-                )
-                new_sum_xy[:new_idx, :new_idx] = tracker.sum_xy
+                new_sum_xy = np.zeros((new_n, new_n), dtype=np.float64)
+                new_sum_xy[:old_n, :old_n] = tracker.sum_xy
                 tracker.sum_xy = new_sum_xy
 
-                tracker.n_symbols = len(self.symbols)
-                tracker.upper_i, tracker.upper_j = np.triu_indices(
-                    tracker.n_symbols, k=1
-                )
+                tracker.n_symbols = new_n
+                tracker.upper_i, tracker.upper_j = np.triu_indices(new_n, k=1)
 
                 if symbol_name in symbol_data and data_type in symbol_data[symbol_name]:
                     data = np.asarray(
                         symbol_data[symbol_name][data_type], dtype=np.float64
                     )
 
-                    window_size = hours * 60
-                    if len(data) > window_size:
-                        data = data[-window_size:]
+                    use_count = min(tracker.count, len(data))
+                    if use_count > 0:
+                        recent_data = data[-use_count:]
 
-                    if tracker.count > 0 and len(data) >= tracker.count:
-                        data = data[-tracker.count :]
+                        tracker.sum_x[new_idx] = np.sum(recent_data)
+                        tracker.sum_xx[new_idx] = np.sum(recent_data * recent_data)
+                        tracker.sum_xy[new_idx, new_idx] = np.sum(
+                            recent_data * recent_data
+                        )
 
-                        if len(data) == tracker.count:
-                            tracker.sum_x[new_idx] = np.sum(data)
-                            tracker.sum_xx[new_idx] = np.sum(data * data)
+                        for existing_idx in range(old_n):
+                            existing_symbol = self.idx_to_symbol[existing_idx]
 
-                            tracker.sum_xy[new_idx, new_idx] = np.sum(data * data)
+                            existing_hist = get_historical_kline_data(
+                                hours=hours, symbols=[existing_symbol]
+                            )
 
-                            for existing_idx in range(new_idx):
-                                existing_symbol = self.idx_to_symbol[existing_idx]
-
-                                existing_data = get_historical_kline_data(
-                                    hours=hours, symbols=[existing_symbol]
+                            if (
+                                existing_symbol in existing_hist
+                                and data_type in existing_hist[existing_symbol]
+                            ):
+                                other_data = np.asarray(
+                                    existing_hist[existing_symbol][data_type],
+                                    dtype=np.float64,
                                 )
-
-                                if (
-                                    existing_symbol in existing_data
-                                    and data_type in existing_data[existing_symbol]
-                                ):
-
-                                    other_data = np.asarray(
-                                        existing_data[existing_symbol][data_type][
-                                            -tracker.count :
-                                        ],
-                                        dtype=np.float64,
-                                    )
-
-                                    if len(other_data) == len(data):
-                                        cross_product = np.sum(other_data * data)
-                                        tracker.sum_xy[existing_idx, new_idx] = (
-                                            cross_product
-                                        )
-                                        tracker.sum_xy[new_idx, existing_idx] = (
-                                            cross_product
-                                        )
+                                if len(other_data) >= use_count:
+                                    aligned_other = other_data[-use_count:]
+                                    cross = np.sum(aligned_other * recent_data)
+                                    tracker.sum_xy[existing_idx, new_idx] = cross
+                                    tracker.sum_xy[new_idx, existing_idx] = cross
 
             print(f"Successfully added {symbol_name} to {len(self.trackers)} trackers")
+            elapsed = time.time() - start_time
+            print(f"Add symbol operation took {elapsed:.2f}s")
 
     def remove_symbol(self, symbol_name: str):
         """Remove a symbol from correlation tracking."""
