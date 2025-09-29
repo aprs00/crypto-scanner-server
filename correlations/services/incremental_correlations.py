@@ -287,6 +287,8 @@ class MatrixCorrelationCalculator:
 
             print(f"Adding {symbol_name} to correlation tracking")
 
+            old_symbols = self.symbols.copy()
+
             self.symbols = get_exchange_symbols()
 
             self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
@@ -295,9 +297,18 @@ class MatrixCorrelationCalculator:
             new_idx = self.symbol_to_idx[symbol_name]
 
             max_hours = max(self.hours_options)
-            symbol_data = get_historical_kline_data(
+            fetch_start = time.time()
+
+            new_symbol_data = get_historical_kline_data(
                 hours=max_hours, symbols=[symbol_name]
             )
+
+            all_existing_data = get_historical_kline_data(
+                hours=max_hours, symbols=old_symbols
+            )
+
+            fetch_time = time.time() - fetch_start
+            print(f"Data fetch completed in {fetch_time:.2f}s")
 
             for (hours, data_type), tracker in self.trackers.items():
                 old_n = tracker.n_symbols
@@ -317,12 +328,16 @@ class MatrixCorrelationCalculator:
                 tracker.n_symbols = new_n
                 tracker.upper_i, tracker.upper_j = np.triu_indices(new_n, k=1)
 
-                if symbol_name in symbol_data and data_type in symbol_data[symbol_name]:
+                if (
+                    symbol_name in new_symbol_data
+                    and data_type in new_symbol_data[symbol_name]
+                ):
                     data = np.asarray(
-                        symbol_data[symbol_name][data_type], dtype=np.float64
+                        new_symbol_data[symbol_name][data_type], dtype=np.float64
                     )
 
-                    use_count = min(tracker.count, len(data))
+                    window_size = hours * 60
+                    use_count = min(tracker.count, len(data), window_size)
                     if use_count > 0:
                         recent_data = data[-use_count:]
 
@@ -333,18 +348,14 @@ class MatrixCorrelationCalculator:
                         )
 
                         for existing_idx in range(old_n):
-                            existing_symbol = self.idx_to_symbol[existing_idx]
-
-                            existing_hist = get_historical_kline_data(
-                                hours=hours, symbols=[existing_symbol]
-                            )
+                            existing_symbol = old_symbols[existing_idx]
 
                             if (
-                                existing_symbol in existing_hist
-                                and data_type in existing_hist[existing_symbol]
+                                existing_symbol in all_existing_data
+                                and data_type in all_existing_data[existing_symbol]
                             ):
                                 other_data = np.asarray(
-                                    existing_hist[existing_symbol][data_type],
+                                    all_existing_data[existing_symbol][data_type],
                                     dtype=np.float64,
                                 )
                                 if len(other_data) >= use_count:
@@ -368,11 +379,12 @@ class MatrixCorrelationCalculator:
 
             idx_to_remove = self.symbol_to_idx[symbol_name]
 
-            self.symbols.remove(symbol_name)
+            self.symbols = get_exchange_symbols()
 
             self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
             self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
 
+            # Remove the symbol from all trackers
             for tracker in self.trackers.values():
                 tracker.sum_x = np.delete(tracker.sum_x, idx_to_remove)
                 tracker.sum_xx = np.delete(tracker.sum_xx, idx_to_remove)
