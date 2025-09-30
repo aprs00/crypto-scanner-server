@@ -4,7 +4,8 @@ import time
 import threading
 import gc
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
+from concurrent.futures import ThreadPoolExecutor
 
 from exchange_connections.constants import KLINE_FIELD_MAP
 from exchange_connections.selectors import (
@@ -43,7 +44,13 @@ class MatrixCorrelationTracker:
 
     def initialize_from_data(self, symbol_data: Dict[int, np.ndarray]):
         """Initialize statistics from historical data."""
+        if not symbol_data:
+            return
+
         min_length = min(len(data) for data in symbol_data.values())
+
+        # Only initialize if we have sufficient data points
+        # This prevents initialization with insufficient data that would corrupt correlations
         if min_length == 0:
             return
 
@@ -129,10 +136,16 @@ class MatrixCorrelationCalculator:
         self.symbol_to_idx = {}
         self.idx_to_symbol = {}
         self.hours_options = []
+        self.min_hour = 1
         self.trackers = {}  # {(hours, data_type): MatrixCorrelationTracker}
         self.initialization_complete = False
         self.pending_message_count = 0
         self.pending_messages_lock = threading.Lock()
+        self.pending_symbols: Set[str] = set()
+        self.pending_symbols_lock = threading.Lock()
+        self.retry_scheduler = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="symbol-retry"
+        )
 
     def initialize_correlation_trackers(self):
         """Initialize correlation trackers with optimized data fetching."""
@@ -199,7 +212,6 @@ class MatrixCorrelationCalculator:
 
     def update_correlations(self, hours: int, newest_values: dict, oldest_values: dict):
         """Update correlation trackers with new data."""
-        # NOTE: This method should only be called from within correlation_lock context
         window_size = hours * 60
 
         for data_type in KLINE_FIELD_MAP.keys():
@@ -213,6 +225,9 @@ class MatrixCorrelationCalculator:
             old_vals = np.full(n_symbols, np.nan, dtype=np.float64)
 
             for symbol in self.symbols:
+                if symbol not in self.symbol_to_idx:
+                    continue
+
                 idx = self.symbol_to_idx[symbol]
 
                 if symbol in newest_values and data_type in newest_values[symbol]:
@@ -277,7 +292,33 @@ class MatrixCorrelationCalculator:
 
             notification_service.send_correlation_update()
 
-    def add_new_symbol(self, symbol_name: str):
+    def schedule_symbol_retry(self, symbol_name: str):
+        """Schedule a retry to add symbol after delay to allow data accumulation."""
+        with self.pending_symbols_lock:
+            if symbol_name in self.pending_symbols:
+                print(f"Symbol {symbol_name} already scheduled for retry")
+                return
+
+            self.pending_symbols.add(symbol_name)
+            print(f"Scheduling retry for {symbol_name} in {self.min_hour} hour(s)")
+
+        def retry_add_symbol():
+            """Background task to retry adding symbol after delay."""
+            retry_delay_seconds = self.min_hour * 3600
+            time.sleep(retry_delay_seconds)
+
+            with self.pending_symbols_lock:
+                if symbol_name in self.pending_symbols:
+                    self.pending_symbols.remove(symbol_name)
+
+            print(
+                f"Retrying to add symbol {symbol_name} after {self.min_hour} hour delay"
+            )
+            self.add_new_symbol(symbol_name, is_retry=True)
+
+        self.retry_scheduler.submit(retry_add_symbol)
+
+    def add_new_symbol(self, symbol_name: str, is_retry: bool = False):
         """Add a new symbol to correlation tracking."""
         with self.correlation_lock:
             start_time = time.time()
@@ -285,7 +326,23 @@ class MatrixCorrelationCalculator:
                 print(f"Symbol {symbol_name} already being tracked in correlations")
                 return
 
-            print(f"Adding {symbol_name} to correlation tracking")
+            with self.pending_symbols_lock:
+                if symbol_name in self.pending_symbols:
+                    print(
+                        f"Symbol {symbol_name} is already pending retry, skipping duplicate add"
+                    )
+                    return
+
+            if not is_retry:
+                print(
+                    f"Adding {symbol_name} to correlation tracking - scheduling retry in {self.min_hour} hour(s)"
+                )
+                self.schedule_symbol_retry(symbol_name)
+                return
+
+            print(
+                f"Retry: Adding {symbol_name} to correlation tracking with accumulated data"
+            )
 
             old_symbols = self.symbols.copy()
 
@@ -296,15 +353,14 @@ class MatrixCorrelationCalculator:
 
             new_idx = self.symbol_to_idx[symbol_name]
 
-            max_hours = max(self.hours_options)
             fetch_start = time.time()
 
             new_symbol_data = get_historical_kline_data(
-                hours=max_hours, symbols=[symbol_name]
+                hours=self.min_hour, symbols=[symbol_name]
             )
 
             all_existing_data = get_historical_kline_data(
-                hours=max_hours, symbols=old_symbols
+                hours=self.min_hour, symbols=old_symbols
             )
 
             fetch_time = time.time() - fetch_start
@@ -489,6 +545,7 @@ class MatrixCorrelationCalculator:
     def run(self):
         """Main entry point to start the correlation calculator."""
         self.hours_options = list(tf_options["correlation"].values())
+        self.min_hour = self.hours_options[0]
         self.symbols = get_exchange_symbols()
 
         # Build symbol index mappings
@@ -511,10 +568,14 @@ class MatrixCorrelationCalculator:
         self.initialization_complete = True
         print("Initialization complete - now processing any pending messages")
 
-        # self.process_pending_messages() // TODO: Uncomment
+        self.process_pending_messages()
         print("Ready for real-time message processing")
 
         try:
             pubsub_thread.join()
         except KeyboardInterrupt:
             print("Shutting down...")
+        finally:
+            print("Shutting down retry scheduler...")
+            self.retry_scheduler.shutdown(wait=False)
+            print("Retry scheduler shut down")
