@@ -5,6 +5,8 @@ import threading
 import gc
 import numpy as np
 from typing import Dict, List, Optional
+from django.utils import timezone
+from django.conf import settings
 
 from exchange_connections.constants import KLINE_FIELD_MAP
 from exchange_connections.selectors import (
@@ -15,6 +17,8 @@ from exchange_connections.selectors import (
 from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
+from correlations.models import CorrelationPairHistory
+from exchange_connections.models import Symbol, Exchange, ContractType
 
 
 class MatrixCorrelationTracker:
@@ -236,6 +240,54 @@ class MatrixCorrelationCalculator:
         symbol_indices = [self.symbol_to_idx[s] for s in self.symbols]
         return tracker.get_correlation_matrix_upper(symbol_indices)
 
+    def store_correlation_results(self, correlation_matrices: Dict):
+        """Store calculated correlations as individual pairs in DB"""
+        current_time = timezone.now()
+        print("STORING CORRELATIONS")
+
+        try:
+            exchange = Exchange.objects.get(name="binance")
+            contract_type = ContractType.objects.get(name="perpetual")
+            symbols_obj = Symbol.objects.filter(
+                exchange=exchange, contract_type=contract_type
+            )
+            symbol_map = {s.name: s for s in symbols_obj}
+        except (Exchange.DoesNotExist, ContractType.DoesNotExist) as e:
+            print("Exchange or ContractType not found:", e)
+            return
+
+        db_entries = []
+
+        for hours in correlation_matrices:
+            for data_type, matrix in correlation_matrices[hours].items():
+                # Unpack upper triangle correlation matrix into pairs
+                idx = 0
+                n = len(self.symbols)
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        symbol_a_name = self.symbols[i]
+                        symbol_b_name = self.symbols[j]
+
+                        if symbol_a_name in symbol_map and symbol_b_name in symbol_map:
+                            correlation_value = matrix[idx]
+
+                            db_entries.append(
+                                CorrelationPairHistory(
+                                    symbol_a=symbol_map[symbol_a_name],
+                                    symbol_b=symbol_map[symbol_b_name],
+                                    correlation_value=correlation_value,
+                                    data_type=data_type,
+                                    hours=hours,
+                                    calculated_at=current_time,
+                                )
+                            )
+
+                        idx += 1
+
+        if db_entries and settings.STORE_TO_DB:
+            CorrelationPairHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
+            print(f"Stored {len(db_entries)} correlation pairs to database")
+
     def update_and_cache_incremental_correlations(self):
         """Update correlations and cache to Redis."""
         with self.correlation_lock:
@@ -244,6 +296,7 @@ class MatrixCorrelationCalculator:
             )
 
             set_pipeline = self.r.pipeline()
+            correlation_matrices = {}
 
             for hours in self.hours_options:
                 start_oldest = time.time()
@@ -262,10 +315,14 @@ class MatrixCorrelationCalculator:
                     oldest_values=oldest_values,
                 )
 
+                correlation_matrices[hours] = {}
+
                 for data_type in KLINE_FIELD_MAP.keys():
                     correlation_matrix = self.create_correlation_matrix(
                         hours, data_type
                     )
+
+                    correlation_matrices[hours][data_type] = correlation_matrix
 
                     set_pipeline.execute_command(
                         "SET",
@@ -274,6 +331,9 @@ class MatrixCorrelationCalculator:
                     )
 
             set_pipeline.execute()
+
+            # Store correlations to database
+            self.store_correlation_results(correlation_matrices)
 
             notification_service.send_correlation_update()
 

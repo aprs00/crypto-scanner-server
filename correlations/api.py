@@ -5,6 +5,7 @@ import logging
 
 from core.redis_config import get_redis_connection
 from exchange_connections.selectors import get_exchange_symbols
+from correlations.selectors.correlations import get_correlation_pair_history
 
 logger = logging.getLogger(__name__)
 r = get_redis_connection()
@@ -46,3 +47,51 @@ def get_pearson_correlation(request):
     except Exception as e:
         logger.error(f"Error in get_pearson_correlation: {str(e)}")
         return JsonResponse({"error": "Internal server error"}, status=500)
+
+
+@csrf_exempt
+def get_correlation_history(request):
+    """Get historical correlation data for a specific symbol pair"""
+    if request.method != "GET":
+        return HttpResponse(status=405)
+
+    symbol_a = request.GET.get("symbol_a")
+    symbol_b = request.GET.get("symbol_b")
+    data_type = request.GET.get("type")
+    hours = request.GET.get("hours")
+    days_back = int(request.GET.get("days_back", 30))
+
+    if not all([symbol_a, symbol_b, data_type, hours]):
+        return JsonResponse(
+            {"error": "symbol_a, symbol_b, type, and hours parameters are required"},
+            status=400
+        )
+
+    try:
+        hours = int(hours)
+        history_data = get_correlation_pair_history(
+            symbol_a, symbol_b, data_type, hours, days_back
+        )
+
+        if not history_data:
+            logger.warning(f"No correlation history found for {symbol_a}-{symbol_b}")
+            return JsonResponse(
+                {"error": "No correlation history available for specified pair"},
+                status=404,
+            )
+
+        return JsonResponse({
+            "symbol_a": symbol_a,
+            "symbol_b": symbol_b,
+            "data_type": data_type,
+            "hours": hours,
+            "data": history_data
+        }, safe=False)
+
+    except ValueError:
+        return JsonResponse({"error": "Invalid hours or days_back parameter"}, status=400)
+    except Exception as e:
+        logger.error(f"Error in get_correlation_history: {str(e)}")
+        return JsonResponse({"error": "Internal server error"}, status=500)
+
+
