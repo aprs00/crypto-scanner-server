@@ -3,6 +3,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from core.constants import tf_options
 from exchange_connections.constants import tickers, KLINE_FIELD_MAP
+from exchange_connections.selectors import get_exchange_symbols
 
 
 @csrf_exempt
@@ -20,6 +21,7 @@ def bootstrap(request):
             k: {tk: str(tv) for tk, tv in v.items()} for k, v in tf_options.items()
         },
         "data_types": list(KLINE_FIELD_MAP.keys()),
+        "symbols": get_exchange_symbols(),
     }
 
     return JsonResponse(data, safe=False)
