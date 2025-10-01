@@ -2,7 +2,7 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
 from core.constants import tf_options
-from exchange_connections.constants import tickers, KLINE_FIELD_MAP
+from exchange_connections.constants import KLINE_FIELD_MAP
 from exchange_connections.selectors import get_exchange_symbols
 
 
@@ -16,7 +16,6 @@ def bootstrap(request):
         return HttpResponse(status=405)
 
     data = {
-        "tickers": tickers,
         "hours_options": {
             k: {tk: str(tv) for tk, tv in v.items()} for k, v in tf_options.items()
         },

@@ -10,13 +10,13 @@ This module provides a Django management command to populate 1-minute kline data
 ## Usage
 
 ### Arguments
-- `--ticker`: Specific ticker to populate (defaults to all tickers)
+- `--ticker`: Specific ticker to populate (defaults to all symbols)
 - `--start-date`: Start date in format `DD MMM YYYY` (defaults to 1 month ago)
 - `--end-date`: End date in format `DD MMM YYYY` (defaults to now)
 - `--batch-size`: Batch size for bulk insert (default: 40000)
 
 ## Example
-Populate klines for all tickers from 1 month ago to now:
+Populate klines for all symbols from 1 month ago to now:
 
 ```sh
 docker exec -it cs-exchange-connections python manage.py populate_klines

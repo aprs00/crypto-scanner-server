@@ -16,23 +16,3 @@ class BinanceContractStatus(Enum):
     PRE_SETTLE = "PRE_SETTLE"
     SETTLING = "SETTLING"
     CLOSE = "CLOSE"
-
-
-tickers = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "XRPUSDT",
-    "BNBUSDT",
-    "SOLUSDT",
-    "DOTUSDT",
-    "AVAXUSDT",
-    "ADAUSDT",
-    "WIFUSDT",
-    "SUIUSDT",
-    "DOGEUSDT",
-    "LTCUSDT",
-    "TRXUSDT",
-    "LINKUSDT",
-    "BCHUSDT",
-    "SHIBUSDT",
-]

@@ -21,7 +21,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--ticker",
             type=str,
-            help="Specific ticker to populate (defaults to all tickers)",
+            help="Specific ticker to populate (defaults to all symbols)",
         )
         parser.add_argument(
             "--start-date",
@@ -52,7 +52,7 @@ class Command(BaseCommand):
             self.stdout.write(f"Processing single ticker: {ticker}")
             populate_kline_1m(ticker, start_date, end_date, batch_size)
         else:
-            self.stdout.write(f"Processing all tickers from {start_date} to {end_date}")
+            self.stdout.write(f"Processing all symbols from {start_date} to {end_date}")
             populate_all_klines_1m(start_date, end_date, batch_size)
 
         self.stdout.write(
@@ -62,65 +62,65 @@ class Command(BaseCommand):
 
 def populate_all_klines_1m(start_date, end_date, batch):
     """
-    Populate 1-minute klines for all tickers from start_date to end_date using threading
+    Populate 1-minute klines for all symbols from start_date to end_date using threading
     """
     print(f"Starting 1m kline population from {start_date} to {end_date}")
 
-    tickers = get_exchange_symbols()
+    symbols = get_exchange_symbols()
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(
-                populate_kline_1m, ticker, start_date, end_date, batch
-            ): ticker
-            for ticker in tickers
+                populate_kline_1m, symbol, start_date, end_date, batch
+            ): symbol
+            for symbol in symbols
         }
 
         for future in as_completed(futures):
-            ticker = futures[future]
+            symbol = futures[future]
 
             try:
                 future.result()
             except Exception as exc:
-                print(f"{ticker} generated an exception: {exc}")
+                print(f"{symbol} generated an exception: {exc}")
 
-    print("Completed 1m kline population for all tickers")
+    print("Completed 1m kline population for all symbols")
 
 
-def populate_kline_1m(ticker, start_date, end_date, batch):
+def populate_kline_1m(symbol, start_date, end_date, batch):
     """
-    Populate 1-minute klines for a specific ticker with pagination
+    Populate 1-minute klines for a specific symbol with pagination
     """
-    print(f"Fetching 1m klines for {ticker} from {start_date} to {end_date}")
+    print(f"Fetching 1m klines for {symbol} from {start_date} to {end_date}")
 
     try:
-        all_klines = fetch_all_klines_paginated(ticker, start_date, end_date)
+        all_klines = fetch_all_klines_paginated(symbol, start_date, end_date)
         print(f"Total klines fetched: {len(all_klines)}")
 
         if not all_klines:
-            print(f"No klines found for {ticker}")
+            print(f"No klines found for {symbol}")
             return
 
-        kline_objects = build_models_from_rest(ticker, all_klines)
+        kline_objects = build_models_from_rest(symbol, all_klines)
 
         if kline_objects:
-            print(f"Created {len(kline_objects)} kline objects for {ticker}")
+            print(f"Created {len(kline_objects)} kline objects for {symbol}")
 
             try:
                 attempted = bulk_insert_klines(kline_objects, chunk_size=batch)
                 print(
-                    f"Inserted (attempted) {attempted} kline records for {ticker} (duplicates ignored)"
+                    f"Inserted (attempted) {attempted} kline records for {symbol} (duplicates ignored)"
                 )
             except IntegrityError as e:
-                print(f"IntegrityError bulk inserting {ticker}: {e}")
+                print(f"IntegrityError bulk inserting {symbol}: {e}")
 
-        print(f"Completed processing {ticker}")
+        print(f"Completed processing {symbol}")
 
     except Exception as e:
-        print(f"Error processing {ticker}: {str(e)}")
+        print(f"Error processing {symbol}: {str(e)}")
 
 
-def fetch_all_klines_paginated(ticker, start_date, end_date):
+def fetch_all_klines_paginated(symbol, start_date, end_date):
     """
     Fetch all klines by making multiple requests to handle the 1000 limit, with a max of 2400 requests per minute
     """
@@ -139,18 +139,18 @@ def fetch_all_klines_paginated(ticker, start_date, end_date):
     while current_start < final_end:
         try:
             print(
-                f"Fetching klines from {current_start.strftime('%d %b %Y %H:%M:%S')} for {ticker}"
+                f"Fetching klines from {current_start.strftime('%d %b %Y %H:%M:%S')} for {symbol}"
             )
 
             klines = client.futures_historical_klines(
-                ticker,
+                symbol,
                 Client.KLINE_INTERVAL_1MINUTE,
                 current_start.strftime("%d %b %Y %H:%M:%S"),
                 limit=1000,
             )
 
             if not klines:
-                print(f"No more klines available for {ticker}")
+                print(f"No more klines available for {symbol}")
                 break
 
             all_klines.extend(klines)
@@ -166,11 +166,11 @@ def fetch_all_klines_paginated(ticker, start_date, end_date):
                 break
 
         except Exception as e:
-            print(f"Error fetching klines for {ticker} at {current_start}: {str(e)}")
+            print(f"Error fetching klines for {symbol} at {current_start}: {str(e)}")
             time.sleep(1)
             break
 
-    print(f"Completed fetching klines for {ticker}. Total klines: {len(all_klines)}")
+    print(f"Completed fetching klines for {symbol}. Total klines: {len(all_klines)}")
     return all_klines
 
 
