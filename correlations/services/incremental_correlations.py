@@ -392,8 +392,8 @@ class MatrixCorrelationCalculator:
                         new_symbol_data[symbol_name][data_type], dtype=np.float64
                     )
 
-                    window_size = hours * 60
-                    use_count = min(tracker.count, len(data), window_size)
+                    use_count = min(tracker.count, len(data))
+
                     if use_count > 0:
                         recent_data = data[-use_count:]
 
