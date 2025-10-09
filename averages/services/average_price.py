@@ -1,11 +1,12 @@
 from django.http import JsonResponse
 from django.utils import timezone
 from datetime import timedelta
-import numpy as np
-from collections import defaultdict
 from enum import Enum
 
-from averages.selectors.average_price import get_average_symbol_data
+from averages.selectors.average_price import (
+    get_average_price_change_by_day,
+    get_average_price_change_by_hour,
+)
 
 
 class TimePeriod(Enum):
@@ -13,70 +14,25 @@ class TimePeriod(Enum):
     HOUR = "hour"
 
 
-def format_data(data):
-    formatted_data = []
-
-    for value in data.values():
-        item_style = {
-            "color": "#4393c3" if np.average(value) > 0 else "#a50f15",
-        }
-        formatted_data.append(
-            {"itemStyle": item_style, "value": round(np.average(value), 2)}
-        )
-
-    return formatted_data
-
-
-def calculate_dict_percentage(klines, group_by: TimePeriod):
-    """Calculate percentage change grouped by time period using numpy."""
-    if not klines:
-        return {}, []
-
-    grouped_periods = defaultdict(list)
-
-    for kline in klines:
-        match group_by:
-            case TimePeriod.DAY:
-                group_key = kline["start_time"].weekday()
-            case TimePeriod.HOUR:
-                group_key = kline["start_time"].hour
-
-        grouped_periods[group_key].append(kline)
-
-    calculated_data = {}
-    for group_key, period_klines in grouped_periods.items():
-        individual_periods = defaultdict(list)
-
-        for kline in period_klines:
-            match group_by:
-                case TimePeriod.DAY:
-                    period_key = kline["start_time"].date()
-                case TimePeriod.HOUR:
-                    period_key = kline["start_time"].replace(
-                        minute=0, second=0, microsecond=0
-                    )
-
-            individual_periods[period_key].append(kline)
-
-        percentages = []
-        for period_data in individual_periods.values():
-            first_open = period_data[0]["open"]
-            last_close = period_data[-1]["close"]
-            percentage = (last_close - first_open) / last_close * 100
-            percentages.append(percentage)
-
-        calculated_data[group_key] = percentages
-
-    match group_by:
+def format_data(data, time_period: TimePeriod):
+    """Format data for the frontend with colors based on positive/negative values."""
+    match time_period:
         case TimePeriod.DAY:
             time_labels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+            formatted_data = []
+            for i in range(7):
+                value = data.get(i, 0.0)
+                item_style = {"color": "#4393c3" if value > 0 else "#a50f15"}
+                formatted_data.append({"itemStyle": item_style, "value": round(value, 2)})
         case TimePeriod.HOUR:
-            calculated_data = dict(sorted(calculated_data.items()))
-            time_labels = [
-                f"{hour}:00" if hour >= 10 else f"0{hour}:00" for hour in range(24)
-            ]
+            time_labels = [f"{hour:02d}:00" for hour in range(24)]
+            formatted_data = []
+            for hour in range(24):
+                value = data.get(hour, 0.0)
+                item_style = {"color": "#4393c3" if value > 0 else "#a50f15"}
+                formatted_data.append({"itemStyle": item_style, "value": round(value, 2)})
 
-    return calculated_data, time_labels
+    return formatted_data, time_labels
 
 
 def average_price_change(hours, symbol, time_period: str):
@@ -89,24 +45,27 @@ def average_price_change(hours, symbol, time_period: str):
             {"error": "Invalid time period. Choose either 'day' or 'hour'."}, status=400
         )
 
-    price_changes = get_average_symbol_data(
-        symbol=symbol,
-        exchange="binance",
-        start_time_utc=start_time_utc,
-        group_by=time_period,
-        contract_type="perpetual",
-    )
+    match period_enum:
+        case TimePeriod.DAY:
+            price_change_data = get_average_price_change_by_day(
+                symbol=symbol,
+                exchange="binance",
+                start_time_utc=start_time_utc,
+                contract_type="perpetual",
+            )
+        case TimePeriod.HOUR:
+            price_change_data = get_average_price_change_by_hour(
+                symbol=symbol,
+                exchange="binance",
+                start_time_utc=start_time_utc,
+                contract_type="perpetual",
+            )
 
-    time_dict_values, time_labels = calculate_dict_percentage(
-        price_changes, period_enum
-    )
-
-    formatted_data = format_data(time_dict_values)
-    x_axis = [time_labels[int(float(str(item)))] for item in time_dict_values.keys()]
+    formatted_data, time_labels = format_data(price_change_data, period_enum)
 
     response = {
         "data": formatted_data,
-        "xAxis": x_axis,
+        "xAxis": time_labels,
     }
 
     return response
