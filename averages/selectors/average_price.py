@@ -29,11 +29,9 @@ def get_average_price_change_by_period(
     if period_type == TimePeriod.DAY:
         trunc_unit = "day"
         extract_unit = "DOW"
-        cte_name = "daily"
     else:
         trunc_unit = "hour"
         extract_unit = "HOUR"
-        cte_name = "hourly"
 
     query = f"""
         WITH time_range AS (
@@ -44,7 +42,7 @@ def get_average_price_change_by_period(
                     '1 {trunc_unit}'::interval
                 ) AS period_start
         ),
-        {cte_name}_agg AS (
+        period_agg AS (
             SELECT
                 tr.period_start,
                 EXTRACT({extract_unit} FROM tr.period_start) AS period,
@@ -63,16 +61,14 @@ def get_average_price_change_by_period(
         SELECT
             period,
             AVG(((last_close - first_open) / last_close * 100)) AS avg_pct_change
-        FROM {cte_name}_agg
+        FROM period_agg
         WHERE first_open IS NOT NULL
         GROUP BY period
         ORDER BY period
     """
 
     with connection.cursor() as cursor:
-        params = [start_time_utc, symbol_obj.id, symbol_obj.id]
-        print(f"Executing query:\n{cursor.mogrify(query, params).decode('utf-8')}\n")
-        cursor.execute(query, params)  # type: ignore
+        cursor.execute(query, [start_time_utc, symbol_obj.id, symbol_obj.id])  # type: ignore
         rows = cursor.fetchall()
 
     period_data = {}
