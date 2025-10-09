@@ -126,6 +126,43 @@ class MatrixCorrelationTracker:
 
         return results
 
+    def get_correlation_matrix_upper_vectorized(
+        self, symbol_indices: List[int]
+    ) -> List[float]:
+        """
+        Vectorized creation of the upper-triangle correlation list.
+        Returns list of rounded correlations (2 decimal places) in row-major upper triangle order.
+        """
+        if self.count == 0:
+            return []
+
+        n = len(symbol_indices)
+        if n <= 1:
+            return []
+
+        indices = np.array(symbol_indices, dtype=np.int32)
+        Sx = self.sum_x[indices]  # shape (n,)
+        Sxx = self.sum_xx[indices]  # shape (n,)
+        Sxy = self.sum_xy[np.ix_(indices, indices)]  # shape (n,n)
+        c = self.count
+
+        num = c * Sxy - np.outer(Sx, Sx)
+
+        var = c * Sxx - Sx * Sx  # shape (n,)
+        var = np.where(var <= 0, np.nan, var)
+
+        denom = np.sqrt(np.outer(var, var))  # shape (n,n)
+
+        corr = num / denom
+        np.fill_diagonal(corr, 1.0)
+
+        corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+
+        iu, ju = np.triu_indices(n, k=1)
+        upper = corr[iu, ju]
+
+        return [round(float(x), 2) for x in upper]
+
 
 class MatrixCorrelationCalculator:
     def __init__(self):
@@ -249,7 +286,7 @@ class MatrixCorrelationCalculator:
             return []
 
         symbol_indices = [self.symbol_to_idx[s] for s in self.symbols]
-        return tracker.get_correlation_matrix_upper(symbol_indices)
+        return tracker.get_correlation_matrix_upper_vectorized(symbol_indices)
 
     def update_and_cache_incremental_correlations(self):
         """Update correlations and cache to Redis."""
@@ -319,6 +356,7 @@ class MatrixCorrelationCalculator:
         self.retry_scheduler.submit(retry_add_symbol)
 
     def add_new_symbol(self, symbol_name: str, is_retry: bool = False):
+        return
         """Add a new symbol to correlation tracking."""
         with self.correlation_lock:
             start_time = time.time()
@@ -425,6 +463,7 @@ class MatrixCorrelationCalculator:
             print(f"Add symbol operation took {elapsed:.2f}s")
 
     def remove_symbol(self, symbol_name: str):
+        return
         """Remove a symbol from correlation tracking."""
         with self.correlation_lock:
             if symbol_name not in self.symbols:
