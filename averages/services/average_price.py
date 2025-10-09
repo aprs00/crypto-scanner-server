@@ -1,17 +1,9 @@
 from django.http import JsonResponse
 from django.utils import timezone
 from datetime import timedelta
-from enum import Enum
 
-from averages.selectors.average_price import (
-    get_average_price_change_by_day,
-    get_average_price_change_by_hour,
-)
-
-
-class TimePeriod(Enum):
-    DAY = "day"
-    HOUR = "hour"
+from averages.selectors.average_price import get_average_price_change_by_period
+from averages.constants import TimePeriod
 
 
 def format_data(data, time_period: TimePeriod):
@@ -23,14 +15,18 @@ def format_data(data, time_period: TimePeriod):
             for i in range(7):
                 value = data.get(i, 0.0)
                 item_style = {"color": "#4393c3" if value > 0 else "#a50f15"}
-                formatted_data.append({"itemStyle": item_style, "value": round(value, 2)})
+                formatted_data.append(
+                    {"itemStyle": item_style, "value": round(value, 2)}
+                )
         case TimePeriod.HOUR:
             time_labels = [f"{hour:02d}:00" for hour in range(24)]
             formatted_data = []
             for hour in range(24):
                 value = data.get(hour, 0.0)
                 item_style = {"color": "#4393c3" if value > 0 else "#a50f15"}
-                formatted_data.append({"itemStyle": item_style, "value": round(value, 2)})
+                formatted_data.append(
+                    {"itemStyle": item_style, "value": round(value, 2)}
+                )
 
     return formatted_data, time_labels
 
@@ -45,21 +41,13 @@ def average_price_change(hours, symbol, time_period: str):
             {"error": "Invalid time period. Choose either 'day' or 'hour'."}, status=400
         )
 
-    match period_enum:
-        case TimePeriod.DAY:
-            price_change_data = get_average_price_change_by_day(
-                symbol=symbol,
-                exchange="binance",
-                start_time_utc=start_time_utc,
-                contract_type="perpetual",
-            )
-        case TimePeriod.HOUR:
-            price_change_data = get_average_price_change_by_hour(
-                symbol=symbol,
-                exchange="binance",
-                start_time_utc=start_time_utc,
-                contract_type="perpetual",
-            )
+    price_change_data = get_average_price_change_by_period(
+        symbol=symbol,
+        exchange="binance",
+        start_time_utc=start_time_utc,
+        contract_type="perpetual",
+        period_type=period_enum,
+    )
 
     formatted_data, time_labels = format_data(price_change_data, period_enum)
 

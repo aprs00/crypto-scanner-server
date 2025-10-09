@@ -1,61 +1,24 @@
 from django.db import connection
 from exchange_connections.models import Symbol
 
+from averages.constants import TimePeriod
 
-def get_average_price_change_by_day(symbol, exchange, start_time_utc, contract_type):
+
+def get_average_price_change_by_period(
+    symbol, exchange, start_time_utc, contract_type, period_type: TimePeriod
+):
     """
-    Calculate average price change per day of week using raw SQL for performance.
-    Returns aggregated data ready for display.
-    """
-    symbol_obj = Symbol.objects.get(
-        name=symbol,
-        exchange__name=exchange,
-        contract_type__name=contract_type,
-    )
+    Calculate average price change per time period using raw SQL for performance.
 
-    query = """
-        WITH daily_prices AS (
-            SELECT
-                DATE_TRUNC('day', start_time) AS day,
-                EXTRACT(DOW FROM start_time) AS weekday,
-                (FIRST_VALUE(open) OVER (PARTITION BY DATE_TRUNC('day', start_time) ORDER BY start_time ASC))::float AS first_open,
-                (FIRST_VALUE(close) OVER (PARTITION BY DATE_TRUNC('day', start_time) ORDER BY start_time DESC))::float AS last_close
-            FROM cs_klines_1m
-            WHERE symbol_id = %s
-                AND start_time >= %s
-        ),
-        daily_pct AS (
-            SELECT DISTINCT
-                day,
-                weekday,
-                ((last_close - first_open) / last_close * 100) AS pct_change
-            FROM daily_prices
-        )
-        SELECT
-            weekday,
-            AVG(pct_change) AS avg_pct_change
-        FROM daily_pct
-        GROUP BY weekday
-        ORDER BY weekday
-    """
+    Args:
+        symbol: Symbol name
+        exchange: Exchange name
+        start_time_utc: Start time for data
+        contract_type: Contract type name
+        period_type: TimePeriod enum (DAY or HOUR)
 
-    with connection.cursor() as cursor:
-        cursor.execute(query, [symbol_obj.id, start_time_utc])  # type: ignore
-        rows = cursor.fetchall()
-
-    weekday_data = {}
-    for row in rows:
-        weekday = int(row[0])
-        avg_pct = float(row[1]) if row[1] is not None else 0.0
-        weekday_data[weekday] = avg_pct
-
-    return weekday_data
-
-
-def get_average_price_change_by_hour(symbol, exchange, start_time_utc, contract_type):
-    """
-    Calculate average price change per hour of day using raw SQL for performance.
-    Returns aggregated data ready for display.
+    Returns:
+        Dictionary mapping period (weekday 0-6 or hour 0-23) to average percent change
     """
     symbol_obj = Symbol.objects.get(
         name=symbol,
@@ -63,40 +26,49 @@ def get_average_price_change_by_hour(symbol, exchange, start_time_utc, contract_
         contract_type__name=contract_type,
     )
 
-    query = """
-        WITH hourly_prices AS (
+    if period_type == TimePeriod.DAY:
+        trunc_unit = "day"
+        extract_unit = "DOW"
+        cte_name = "daily"
+    else:
+        trunc_unit = "hour"
+        extract_unit = "HOUR"
+        cte_name = "hourly"
+
+    query = f"""
+        WITH {cte_name}_prices AS (
             SELECT
-                DATE_TRUNC('hour', start_time) AS hour_block,
-                EXTRACT(HOUR FROM start_time) AS hour,
-                (FIRST_VALUE(open) OVER (PARTITION BY DATE_TRUNC('hour', start_time) ORDER BY start_time ASC))::float AS first_open,
-                (FIRST_VALUE(close) OVER (PARTITION BY DATE_TRUNC('hour', start_time) ORDER BY start_time DESC))::float AS last_close
+                DATE_TRUNC('{trunc_unit}', start_time) AS period_block,
+                EXTRACT({extract_unit} FROM start_time) AS period,
+                (FIRST_VALUE(open) OVER (PARTITION BY DATE_TRUNC('{trunc_unit}', start_time) ORDER BY start_time ASC))::float AS first_open,
+                (FIRST_VALUE(close) OVER (PARTITION BY DATE_TRUNC('{trunc_unit}', start_time) ORDER BY start_time DESC))::float AS last_close
             FROM cs_klines_1m
             WHERE symbol_id = %s
                 AND start_time >= %s
         ),
-        hourly_pct AS (
+        {cte_name}_pct AS (
             SELECT DISTINCT
-                hour_block,
-                hour,
+                period_block,
+                period,
                 ((last_close - first_open) / last_close * 100) AS pct_change
-            FROM hourly_prices
+            FROM {cte_name}_prices
         )
         SELECT
-            hour,
+            period,
             AVG(pct_change) AS avg_pct_change
-        FROM hourly_pct
-        GROUP BY hour
-        ORDER BY hour
+        FROM {cte_name}_pct
+        GROUP BY period
+        ORDER BY period
     """
 
     with connection.cursor() as cursor:
         cursor.execute(query, [symbol_obj.id, start_time_utc])  # type: ignore
         rows = cursor.fetchall()
 
-    hour_data = {}
+    period_data = {}
     for row in rows:
-        hour = int(row[0])
+        period = int(row[0])
         avg_pct = float(row[1]) if row[1] is not None else 0.0
-        hour_data[hour] = avg_pct
+        period_data[period] = avg_pct
 
-    return hour_data
+    return period_data
