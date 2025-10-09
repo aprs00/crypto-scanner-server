@@ -36,33 +36,43 @@ def get_average_price_change_by_period(
         cte_name = "hourly"
 
     query = f"""
-        WITH {cte_name}_prices AS (
+        WITH time_range AS (
             SELECT
-                DATE_TRUNC('{trunc_unit}', start_time) AS period_block,
-                EXTRACT({extract_unit} FROM start_time) AS period,
-                (FIRST_VALUE(open) OVER (PARTITION BY DATE_TRUNC('{trunc_unit}', start_time) ORDER BY start_time ASC))::float AS first_open,
-                (FIRST_VALUE(close) OVER (PARTITION BY DATE_TRUNC('{trunc_unit}', start_time) ORDER BY start_time DESC))::float AS last_close
-            FROM cs_klines_1m
-            WHERE symbol_id = %s
-                AND start_time >= %s
+                generate_series(
+                    DATE_TRUNC('{trunc_unit}', %s::timestamptz),
+                    DATE_TRUNC('{trunc_unit}', NOW()),
+                    '1 {trunc_unit}'::interval
+                ) AS period_start
         ),
-        {cte_name}_pct AS (
-            SELECT DISTINCT
-                period_block,
-                period,
-                ((last_close - first_open) / last_close * 100) AS pct_change
-            FROM {cte_name}_prices
+        {cte_name}_agg AS (
+            SELECT
+                tr.period_start,
+                EXTRACT({extract_unit} FROM tr.period_start) AS period,
+                (SELECT open FROM cs_klines_1m
+                 WHERE symbol_id = %s
+                 AND start_time >= tr.period_start
+                 AND start_time < tr.period_start + '1 {trunc_unit}'::interval
+                 ORDER BY start_time ASC LIMIT 1) AS first_open,
+                (SELECT close FROM cs_klines_1m
+                 WHERE symbol_id = %s
+                 AND start_time >= tr.period_start
+                 AND start_time < tr.period_start + '1 {trunc_unit}'::interval
+                 ORDER BY start_time DESC LIMIT 1) AS last_close
+            FROM time_range tr
         )
         SELECT
             period,
-            AVG(pct_change) AS avg_pct_change
-        FROM {cte_name}_pct
+            AVG(((last_close - first_open) / last_close * 100)) AS avg_pct_change
+        FROM {cte_name}_agg
+        WHERE first_open IS NOT NULL
         GROUP BY period
         ORDER BY period
     """
 
     with connection.cursor() as cursor:
-        cursor.execute(query, [symbol_obj.id, start_time_utc])  # type: ignore
+        params = [start_time_utc, symbol_obj.id, symbol_obj.id]
+        print(f"Executing query:\n{cursor.mogrify(query, params).decode('utf-8')}\n")
+        cursor.execute(query, params)  # type: ignore
         rows = cursor.fetchall()
 
     period_data = {}
