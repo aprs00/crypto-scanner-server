@@ -68,7 +68,7 @@ def populate_all_klines_1m(start_date, end_date, batch):
 
     symbols = get_exchange_symbols()
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {
             executor.submit(
                 populate_kline_1m, symbol, start_date, end_date, batch
@@ -160,7 +160,7 @@ def fetch_all_klines_paginated(symbol, start_date, end_date):
 
             print(f"Fetched {len(klines)} klines. Total so far: {len(all_klines)}")
 
-            time.sleep(0.1)
+            time.sleep(0.5)
 
             if current_start >= final_end:
                 break
