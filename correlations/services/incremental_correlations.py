@@ -327,7 +327,6 @@ class MatrixCorrelationCalculator:
                         msgpack.packb(correlation_matrix),
                     )
 
-                    # Only save to DB if hours is 1
                     if hours == 1:
                         try:
                             start_save = time.time()

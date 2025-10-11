@@ -1,8 +1,10 @@
 import logging
+import time
 from datetime import timedelta
 from io import StringIO
 from django.db import transaction, connection
 from django.utils import timezone
+from typing import List, Dict
 
 from correlations.models import CorrelationPairHistory
 from exchange_connections.models import Symbol
@@ -34,69 +36,97 @@ def cleanup_old_correlation_data(retention_hours) -> int:
 
 
 def save_correlation_matrix_to_db(
-    symbols: list[str],
-    correlation_matrix: list[float],
+    symbols: List[str],
+    correlation_matrix: List[float],
     data_type: str,
     hours: int,
     exchange: str = "binance",
     contract_type: str = "perpetual",
 ) -> int:
     if not symbols or not correlation_matrix:
+        print("Empty symbols or correlation_matrix provided")
         return 0
 
     n_symbols = len(symbols)
     expected_pairs = n_symbols * (n_symbols - 1) // 2
+
     if len(correlation_matrix) != expected_pairs:
-        logger.warning(
-            f"Correlation matrix size {len(correlation_matrix)} does not match expected number of pairs {expected_pairs} for {n_symbols} symbols"
+        print(
+            f"Correlation matrix size mismatch. Expected {expected_pairs} pairs "
+            f"for {n_symbols} symbols, got {len(correlation_matrix)}"
         )
         return 0
 
-    symbol_objs = Symbol.objects.filter(
+    symbol_query = Symbol.objects.filter(
         name__in=symbols, exchange__name=exchange, contract_type__name=contract_type
-    ).only("id", "name")
+    ).select_related("exchange", "contract_type")
 
-    symbol_map = {s.name: s.id for s in symbol_objs}  # type: ignore
+    symbol_objs = symbol_query
+    symbol_map: Dict[str, Symbol] = {s.name: s for s in symbol_objs}
+
     missing_symbols = set(symbols) - set(symbol_map.keys())
     if missing_symbols:
-        logger.warning(
-            f"Some symbols not found in DB for exchange {exchange} and contract type {contract_type}: {missing_symbols}"
-        )
+        print(f"Symbols not found in database: {missing_symbols}")
         return 0
 
+    correlation_data = []
     calculated_at = timezone.now()
+    calculated_at_str = calculated_at.isoformat()
 
-    out_lines = []
-    append = out_lines.append
     idx = 0
-
     for i in range(n_symbols):
-        id1 = symbol_map[symbols[i]]
         for j in range(i + 1, n_symbols):
-            id2 = symbol_map[symbols[j]]
-            val = correlation_matrix[idx]
+            symbol1_name = symbols[i]
+            symbol2_name = symbols[j]
+            correlation_value = correlation_matrix[idx]
 
-            if id1 > id2:
-                id1, id2 = id2, id1
+            symbol1 = symbol_map[symbol1_name]
+            symbol2 = symbol_map[symbol2_name]
 
-            append(f"{id1}\t{id2}\t{val}\t{data_type}\t{hours}\t{calculated_at}\n")
+            if symbol1.id > symbol2.id:  # type: ignore
+                symbol1, symbol2 = symbol2, symbol1
+
+            correlation_data.append(
+                (
+                    symbol1.id,  # type: ignore
+                    symbol2.id,  # type: ignore
+                    correlation_value,
+                    data_type,
+                    hours,
+                    calculated_at_str,
+                )
+            )
+
             idx += 1
 
-    buf = StringIO("".join(out_lines))
+    if not correlation_data:
+        return 0
 
-    with transaction.atomic(), connection.cursor() as cursor:
-        cursor.copy_from(
-            buf,
-            "cs_correlation_pair_history",
-            sep="\t",
-            columns=[
-                "symbol1_id",
-                "symbol2_id",
-                "correlation_value",
-                "data_type",
-                "hours",
-                "calculated_at",
-            ],
+    data_io = StringIO()
+    for row in correlation_data:
+        data_io.write(
+            "\t".join(str(field) if field is not None else "\\N" for field in row)
+            + "\n"
         )
+    data_io.seek(0)
 
-    return expected_pairs
+    table_name = CorrelationPairHistory._meta.db_table
+    columns = (
+        "symbol1_id",
+        "symbol2_id",
+        "correlation_value",
+        "data_type",
+        "hours",
+        "calculated_at",
+    )
+
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.copy_from(
+                data_io,
+                table_name,
+                sep="\t",
+                columns=columns,
+            )
+
+    return len(correlation_data)
