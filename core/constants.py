@@ -22,6 +22,10 @@ tf_options = {
         "7d": 168,
         "14d": 336,
     },
+    "correlation_pair": {
+        "1h": 1,
+        "4h": 4,
+    },
     "zscore": {
         "1h": 1,
         "4h": 4,
