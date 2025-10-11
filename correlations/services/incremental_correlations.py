@@ -16,6 +16,7 @@ from exchange_connections.selectors import (
 from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
+from correlations.services.save_correlations import save_correlation_matrix_to_db
 
 
 class MatrixCorrelationTracker:
@@ -324,6 +325,24 @@ class MatrixCorrelationCalculator:
                         f"correlations:{data_type}:{hours}:binance:perpetual",
                         msgpack.packb(correlation_matrix),
                     )
+
+                    try:
+                        saved_count = save_correlation_matrix_to_db(
+                            symbols=self.symbols,
+                            correlation_matrix=correlation_matrix,
+                            data_type=data_type,
+                            hours=hours,
+                            exchange="binance",
+                            contract_type="perpetual",
+                        )
+                        if saved_count > 0:
+                            print(
+                                f"Saved {saved_count} correlations to DB ({data_type}, {hours}h)"
+                            )
+                    except Exception as e:
+                        print(
+                            f"Failed to save correlations to DB ({data_type}, {hours}h): {e}"
+                        )
 
             set_pipeline.execute()
 
