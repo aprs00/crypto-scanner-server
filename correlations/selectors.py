@@ -54,7 +54,7 @@ def get_symbol_pair_correlation_history(
 
         correlations = (
             CorrelationPairHistory.objects.filter(
-                data_type=data_type, hours=hours, calculated_at__gte=time_threshold
+                data_type=data_type, hours=1, calculated_at__gte=time_threshold
             )
             .filter(
                 models.Q(symbol1=symbol1, symbol2=symbol2)
