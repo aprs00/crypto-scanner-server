@@ -17,6 +17,7 @@ from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
 from correlations.services.save_correlations import save_correlation_matrix_to_db
+from correlations.db_utils import cleanup_old_correlation_data
 
 
 class MatrixCorrelationTracker:
@@ -326,27 +327,33 @@ class MatrixCorrelationCalculator:
                         msgpack.packb(correlation_matrix),
                     )
 
-                    try:
-                        saved_count = save_correlation_matrix_to_db(
-                            symbols=self.symbols,
-                            correlation_matrix=correlation_matrix,
-                            data_type=data_type,
-                            hours=hours,
-                            exchange="binance",
-                            contract_type="perpetual",
-                        )
-                        if saved_count > 0:
-                            print(
-                                f"Saved {saved_count} correlations to DB ({data_type}, {hours}h)"
+                    # Only save to DB if hours is 1
+                    if hours == 1:
+                        try:
+                            start_save = time.time()
+                            saved_count = save_correlation_matrix_to_db(
+                                symbols=self.symbols,
+                                correlation_matrix=correlation_matrix,
+                                data_type=data_type,
+                                hours=hours,
+                                exchange="binance",
+                                contract_type="perpetual",
                             )
-                    except Exception as e:
-                        print(
-                            f"Failed to save correlations to DB ({data_type}, {hours}h): {e}"
-                        )
+                            save_time = time.time() - start_save
+                            if saved_count > 0:
+                                print(
+                                    f"Saved {saved_count} correlations to DB ({data_type}, {hours}h) in {save_time:.3f}s"
+                                )
+                        except Exception as e:
+                            print(
+                                f"Failed to save correlations to DB ({data_type}, {hours}h): {e}"
+                            )
 
             set_pipeline.execute()
 
             notification_service.send_correlation_update()
+
+            cleanup_old_correlation_data(retention_hours=4)
 
     def schedule_symbol_retry(self, symbol_name: str):
         """Schedule a retry to add symbol after delay to allow data accumulation."""

@@ -1,7 +1,7 @@
 import logging
-from typing import List, Dict
 from datetime import timedelta
-from django.db import transaction, models
+from io import StringIO
+from django.db import transaction, connection
 from django.utils import timezone
 
 from correlations.models import CorrelationPairHistory
@@ -34,96 +34,69 @@ def cleanup_old_correlation_data(retention_hours) -> int:
 
 
 def save_correlation_matrix_to_db(
-    symbols: List[str],
-    correlation_matrix: List[float],
+    symbols: list[str],
+    correlation_matrix: list[float],
     data_type: str,
     hours: int,
     exchange: str = "binance",
     contract_type: str = "perpetual",
 ) -> int:
-    """
-    Save a correlation matrix to the database.
-
-    Args:
-        symbols: List of symbol names in order
-        correlation_matrix: Upper triangle correlation values in row-major order
-        data_type: Type of data (e.g., 'close', 'volume', 'trades')
-        hours: Time window in hours
-        exchange: Exchange name (default: 'binance')
-        contract_type: Contract type (default: 'perpetual')
-
-    Returns:
-        Number of correlation records saved
-    """
     if not symbols or not correlation_matrix:
-        logger.warning("Empty symbols or correlation_matrix provided")
         return 0
 
     n_symbols = len(symbols)
     expected_pairs = n_symbols * (n_symbols - 1) // 2
-
     if len(correlation_matrix) != expected_pairs:
-        logger.error(
-            f"Correlation matrix size mismatch. Expected {expected_pairs} pairs "
-            f"for {n_symbols} symbols, got {len(correlation_matrix)}"
+        logger.warning(
+            f"Correlation matrix size {len(correlation_matrix)} does not match expected number of pairs {expected_pairs} for {n_symbols} symbols"
         )
         return 0
 
-    try:
-        symbol_objs = Symbol.objects.filter(
-            name__in=symbols, exchange__name=exchange, contract_type__name=contract_type
-        ).select_related("exchange", "contract_type")
+    symbol_objs = Symbol.objects.filter(
+        name__in=symbols, exchange__name=exchange, contract_type__name=contract_type
+    ).only("id", "name")
 
-        symbol_map: Dict[str, Symbol] = {s.name: s for s in symbol_objs}
+    symbol_map = {s.name: s.id for s in symbol_objs}  # type: ignore
+    missing_symbols = set(symbols) - set(symbol_map.keys())
+    if missing_symbols:
+        logger.warning(
+            f"Some symbols not found in DB for exchange {exchange} and contract type {contract_type}: {missing_symbols}"
+        )
+        return 0
 
-        missing_symbols = set(symbols) - set(symbol_map.keys())
-        if missing_symbols:
-            logger.error(f"Symbols not found in database: {missing_symbols}")
-            return 0
+    calculated_at = timezone.now()
 
-        correlation_records = []
-        calculated_at = timezone.now()
+    out_lines = []
+    append = out_lines.append
+    idx = 0
 
-        idx = 0
-        for i in range(n_symbols):
-            for j in range(i + 1, n_symbols):
-                symbol1_name = symbols[i]
-                symbol2_name = symbols[j]
-                correlation_value = correlation_matrix[idx]
+    for i in range(n_symbols):
+        id1 = symbol_map[symbols[i]]
+        for j in range(i + 1, n_symbols):
+            id2 = symbol_map[symbols[j]]
+            val = correlation_matrix[idx]
 
-                symbol1 = symbol_map[symbol1_name]
-                symbol2 = symbol_map[symbol2_name]
+            if id1 > id2:
+                id1, id2 = id2, id1
 
-                if symbol1.id > symbol2.id:  # type: ignore
-                    symbol1, symbol2 = symbol2, symbol1
+            append(f"{id1}\t{id2}\t{val}\t{data_type}\t{hours}\t{calculated_at}\n")
+            idx += 1
 
-                correlation_records.append(
-                    CorrelationPairHistory(
-                        symbol1=symbol1,
-                        symbol2=symbol2,
-                        correlation_value=correlation_value,
-                        data_type=data_type,
-                        hours=hours,
-                        calculated_at=calculated_at,
-                    )
-                )
+    buf = StringIO("".join(out_lines))
 
-                idx += 1
-
-        with transaction.atomic():
-            CorrelationPairHistory.objects.bulk_create(
-                correlation_records, ignore_conflicts=True
-            )
-
-        logger.info(
-            f"Saved {len(correlation_records)} correlation records "
-            f"for {data_type} ({hours}h) at {calculated_at}"
+    with transaction.atomic(), connection.cursor() as cursor:
+        cursor.copy_from(
+            buf,
+            "cs_correlation_pair_history",
+            sep="\t",
+            columns=[
+                "symbol1_id",
+                "symbol2_id",
+                "correlation_value",
+                "data_type",
+                "hours",
+                "calculated_at",
+            ],
         )
 
-        cleanup_old_correlation_data(retention_hours=13)
-
-        return len(correlation_records)
-
-    except Exception as e:
-        logger.error(f"Error saving correlation matrix to database: {e}", exc_info=True)
-        return 0
+    return expected_pairs
