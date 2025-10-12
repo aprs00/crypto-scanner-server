@@ -52,36 +52,23 @@ def get_pearson_correlation(request):
 @csrf_exempt
 def get_correlation_pair_history(request):
     """
-    Get historical correlation values for a specific symbol pair.
-
-    Query parameters:
-    - symbol1: First symbol name (e.g., BTCUSDT)
-    - symbol2: Second symbol name (e.g., SOLUSDT)
-    - type: Data type (e.g., close, volume, trades)
-    - hours: Time window in hours
+    Get historical correlation values for base_symbol against multiple symbols.
     """
     if request.method != "GET":
         return HttpResponse(status=405)
 
-    symbol1 = request.GET.get("symbol1")
-    symbol2 = request.GET.get("symbol2")
+    base_symbol = request.GET.get("baseSymbol")
+    comparison_symbols = request.GET.getlist("comparisonSymbols[]")
     data_type = request.GET.get("type")
     hours = request.GET.get("hours")
-
-    if not all([symbol1, symbol2, data_type, hours]):
-        return JsonResponse(
-            {"error": "Missing required parameters: symbol1, symbol2, type, hours"},
-            status=400,
-        )
-
     hours = int(hours)
 
     try:
         return JsonResponse(
             {
                 "history": get_symbol_pair_correlation_history(
-                    symbol1_name=symbol1,
-                    symbol2_name=symbol2,
+                    base_symbol=base_symbol,
+                    comparison_symbols=comparison_symbols,
                     data_type=data_type,
                     hours=hours,
                 ),

@@ -11,69 +11,82 @@ logger = logging.getLogger(__name__)
 
 
 def get_symbol_pair_correlation_history(
-    symbol1_name: str,
-    symbol2_name: str,
+    base_symbol: str,
+    comparison_symbols: List[str],
     data_type: str,
     hours: int,
     exchange: str = "binance",
     contract_type: str = "perpetual",
-) -> List[List]:
+) -> List[List[List]]:
     """
-    Get historical correlation values for a specific symbol pair.
-
-    Args:
-        symbol1_name: First symbol name (e.g., 'BTCUSDT')
-        symbol2_name: Second symbol name (e.g., 'ETHUSDT')
-        data_type: Type of data (e.g., 'close', 'volume', 'trades')
-        hours: Time window in hours
-        exchange: Exchange name (default: 'binance')
-        contract_type: Contract type (default: 'perpetual')
-
-    Returns:
-        List of lists where each item is [correlation_value, calculated_at_iso_string]
+    Efficiently get historical correlation values for one symbol vs multiple others.
+    Uses a single DB query and groups results in Python.
     """
     try:
-        symbols = Symbol.objects.filter(
-            name__in=[symbol1_name, symbol2_name],
+        symbol_objects = Symbol.objects.filter(
+            name__in=[base_symbol, *comparison_symbols],
             exchange__name=exchange,
             contract_type__name=contract_type,
         ).select_related("exchange", "contract_type")
 
-        symbol_map = {s.name: s for s in symbols}
-
-        if symbol1_name not in symbol_map or symbol2_name not in symbol_map:
-            logger.error(
-                f"One or both symbols not found: {symbol1_name}, {symbol2_name}"
-            )
+        symbol_map = {s.name: s for s in symbol_objects}
+        if base_symbol not in symbol_map:
+            logger.error(f"Symbol not found: {base_symbol}")
             return []
 
-        symbol1 = symbol_map[symbol1_name]
-        symbol2 = symbol_map[symbol2_name]
-
+        symbol1 = symbol_map[base_symbol]
         time_threshold = timezone.now() - timedelta(hours=hours)
+
+        q = models.Q()
+        for sym2_name in comparison_symbols:
+            sym2 = symbol_map.get(sym2_name)
+            if not sym2:
+                continue
+            q |= models.Q(symbol1=symbol1, symbol2=sym2) | models.Q(
+                symbol1=sym2, symbol2=symbol1
+            )
+
+        if not q:
+            logger.warning("No valid symbol2s found")
+            return [[] for _ in comparison_symbols]
 
         correlations = (
             CorrelationPairHistory.objects.filter(
-                data_type=data_type, hours=1, calculated_at__gte=time_threshold
+                data_type=data_type,
+                hours=1,
+                calculated_at__gte=time_threshold,
             )
-            .filter(
-                models.Q(symbol1=symbol1, symbol2=symbol2)
-                | models.Q(symbol1=symbol2, symbol2=symbol1)
-            )
+            .filter(q)
             .order_by("-calculated_at")
+            .values("symbol1_id", "symbol2_id", "calculated_at", "correlation_value")
         )
 
-        return [
-            [
-                corr.calculated_at.isoformat(),
-                corr.correlation_value,
-            ]
-            for corr in correlations
-        ]
+        results_by_pair = {sym2_name: [] for sym2_name in comparison_symbols}
+
+        for corr in correlations:
+            s1_id, s2_id = corr["symbol1_id"], corr["symbol2_id"]
+
+            if s1_id == symbol1.id:  # type: ignore
+                sym2 = next(
+                    (name for name, s in symbol_map.items() if s.id == s2_id), None  # type: ignore
+                )
+            elif s2_id == symbol1.id:  # type: ignore
+                sym2 = next(
+                    (name for name, s in symbol_map.items() if s.id == s1_id), None  # type: ignore
+                )
+            else:
+                continue
+
+            if sym2 in results_by_pair:
+                results_by_pair[sym2].append(
+                    [corr["calculated_at"].isoformat(), corr["correlation_value"]]
+                )
+
+        return [results_by_pair.get(sym2_name, []) for sym2_name in comparison_symbols]
 
     except Exception as e:
         logger.error(
-            f"Error getting correlation history for {symbol1_name}-{symbol2_name}: {e}",
+            f"Error getting correlation history for {base_symbol} vs {comparison_symbols}: {e}",
             exc_info=True,
         )
         return []
