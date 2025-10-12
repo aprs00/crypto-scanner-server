@@ -108,7 +108,6 @@ def save_correlation_matrix_to_db(
             "\t".join(str(field) if field is not None else "\\N" for field in row)
             + "\n"
         )
-    data_io.seek(0)
 
     table_name = CorrelationPairHistory._meta.db_table
     columns = (
@@ -119,14 +118,13 @@ def save_correlation_matrix_to_db(
         "hours",
         "calculated_at",
     )
+    columns_str = ", ".join(columns)
 
     with transaction.atomic():
         with connection.cursor() as cursor:
-            cursor.copy_from(
-                data_io,
-                table_name,
-                sep="\t",
-                columns=columns,
-            )
+            with cursor.cursor.copy(  # type: ignore
+                f"COPY {table_name} ({columns_str}) FROM STDIN"
+            ) as copy:
+                copy.write(data_io.getvalue())
 
     return len(correlation_data)
