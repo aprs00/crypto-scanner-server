@@ -1,10 +1,9 @@
 from django.utils import timezone
 from datetime import timedelta
-from typing import Optional, List
+from typing import Optional
 from django.db import connection
 from collections import defaultdict
 
-from exchange_connections.models import Kline1m, Exchange, Symbol
 from exchange_connections.constants import KLINE_FIELD_MAP
 from core.redis_config import get_redis_connection
 
@@ -22,33 +21,40 @@ def get_historical_kline_data(hours, symbols):
     end_time = timezone.now()
     start_time = end_time - timedelta(hours=hours)
 
-    exchange = Exchange.objects.get(name="binance")
-    symbol_ids = Symbol.objects.filter(name__in=symbols, exchange=exchange).values_list(
-        "id", flat=True
-    )
+    symbol_placeholders = ",".join(["%s"] * len(symbols))
 
-    klines = (
-        Kline1m.objects.filter(
-            exchange=exchange,
-            symbol_id__in=symbol_ids,
-            start_time__gte=start_time.astimezone(timezone.utc),
-            start_time__lte=end_time.astimezone(timezone.utc),
-        )
-        .select_related("symbol")
-        .values(
-            "symbol__name", "start_time", "close", "base_volume", "number_of_trades"
-        )
-        .order_by("symbol__name", "start_time")
-    )
+    query = f"""
+        SELECT
+            s.name AS symbol_name,
+            k.close,
+            k.base_volume,
+            k.number_of_trades
+        FROM cs_klines_1m k
+        JOIN cs_symbols s ON k.symbol_id = s.id
+        JOIN cs_exchanges e ON k.exchange_id = e.id
+        WHERE
+            e.name = 'binance'
+            AND s.name IN ({symbol_placeholders})
+            AND k.start_time >= %s
+            AND k.start_time <= %s
+        ORDER BY s.name, k.start_time
+    """
 
     klines_data = defaultdict(lambda: {field: [] for field in KLINE_FIELD_MAP.keys()})
 
-    for item in klines:
-        symbol_name = item["symbol__name"]
-        symbol_data = klines_data[symbol_name]
-        symbol_data["price"].append(float(item["close"]))
-        symbol_data["volume"].append(float(item["base_volume"]))
-        symbol_data["trades"].append(float(item["number_of_trades"]))
+    with connection.cursor() as cursor:
+        params = symbols + [
+            start_time.astimezone(timezone.utc),
+            end_time.astimezone(timezone.utc),
+        ]
+        cursor.execute(query, params)
+
+        for row in cursor.fetchall():
+            symbol_name = row[0]
+            symbol_data = klines_data[symbol_name]
+            symbol_data["price"].append(float(row[1]))
+            symbol_data["volume"].append(float(row[2]))
+            symbol_data["trades"].append(float(row[3]))
 
     return dict(klines_data)
 
