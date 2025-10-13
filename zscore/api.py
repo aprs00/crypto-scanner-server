@@ -15,6 +15,7 @@ def get_z_score_matrix(request):
 
     x_axis = request.GET.get("xAxis", None)
     y_axis = request.GET.get("yAxis", None)
+    z_axis = request.GET.get("zAxis", None)
     hours = request.GET.get("hours", None)
     hours = int(hours)
 
@@ -26,6 +27,7 @@ def get_z_score_matrix(request):
         data=hours_data,
         x_axis=x_axis,
         y_axis=y_axis,
+        z_axis=z_axis,
     )
 
     return JsonResponse(response, safe=False)
@@ -39,7 +41,6 @@ def get_z_score_heatmap(request):
     type = request.GET.get("type", None)
     hours = request.GET.get("hours", None)
     hours = int(hours)
-    # TODO: also add rolling hours select option
 
     zscore_data = msgpack.unpackb(
         r.execute_command("GET", f"zscore:heatmap:binance:perpetual:{hours}")
