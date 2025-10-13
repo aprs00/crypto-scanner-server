@@ -41,6 +41,7 @@ class CorrelationPairHistory(models.Model):
         db_table = "cs_correlation_pair_history"
         indexes = [
             models.Index(fields=['data_type', 'hours', '-calculated_at']),
+            models.Index(fields=['calculated_at']),
         ]
 
     def __str__(self):
