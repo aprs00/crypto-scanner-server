@@ -1,9 +1,13 @@
-from binance import ThreadedWebsocketManager, Client
-from binance.enums import ContractType, KLINE_INTERVAL_1MINUTE
+import json
 import time
 import threading
-from django.conf import settings
+import websocket
 from datetime import datetime, timedelta
+from enum import Enum
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+
+from django.conf import settings
 
 from exchange_connections.constants import BinanceContractStatus
 from core.constants import RedisPubMessages
@@ -14,9 +18,21 @@ from exchange_connections.services.klines_ingest import (
 from core.redis_config import get_redis_connection
 
 
+BINANCE_FUTURES_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/stream"
+BINANCE_USER_AGENT = "crypto-scanner/1.0"
+WS_PING_INTERVAL = 20
+WS_PING_TIMEOUT = 10
+
+
+class ContractType(str, Enum):
+    PERPETUAL = "PERPETUAL"
+
+
 class KlinesSocketManager:
     def __init__(self):
-        self.twm = ThreadedWebsocketManager()
+        self.ws_app = None
+        self.ws_thread = None
         self.r = get_redis_connection()
         self.stream_name = None
         self.symbols_executed = set()
@@ -27,30 +43,60 @@ class KlinesSocketManager:
         self.symbol_check_interval = 1800
         self.last_symbol_check = None
         self.reconnect_event = threading.Event()
+        self.reconnect_lock = threading.Lock()
+        self.shutdown_event = threading.Event()
+        self._manual_close = False
 
     def store_error(self, error):
         self.r.execute_command(f"LPUSH error_log {str(error)}")
 
     def initialize(self):
-        self.twm.start()
+        if websocket is None:
+            raise RuntimeError(
+                "websocket-client is required when python-binance is unavailable."
+            )
         monitor_thread = threading.Thread(target=self.monitor_symbol_changes)
         monitor_thread.daemon = True
         monitor_thread.start()
 
     def stop(self):
-        self.twm.stop_socket(self.stream_name)
+        self._manual_close = True
+        if self.ws_app is not None:
+            try:
+                self.ws_app.close()
+            except Exception as exc:
+                self.store_error(f"Error closing websocket: {exc}")
+        if (
+            self.ws_thread is not None
+            and self.ws_thread.is_alive()
+            and threading.current_thread() is not self.ws_thread
+        ):
+            self.ws_thread.join(timeout=5)
+        self.ws_app = None
+        self.ws_thread = None
+        self.stream_name = None
 
     def reconnect(self):
-        self.stop()
-        self.message_batch = []
-        time.sleep(5)
-        self.start()
+        if not self.reconnect_lock.acquire(blocking=False):
+            return
+        try:
+            self.stop()
+            self.message_batch = []
+            time.sleep(5)
+            if not self.shutdown_event.is_set():
+                self.start()
+        finally:
+            self.reconnect_lock.release()
 
     def fetch_futures_symbols(self):
         """Fetch all futures symbols from Binance API and return both list and set."""
         try:
-            client = Client()
-            exchange_info = client.futures_exchange_info()
+            request = Request(
+                BINANCE_FUTURES_EXCHANGE_INFO_URL,
+                headers={"User-Agent": BINANCE_USER_AGENT},
+            )
+            with urlopen(request, timeout=10) as response:
+                exchange_info = json.loads(response.read().decode("utf-8"))
 
             active_symbols = [
                 symbol["symbol"]
@@ -60,7 +106,10 @@ class KlinesSocketManager:
             ]
 
             self.r.execute_command("DEL", "symbols:binance:perpetual")
-            self.r.execute_command("SADD", "symbols:binance:perpetual", *active_symbols)
+            if active_symbols:
+                self.r.execute_command(
+                    "SADD", "symbols:binance:perpetual", *active_symbols
+                )
 
             self.symbols = active_symbols
             self.symbols_count = len(self.symbols)
@@ -83,11 +132,14 @@ class KlinesSocketManager:
 
             self.last_symbol_check = datetime.now()
 
-            client.close_connection()
-
-        except Exception as e:
+        except (URLError, ValueError, KeyError) as e:
             self.store_error(f"Error fetching futures symbols: {str(e)}")
             print(f"Error fetching symbols, falling back to default symbols: {str(e)}")
+            self.symbols_count = len(self.symbols)
+            return []
+        except Exception as e:
+            self.store_error(f"Unexpected error fetching futures symbols: {str(e)}")
+            print(f"Unexpected error fetching symbols: {str(e)}")
             self.symbols_count = len(self.symbols)
             return []
 
@@ -161,8 +213,13 @@ class KlinesSocketManager:
         # Wait for initial start() to complete to avoid race condition
         time.sleep(5)
 
-        while True:
+        while not self.shutdown_event.is_set():
             try:
+                if self.reconnect_event.is_set():
+                    self.reconnect_event.clear()
+                    self.reconnect()
+                    continue
+
                 if (
                     self.last_symbol_check is None
                     or datetime.now() - self.last_symbol_check
@@ -176,20 +233,62 @@ class KlinesSocketManager:
 
     def start(self):
         self.fetch_futures_symbols()
+        self._start_socket()
+
+    def _start_socket(self):
+        if websocket is None:
+            print("websocket-client is not installed; cannot start stream")
+            return
+
+        if not self.symbols:
+            print("No active symbols available to subscribe to Binance stream")
+            return
+
+        streams = [f"{symbol.lower()}@kline_1m" for symbol in self.symbols]
+        stream_query = "/".join(streams)
+        stream_url = f"{BINANCE_FUTURES_WS_URL}?streams={stream_query}"
+
+        self.stream_name = stream_url
+        self._manual_close = False
+
+        self.ws_app = websocket.WebSocketApp(
+            stream_url,
+            on_message=self._on_ws_message,
+            on_error=self._on_ws_error,
+            on_close=self._on_ws_close,
+        )
+
+        self.ws_thread = threading.Thread(
+            target=self.ws_app.run_forever,
+            kwargs={"ping_interval": WS_PING_INTERVAL, "ping_timeout": WS_PING_TIMEOUT},
+        )
+        self.ws_thread.daemon = True
+        self.ws_thread.start()
+
+    def _on_ws_message(self, _ws, message):
         try:
-            self.stream_name = self.twm.start_futures_multiplex_socket(
-                callback=self.handle_message,
-                streams=[
-                    f"{symbol.lower()}@kline_{KLINE_INTERVAL_1MINUTE}"
-                    for symbol in self.symbols
-                ],
+            payload = json.loads(message)
+        except json.JSONDecodeError as exc:
+            self.store_error(f"Invalid JSON from Binance stream: {exc}")
+            return
+
+        self.handle_message(payload)
+
+    def _on_ws_error(self, _ws, error):
+        self.store_error(f"Websocket error: {error}")
+        if not self._manual_close and not self.shutdown_event.is_set():
+            self.reconnect_event.set()
+
+    def _on_ws_close(self, _ws, close_status_code, close_msg):
+        if not self._manual_close and not self.shutdown_event.is_set():
+            print(
+                f"Websocket closed unexpectedly: code={close_status_code}, msg={close_msg}"
             )
-        except Exception as e:
-            self.store_error(str(e))
+            self.reconnect_event.set()
 
     def check_reconnection_signal(self):
         """Check if reconnection has been signaled from another thread."""
-        if self.reconnect_event.is_set():
+        if self.reconnect_event.is_set() and not self.shutdown_event.is_set():
             print("Reconnection signal detected, executing reconnection")
             self.reconnect_event.clear()
             self.reconnect()
@@ -212,7 +311,9 @@ class KlinesSocketManager:
             self.reconnect()
             return
 
-        msg_data = msg["data"]
+        msg_data = msg.get("data")
+        if not msg_data:
+            return
         kline_data = msg_data["k"]
 
         if kline_data.get("x"):
@@ -260,7 +361,14 @@ class KlinesSocketManager:
     def main(self):
         self.initialize()
         self.start()
-        self.twm.join()
+        try:
+            while not self.shutdown_event.is_set():
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("Keyboard interrupt received, shutting down Binance stream")
+        finally:
+            self.shutdown_event.set()
+            self.stop()
 
     @staticmethod
     def is_message_error(msg):
