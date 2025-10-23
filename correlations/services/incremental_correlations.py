@@ -381,7 +381,6 @@ class MatrixCorrelationCalculator:
         self.retry_scheduler.submit(retry_add_symbol)
 
     def add_new_symbol(self, symbol_name: str, is_retry: bool = False):
-        return
         """Add a new symbol to correlation tracking."""
         with self.correlation_lock:
             start_time = time.time()
@@ -435,13 +434,24 @@ class MatrixCorrelationCalculator:
 
                 new_sum_x = np.zeros(new_n, dtype=np.float64)
                 new_sum_xx = np.zeros(new_n, dtype=np.float64)
-                new_sum_x[:old_n] = tracker.sum_x
-                new_sum_xx[:old_n] = tracker.sum_xx
+                new_sum_xy = np.zeros((new_n, new_n), dtype=np.float64)
+
+                reindex_pairs = [
+                    (old_idx, self.symbol_to_idx[sym])
+                    for old_idx, sym in enumerate(old_symbols)
+                    if sym in self.symbol_to_idx
+                ]
+
+                for old_idx, new_idx_existing in reindex_pairs:
+                    new_sum_x[new_idx_existing] = tracker.sum_x[old_idx]
+                    new_sum_xx[new_idx_existing] = tracker.sum_xx[old_idx]
+
+                for old_i, new_i in reindex_pairs:
+                    for old_j, new_j in reindex_pairs:
+                        new_sum_xy[new_i, new_j] = tracker.sum_xy[old_i, old_j]
+
                 tracker.sum_x = new_sum_x
                 tracker.sum_xx = new_sum_xx
-
-                new_sum_xy = np.zeros((new_n, new_n), dtype=np.float64)
-                new_sum_xy[:old_n, :old_n] = tracker.sum_xy
                 tracker.sum_xy = new_sum_xy
 
                 tracker.n_symbols = new_n
@@ -468,6 +478,10 @@ class MatrixCorrelationCalculator:
 
                         for existing_idx in range(old_n):
                             existing_symbol = old_symbols[existing_idx]
+                            new_existing_idx = self.symbol_to_idx.get(existing_symbol)
+
+                            if new_existing_idx is None:
+                                continue
 
                             if (
                                 existing_symbol in all_existing_data
@@ -480,15 +494,14 @@ class MatrixCorrelationCalculator:
                                 if len(other_data) >= use_count:
                                     aligned_other = other_data[-use_count:]
                                     cross = np.sum(aligned_other * recent_data)
-                                    tracker.sum_xy[existing_idx, new_idx] = cross
-                                    tracker.sum_xy[new_idx, existing_idx] = cross
+                                    tracker.sum_xy[new_existing_idx, new_idx] = cross
+                                    tracker.sum_xy[new_idx, new_existing_idx] = cross
 
             print(f"Successfully added {symbol_name} to {len(self.trackers)} trackers")
             elapsed = time.time() - start_time
             print(f"Add symbol operation took {elapsed:.2f}s")
 
     def remove_symbol(self, symbol_name: str):
-        return
         """Remove a symbol from correlation tracking."""
         with self.correlation_lock:
             if symbol_name not in self.symbols:
@@ -504,7 +517,6 @@ class MatrixCorrelationCalculator:
             self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
             self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
 
-            # Remove the symbol from all trackers
             for tracker in self.trackers.values():
                 tracker.sum_x = np.delete(tracker.sum_x, idx_to_remove)
                 tracker.sum_xx = np.delete(tracker.sum_xx, idx_to_remove)
