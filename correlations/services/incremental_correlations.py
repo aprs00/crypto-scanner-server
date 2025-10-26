@@ -68,7 +68,10 @@ class MatrixCorrelationTracker:
             self.sum_xx[idx] = np.sum(data_segment * data_segment, dtype=ACCUM_DTYPE)
 
         arr = np.vstack(
-            [np.asarray(symbol_data[i][:min_length], dtype=ACCUM_DTYPE) for i in range(self.n_symbols)]
+            [
+                np.asarray(symbol_data[i][:min_length], dtype=ACCUM_DTYPE)
+                for i in range(self.n_symbols)
+            ]
         )
         self.sum_xy = arr @ arr.T
 
@@ -619,7 +622,7 @@ class MatrixCorrelationCalculator:
         self.initialization_complete = True
         print("Initialization complete - now processing any pending messages")
 
-        self.process_pending_messages()
+        # self.process_pending_messages()
         print("Ready for real-time message processing")
 
         try:
