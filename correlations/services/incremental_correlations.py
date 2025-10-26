@@ -20,6 +20,12 @@ from correlations.services.save_correlations import save_correlation_matrix_to_d
 from correlations.db_utils import cleanup_old_correlation_data
 
 
+if np.finfo(np.longdouble).eps < np.finfo(np.float64).eps:
+    ACCUM_DTYPE = np.longdouble
+else:
+    ACCUM_DTYPE = np.float64
+
+
 class MatrixCorrelationTracker:
     """
     Optimized correlation tracker using dense NumPy arrays.
@@ -35,11 +41,11 @@ class MatrixCorrelationTracker:
         self.count = 0
 
         # Per-symbol statistics
-        self.sum_x = np.zeros(n_symbols, dtype=np.float64)
-        self.sum_xx = np.zeros(n_symbols, dtype=np.float64)
+        self.sum_x = np.zeros(n_symbols, dtype=ACCUM_DTYPE)
+        self.sum_xx = np.zeros(n_symbols, dtype=ACCUM_DTYPE)
 
         # Dense sum_xy matrix
-        self.sum_xy = np.zeros((n_symbols, n_symbols), dtype=np.float64)
+        self.sum_xy = np.zeros((n_symbols, n_symbols), dtype=ACCUM_DTYPE)
 
         # Precompute upper-triangle indices once
         self.upper_i, self.upper_j = np.triu_indices(n_symbols, k=1)
@@ -57,11 +63,13 @@ class MatrixCorrelationTracker:
             return
 
         for idx, data in symbol_data.items():
-            data = data[:min_length]
-            self.sum_x[idx] = np.sum(data)
-            self.sum_xx[idx] = np.sum(data * data)
+            data_segment = np.asarray(data[:min_length], dtype=ACCUM_DTYPE)
+            self.sum_x[idx] = np.sum(data_segment, dtype=ACCUM_DTYPE)
+            self.sum_xx[idx] = np.sum(data_segment * data_segment, dtype=ACCUM_DTYPE)
 
-        arr = np.vstack([symbol_data[i][:min_length] for i in range(self.n_symbols)])
+        arr = np.vstack(
+            [np.asarray(symbol_data[i][:min_length], dtype=ACCUM_DTYPE) for i in range(self.n_symbols)]
+        )
         self.sum_xy = arr @ arr.T
 
         self.count = min_length
@@ -97,24 +105,37 @@ class MatrixCorrelationTracker:
 
     def get_correlation(self, i: int, j: int) -> float:
         """Compute correlation between symbols i and j."""
-        if self.count == 0:
+        if self.count <= 1:
             return 0.0
         if i == j:
             return 1.0
 
-        sum_xy = self.sum_xy[i, j]
-        var_x = self.count * self.sum_xx[i] - self.sum_x[i] ** 2
-        var_y = self.count * self.sum_xx[j] - self.sum_x[j] ** 2
+        dtype = ACCUM_DTYPE
+        c = dtype(self.count)
+
+        sum_x = dtype(self.sum_x[i])
+        sum_y = dtype(self.sum_x[j])
+        sum_xx = dtype(self.sum_xx[i])
+        sum_yy = dtype(self.sum_xx[j])
+        sum_xy = dtype(self.sum_xy[i, j])
+
+        mean_x = sum_x / c
+        mean_y = sum_y / c
+
+        var_x = (sum_xx / c) - mean_x * mean_x
+        var_y = (sum_yy / c) - mean_y * mean_y
 
         if var_x <= 0 or var_y <= 0:
             return 0.0
 
-        numerator = self.count * sum_xy - self.sum_x[i] * self.sum_x[j]
+        cov_xy = (sum_xy / c) - mean_x * mean_y
         denominator = np.sqrt(var_x * var_y)
-
         if denominator == 0:
             return 0.0
-        return float(numerator / denominator)
+
+        correlation = cov_xy / denominator
+        correlation = np.clip(correlation, -1.0, 1.0)
+        return float(correlation)
 
     def get_correlation_matrix_upper(self, symbol_indices: List[int]) -> List[float]:
         """Get upper triangle of correlation matrix as flat list."""
@@ -143,22 +164,28 @@ class MatrixCorrelationTracker:
             return []
 
         indices = np.array(symbol_indices, dtype=np.int32)
-        Sx = self.sum_x[indices]  # shape (n,)
-        Sxx = self.sum_xx[indices]  # shape (n,)
-        Sxy = self.sum_xy[np.ix_(indices, indices)]  # shape (n,n)
-        c = self.count
+        dtype = ACCUM_DTYPE
+        c = dtype(self.count)
 
-        num = c * Sxy - np.outer(Sx, Sx)
+        Sx = self.sum_x[indices].astype(dtype, copy=False)  # shape (n,)
+        Sxx = self.sum_xx[indices].astype(dtype, copy=False)  # shape (n,)
+        Sxy = self.sum_xy[np.ix_(indices, indices)].astype(
+            dtype, copy=False
+        )  # shape (n,n)
 
-        var = c * Sxx - Sx * Sx  # shape (n,)
+        means = Sx / c
+        var = (Sxx / c) - means * means
         var = np.where(var <= 0, np.nan, var)
 
+        cov = (Sxy / c) - np.outer(means, means)
         denom = np.sqrt(np.outer(var, var))  # shape (n,n)
 
-        corr = num / denom
-        np.fill_diagonal(corr, 1.0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            corr = cov / denom
 
+        corr = np.clip(corr, -1.0, 1.0)
         corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+        np.fill_diagonal(corr, 1.0)
 
         iu, ju = np.triu_indices(n, k=1)
         upper = corr[iu, ju]
@@ -234,7 +261,7 @@ class MatrixCorrelationCalculator:
                         if symbol in symbols_data and data_type in symbols_data[symbol]:
                             idx = self.symbol_to_idx[symbol]
                             data = np.asarray(
-                                symbols_data[symbol][data_type], dtype=np.float64
+                                symbols_data[symbol][data_type], dtype=ACCUM_DTYPE
                             )
                             indexed_data[idx] = data
 
@@ -260,8 +287,8 @@ class MatrixCorrelationCalculator:
                 continue
 
             n_symbols = len(self.symbols)
-            new_vals = np.full(n_symbols, np.nan, dtype=np.float64)
-            old_vals = np.full(n_symbols, np.nan, dtype=np.float64)
+            new_vals = np.full(n_symbols, np.nan, dtype=ACCUM_DTYPE)
+            old_vals = np.full(n_symbols, np.nan, dtype=ACCUM_DTYPE)
 
             for symbol in self.symbols:
                 if symbol not in self.symbol_to_idx:
@@ -270,11 +297,11 @@ class MatrixCorrelationCalculator:
                 idx = self.symbol_to_idx[symbol]
 
                 if symbol in newest_values and data_type in newest_values[symbol]:
-                    new_vals[idx] = float(newest_values[symbol][data_type])
+                    new_vals[idx] = ACCUM_DTYPE(newest_values[symbol][data_type])
 
                 if tracker.count >= window_size:
                     if symbol in oldest_values and data_type in oldest_values[symbol]:
-                        old_vals[idx] = float(oldest_values[symbol][data_type])
+                        old_vals[idx] = ACCUM_DTYPE(oldest_values[symbol][data_type])
 
             if tracker.count >= window_size:
                 tracker.update(new_vals, old_vals)
@@ -417,7 +444,9 @@ class MatrixCorrelationCalculator:
                 if symbol_history
                 else 0
             )
-            has_required_history = bool(symbol_history) and available_points >= required_points
+            has_required_history = (
+                bool(symbol_history) and available_points >= required_points
+            )
 
             if not has_required_history:
                 print(
