@@ -317,7 +317,7 @@ class MatrixCorrelationCalculator:
         symbol_indices = [self.symbol_to_idx[s] for s in self.symbols]
         return tracker.get_correlation_matrix_upper_vectorized(symbol_indices)
 
-    def update_and_cache_incremental_correlations(self):
+    def update_and_cache_incremental_correlations(self, *, save_to_db: bool = True):
         """Update correlations and cache to Redis."""
         with self.correlation_lock:
             newest_values = get_symbol_kline_data(
@@ -354,7 +354,7 @@ class MatrixCorrelationCalculator:
                         msgpack.packb(correlation_matrix),
                     )
 
-                    if hours == 1:
+                    if save_to_db and hours == 1:
                         try:
                             start_save = time.time()
                             saved_count = save_correlation_matrix_to_db(
@@ -521,7 +521,7 @@ class MatrixCorrelationCalculator:
 
             start_time = time.time()
             for _ in range(message_count):
-                self.update_and_cache_incremental_correlations()
+                self.update_and_cache_incremental_correlations(save_to_db=False)
             elapsed = time.time() - start_time
 
             self.pending_message_count = 0
