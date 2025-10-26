@@ -383,123 +383,69 @@ class MatrixCorrelationCalculator:
     def add_new_symbol(self, symbol_name: str, is_retry: bool = False):
         """Add a new symbol to correlation tracking."""
         with self.correlation_lock:
-            start_time = time.time()
             if symbol_name in self.symbols:
                 print(f"Symbol {symbol_name} already being tracked in correlations")
                 return
 
-            with self.pending_symbols_lock:
-                if symbol_name in self.pending_symbols:
-                    print(
-                        f"Symbol {symbol_name} is already pending retry, skipping duplicate add"
-                    )
-                    return
-
-            if not is_retry:
+            if not self.hours_options:
                 print(
-                    f"Adding {symbol_name} to correlation tracking - scheduling retry in {self.min_hour} hour(s)"
+                    f"Correlation hours options not initialized; skipping add for {symbol_name}"
+                )
+                return
+
+            available_symbols = get_exchange_symbols()
+            if symbol_name not in available_symbols:
+                print(
+                    f"Symbol {symbol_name} not found in exchange symbol list; cannot add yet"
+                )
+                return
+
+            max_hours = max(self.hours_options)
+            min_hours = min(self.hours_options)
+            required_points = min_hours * 60
+
+            historical_data = get_historical_kline_data(
+                hours=max_hours, symbols=[symbol_name]
+            )
+            symbol_history = historical_data.get(symbol_name)
+
+            available_points = (
+                min(
+                    len(symbol_history.get(data_type, []))
+                    for data_type in KLINE_FIELD_MAP.keys()
+                )
+                if symbol_history
+                else 0
+            )
+            has_required_history = bool(symbol_history) and available_points >= required_points
+
+            if not has_required_history:
+                print(
+                    f"Insufficient historical data for {symbol_name}: have {available_points}/{required_points} points; scheduling retry"
                 )
                 self.schedule_symbol_retry(symbol_name)
                 return
 
-            print(
-                f"Retry: Adding {symbol_name} to correlation tracking with accumulated data"
-            )
+            with self.pending_symbols_lock:
+                self.pending_symbols.discard(symbol_name)
 
-            old_symbols = self.symbols.copy()
+            print(f"Adding symbol {symbol_name} to correlation tracking")
 
-            self.symbols = get_exchange_symbols()
-
+            self.symbols = available_symbols
             self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
             self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
 
-            new_idx = self.symbol_to_idx[symbol_name]
-
-            fetch_start = time.time()
-
-            new_symbol_data = get_historical_kline_data(
-                hours=self.min_hour, symbols=[symbol_name]
-            )
-
-            all_existing_data = get_historical_kline_data(
-                hours=self.min_hour, symbols=old_symbols
-            )
-
-            fetch_time = time.time() - fetch_start
-            print(f"Data fetch completed in {fetch_time:.2f}s")
-
-            for (hours, data_type), tracker in self.trackers.items():
-                old_n = tracker.n_symbols
-                new_n = len(self.symbols)
-
-                new_sum_x = np.zeros(new_n, dtype=np.float64)
-                new_sum_xx = np.zeros(new_n, dtype=np.float64)
-                new_sum_xy = np.zeros((new_n, new_n), dtype=np.float64)
-
-                reindex_pairs = [
-                    (old_idx, self.symbol_to_idx[sym])
-                    for old_idx, sym in enumerate(old_symbols)
-                    if sym in self.symbol_to_idx
-                ]
-
-                for old_idx, new_idx_existing in reindex_pairs:
-                    new_sum_x[new_idx_existing] = tracker.sum_x[old_idx]
-                    new_sum_xx[new_idx_existing] = tracker.sum_xx[old_idx]
-
-                for old_i, new_i in reindex_pairs:
-                    for old_j, new_j in reindex_pairs:
-                        new_sum_xy[new_i, new_j] = tracker.sum_xy[old_i, old_j]
-
-                tracker.sum_x = new_sum_x
-                tracker.sum_xx = new_sum_xx
-                tracker.sum_xy = new_sum_xy
-
-                tracker.n_symbols = new_n
-                tracker.upper_i, tracker.upper_j = np.triu_indices(new_n, k=1)
-
-                if (
-                    symbol_name in new_symbol_data
-                    and data_type in new_symbol_data[symbol_name]
-                ):
-                    data = np.asarray(
-                        new_symbol_data[symbol_name][data_type], dtype=np.float64
-                    )
-
-                    use_count = min(tracker.count, len(data))
-
-                    if use_count > 0:
-                        recent_data = data[-use_count:]
-
-                        tracker.sum_x[new_idx] = np.sum(recent_data)
-                        tracker.sum_xx[new_idx] = np.sum(recent_data * recent_data)
-                        tracker.sum_xy[new_idx, new_idx] = np.sum(
-                            recent_data * recent_data
-                        )
-
-                        for existing_idx in range(old_n):
-                            existing_symbol = old_symbols[existing_idx]
-                            new_existing_idx = self.symbol_to_idx.get(existing_symbol)
-
-                            if new_existing_idx is None:
-                                continue
-
-                            if (
-                                existing_symbol in all_existing_data
-                                and data_type in all_existing_data[existing_symbol]
-                            ):
-                                other_data = np.asarray(
-                                    all_existing_data[existing_symbol][data_type],
-                                    dtype=np.float64,
-                                )
-                                if len(other_data) >= use_count:
-                                    aligned_other = other_data[-use_count:]
-                                    cross = np.sum(aligned_other * recent_data)
-                                    tracker.sum_xy[new_existing_idx, new_idx] = cross
-                                    tracker.sum_xy[new_idx, new_existing_idx] = cross
-
-            print(f"Successfully added {symbol_name} to {len(self.trackers)} trackers")
-            elapsed = time.time() - start_time
-            print(f"Add symbol operation took {elapsed:.2f}s")
+            if self.initialization_complete:
+                self.initialize_correlation_trackers()
+                self.update_and_cache_incremental_correlations()
+                print(
+                    f"Successfully added {symbol_name}; now tracking {len(self.symbols)} symbols"
+                )
+            else:
+                # Trackers will be built during initial initialization flow
+                print(
+                    f"Initialization in progress; {symbol_name} will be included once setup completes"
+                )
 
     def remove_symbol(self, symbol_name: str):
         """Remove a symbol from correlation tracking."""
