@@ -40,11 +40,9 @@ class MatrixCorrelationTracker:
         self.n_symbols = n_symbols
         self.count = 0
 
-        # Per-symbol statistics
         self.sum_x = np.zeros(n_symbols, dtype=ACCUM_DTYPE)
         self.sum_xx = np.zeros(n_symbols, dtype=ACCUM_DTYPE)
 
-        # Dense sum_xy matrix
         self.sum_xy = np.zeros((n_symbols, n_symbols), dtype=ACCUM_DTYPE)
 
         # Precompute upper-triangle indices once
@@ -57,8 +55,6 @@ class MatrixCorrelationTracker:
 
         min_length = min(len(data) for data in symbol_data.values())
 
-        # Only initialize if we have sufficient data points
-        # This prevents initialization with insufficient data that would corrupt correlations
         if min_length == 0:
             return
 
@@ -68,7 +64,10 @@ class MatrixCorrelationTracker:
             self.sum_xx[idx] = np.sum(data_segment * data_segment, dtype=ACCUM_DTYPE)
 
         arr = np.vstack(
-            [np.asarray(symbol_data[i][:min_length], dtype=ACCUM_DTYPE) for i in range(self.n_symbols)]
+            [
+                np.asarray(symbol_data[i][:min_length], dtype=ACCUM_DTYPE)
+                for i in range(self.n_symbols)
+            ]
         )
         self.sum_xy = arr @ arr.T
 
@@ -76,7 +75,6 @@ class MatrixCorrelationTracker:
 
     def update(self, new_values: np.ndarray, old_values: Optional[np.ndarray] = None):
         """Update statistics with new values (vectorized)."""
-        # Remove old values if window is full
         if self.count >= self.window_size and old_values is not None:
             mask = ~np.isnan(old_values)
             if np.any(mask):
@@ -89,16 +87,13 @@ class MatrixCorrelationTracker:
 
             self.count -= 1
 
-        # Add new values
         mask = ~np.isnan(new_values)
         if np.any(mask):
             vals = new_values[mask]
 
-            # Per-symbol
             self.sum_x[mask] += vals
             self.sum_xx[mask] += vals * vals
 
-            # Pairwise update
             self.sum_xy[np.ix_(mask, mask)] += np.outer(vals, vals)
 
         self.count = min(self.count + 1, self.window_size)
@@ -167,18 +162,16 @@ class MatrixCorrelationTracker:
         dtype = ACCUM_DTYPE
         c = dtype(self.count)
 
-        Sx = self.sum_x[indices].astype(dtype, copy=False)  # shape (n,)
-        Sxx = self.sum_xx[indices].astype(dtype, copy=False)  # shape (n,)
-        Sxy = self.sum_xy[np.ix_(indices, indices)].astype(
-            dtype, copy=False
-        )  # shape (n,n)
+        Sx = self.sum_x[indices].astype(dtype, copy=False)
+        Sxx = self.sum_xx[indices].astype(dtype, copy=False)
+        Sxy = self.sum_xy[np.ix_(indices, indices)].astype(dtype, copy=False)
 
         means = Sx / c
         var = (Sxx / c) - means * means
         var = np.where(var <= 0, np.nan, var)
 
         cov = (Sxy / c) - np.outer(means, means)
-        denom = np.sqrt(np.outer(var, var))  # shape (n,n)
+        denom = np.sqrt(np.outer(var, var))
 
         with np.errstate(invalid="ignore", divide="ignore"):
             corr = cov / denom
@@ -619,8 +612,8 @@ class MatrixCorrelationCalculator:
         self.initialization_complete = True
         print("Initialization complete - now processing any pending messages")
 
-        self.process_pending_messages()
-        print("Ready for real-time message processing")
+        # self.process_pending_messages()
+        # print("Ready for real-time message processing")
 
         try:
             pubsub_thread.join()
