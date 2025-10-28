@@ -23,6 +23,7 @@ BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/stream"
 BINANCE_USER_AGENT = "crypto-scanner/1.0"
 WS_PING_INTERVAL = 20
 WS_PING_TIMEOUT = 10
+MAX_STREAMS_PER_CONNECTION = 200
 
 
 class ContractType(str, Enum):
@@ -31,12 +32,13 @@ class ContractType(str, Enum):
 
 class KlinesSocketManager:
     def __init__(self):
-        self.ws_app = None
-        self.ws_thread = None
+        self.ws_apps = []
+        self.ws_threads = []
         self.r = get_redis_connection()
-        self.stream_name = None
+        self.stream_urls = []
         self.symbols_executed = set()
         self.message_batch = []
+        self.message_lock = threading.Lock()
         self.symbols = []
         self.symbols_count = 0
         self.active_symbols_set = set()
@@ -61,20 +63,21 @@ class KlinesSocketManager:
 
     def stop(self):
         self._manual_close = True
-        if self.ws_app is not None:
+        for ws_app in list(self.ws_apps):
             try:
-                self.ws_app.close()
+                ws_app.close()
             except Exception as exc:
                 self.store_error(f"Error closing websocket: {exc}")
-        if (
-            self.ws_thread is not None
-            and self.ws_thread.is_alive()
-            and threading.current_thread() is not self.ws_thread
-        ):
-            self.ws_thread.join(timeout=5)
-        self.ws_app = None
-        self.ws_thread = None
-        self.stream_name = None
+        current_thread = threading.current_thread()
+        for ws_thread in list(self.ws_threads):
+            try:
+                if ws_thread.is_alive() and current_thread is not ws_thread:
+                    ws_thread.join(timeout=5)
+            except Exception as exc:
+                self.store_error(f"Error joining websocket thread: {exc}")
+        self.ws_apps = []
+        self.ws_threads = []
+        self.stream_urls = []
 
     def reconnect(self):
         if not self.reconnect_lock.acquire(blocking=False):
@@ -244,26 +247,47 @@ class KlinesSocketManager:
             print("No active symbols available to subscribe to Binance stream")
             return
 
-        streams = [f"{symbol.lower()}@kline_1m" for symbol in self.symbols]
-        stream_query = "/".join(streams)
-        stream_url = f"{BINANCE_FUTURES_WS_URL}?streams={stream_query}"
+        stream_groups = [
+            [f"{symbol.lower()}@kline_1m" for symbol in chunk]
+            for chunk in self._chunk_symbols(MAX_STREAMS_PER_CONNECTION)
+        ]
 
-        self.stream_name = stream_url
+        if not stream_groups:
+            return
+
+        self.stream_urls = []
+        self.ws_apps = []
+        self.ws_threads = []
         self._manual_close = False
 
-        self.ws_app = websocket.WebSocketApp(
-            stream_url,
-            on_message=self._on_ws_message,
-            on_error=self._on_ws_error,
-            on_close=self._on_ws_close,
-        )
+        for stream_list in stream_groups:
+            stream_query = "/".join(stream_list)
+            stream_url = f"{BINANCE_FUTURES_WS_URL}?streams={stream_query}"
+            self.stream_urls.append(stream_url)
 
-        self.ws_thread = threading.Thread(
-            target=self.ws_app.run_forever,
-            kwargs={"ping_interval": WS_PING_INTERVAL, "ping_timeout": WS_PING_TIMEOUT},
-        )
-        self.ws_thread.daemon = True
-        self.ws_thread.start()
+            ws_app = websocket.WebSocketApp(
+                stream_url,
+                on_message=self._on_ws_message,
+                on_error=self._on_ws_error,
+                on_close=self._on_ws_close,
+            )
+            self.ws_apps.append(ws_app)
+
+            ws_thread = threading.Thread(
+                target=ws_app.run_forever,
+                kwargs={
+                    "ping_interval": WS_PING_INTERVAL,
+                    "ping_timeout": WS_PING_TIMEOUT,
+                },
+            )
+            ws_thread.daemon = True
+            self.ws_threads.append(ws_thread)
+            ws_thread.start()
+
+    def _chunk_symbols(self, chunk_size):
+        """Yield chunks of symbols respecting the Binance combined stream limit."""
+        for index in range(0, len(self.symbols), chunk_size):
+            yield self.symbols[index : index + chunk_size]
 
     def _on_ws_message(self, _ws, message):
         try:
@@ -317,11 +341,15 @@ class KlinesSocketManager:
         kline_data = msg_data["k"]
 
         if kline_data.get("x"):
-            self.message_batch.append(kline_data)
+            batch_copy = None
+            with self.message_lock:
+                self.message_batch.append(kline_data)
 
-            if len(self.message_batch) == self.symbols_count:
-                batch_copy = list(self.message_batch)
-                self.message_batch = []
+                if self.symbols_count and len(self.message_batch) >= self.symbols_count:
+                    batch_copy = list(self.message_batch)
+                    self.message_batch = []
+
+            if batch_copy:
                 thread = threading.Thread(
                     target=self._save_batch_sync, args=(batch_copy,)
                 )
