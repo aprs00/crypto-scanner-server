@@ -355,9 +355,22 @@ class KlinesSocketManager:
                 )
                 thread.start()
 
-                self.r.publish(
-                    RedisPubMessages.KLINE_SAVED_TO_DB.value, kline_data["t"]
+                newest_values = {
+                    item["s"]: {
+                        "price": float(item["c"]),
+                        "volume": float(item["v"]),
+                        "trades": float(item["n"]),
+                    }
+                    for item in batch_copy
+                }
+                payload = json.dumps(
+                    {
+                        "timestamp": kline_data["t"],
+                        "newest_values": newest_values,
+                    }
                 )
+
+                self.r.publish(RedisPubMessages.KLINE_SAVED_TO_DB.value, payload)
 
     def handle_invalid_symbol_error(self, error_msg):
         """Handle specific invalid symbol errors."""

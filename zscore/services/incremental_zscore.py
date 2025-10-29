@@ -1,7 +1,9 @@
+import json
 import redis
 import numpy as np
 import msgpack
 import time
+from typing import Dict, Optional
 from django.utils import timezone
 from django.conf import settings
 
@@ -115,11 +117,14 @@ class ZScoreProcessor:
                         )
         return zscore_dict
 
-    def update_zscores(self):
+    def update_zscores(
+        self, newest_values: Optional[Dict[str, Dict[str, float]]] = None
+    ):
         """Update incremental Z-scores with new data"""
-        newest_values = get_symbol_kline_data(
-            symbols=self.symbols, exchange="binance", contract_type="perpetual"
-        )
+        if newest_values is None:
+            newest_values = get_symbol_kline_data(
+                symbols=self.symbols, exchange="binance", contract_type="perpetual"
+            )
 
         for hours in self.hours_options:
             oldest_values = get_symbol_kline_data(
@@ -132,7 +137,10 @@ class ZScoreProcessor:
             for symbol in self.symbols:
                 for data_type in KLINE_FIELD_MAP.keys():
                     zscore_obj = self.incremental_zscores[symbol][data_type][hours]
-                    new_val = newest_values[symbol][data_type]
+                    symbol_new_values = newest_values.get(symbol)
+                    if not symbol_new_values or data_type not in symbol_new_values:
+                        continue
+                    new_val = symbol_new_values[data_type]
                     old_val = oldest_values.get(symbol, {}).get(data_type)
 
                     if old_val is not None:
@@ -269,7 +277,33 @@ class ZScoreProcessor:
 
                         if channel == RedisPubMessages.KLINE_SAVED_TO_DB.value:
                             print(f'ZSCORE {message["channel"]}')
-                            self.update_zscores()
+                            data_raw = message.get("data")
+                            if data_raw is None:
+                                print("ZSCORE: Received empty payload")
+                                continue
+
+                            if isinstance(data_raw, bytes):
+                                data_text = data_raw.decode("utf-8")
+                            elif isinstance(data_raw, str):
+                                data_text = data_raw
+                            else:
+                                print(
+                                    f"ZSCORE: Unexpected payload type {type(data_raw)}"
+                                )
+                                continue
+
+                            try:
+                                payload = json.loads(data_text)
+                            except (TypeError, json.JSONDecodeError):
+                                print("ZSCORE: Failed to decode newest values payload")
+                                continue
+
+                            newest_values = payload.get("newest_values")
+                            if not isinstance(newest_values, dict):
+                                print("ZSCORE: No newest_values found in payload")
+                                continue
+
+                            self.update_zscores(newest_values=newest_values)
                             results = self.create_z_score_results()
 
                             pipeline = r.pipeline()
