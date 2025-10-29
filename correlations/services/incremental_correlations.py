@@ -216,6 +216,11 @@ class MatrixCorrelationCalculator:
             max_workers=2, thread_name_prefix="symbol-retry"
         )
 
+    def _sync_symbol_indices(self):
+        """Rebuild symbol index mappings to match the current symbol ordering."""
+        self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
+        self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
+
     def initialize_correlation_trackers(self):
         """Initialize correlation trackers with optimized data fetching."""
         with self.correlation_lock:
@@ -279,17 +284,90 @@ class MatrixCorrelationCalculator:
             gc.collect()
             print("All timeframes initialization completed\n")
 
+    def _ensure_tracker_alignment(
+        self, hours: int, data_type: str
+    ) -> Optional[MatrixCorrelationTracker]:
+        """
+        Ensure a tracker exists for the requested timeframe/data type and that its
+        internal arrays match the current symbol set. If mismatched, rebuild the
+        trackers so updates run against correctly sized matrices.
+        """
+        tracker = self.trackers.get((hours, data_type))
+        expected_symbols = len(self.symbols)
+
+        if expected_symbols == 0:
+            return tracker
+
+        tracker_size = tracker.sum_x.shape[0] if tracker is not None else 0
+        if tracker is not None and tracker_size == expected_symbols:
+            return tracker
+
+        reason = (
+            "missing"
+            if tracker is None
+            else f"dimension mismatch (expected {expected_symbols}, got {tracker_size})"
+        )
+
+        with self.print_lock:
+            print(
+                f"Tracker misalignment detected for {hours}h {data_type}: {reason}. "
+                "Rebuilding trackers."
+            )
+
+        try:
+            refreshed_symbols = get_exchange_symbols()
+        except Exception as exc:
+            refreshed_symbols = None
+            with self.print_lock:
+                print(
+                    f"Failed to refresh exchange symbols while rebalancing trackers: {exc}"
+                )
+
+        if refreshed_symbols:
+            if refreshed_symbols != self.symbols:
+                self.symbols = refreshed_symbols
+        self._sync_symbol_indices()
+        expected_symbols = len(self.symbols)
+
+        self.initialize_correlation_trackers()
+
+        tracker = self.trackers.get((hours, data_type))
+        if tracker is None:
+            with self.print_lock:
+                print(
+                    f"Tracker {hours}h {data_type} unavailable after rebuild; skipping update."
+                )
+            return None
+
+        tracker_size = tracker.sum_x.shape[0]
+        if tracker_size != expected_symbols:
+            with self.print_lock:
+                print(
+                    f"Tracker {hours}h {data_type} still mismatched after rebuild "
+                    f"(expected {expected_symbols}, got {tracker_size}); skipping update."
+                )
+            return None
+
+        return tracker
+
     def update_correlations(self, hours: int, newest_values: dict, oldest_values: dict):
         """Update correlation trackers with new data."""
         window_size = hours * 60
 
         for data_type in KLINE_FIELD_MAP.keys():
-            tracker = self.trackers.get((hours, data_type))
+            tracker = self._ensure_tracker_alignment(hours, data_type)
             if tracker is None:
-                print(f"Missing tracker for {hours}h {data_type}")
                 continue
 
             n_symbols = len(self.symbols)
+            if tracker.sum_x.shape[0] != n_symbols:
+                with self.print_lock:
+                    print(
+                        f"Skipping update for {hours}h {data_type}: tracker size mismatch "
+                        f"(tracker={tracker.sum_x.shape[0]}, symbols={n_symbols})"
+                    )
+                continue
+
             new_vals = np.full(n_symbols, np.nan, dtype=ACCUM_DTYPE)
             old_vals = np.full(n_symbols, np.nan, dtype=ACCUM_DTYPE)
 
@@ -464,8 +542,7 @@ class MatrixCorrelationCalculator:
             print(f"Adding symbol {symbol_name} to correlation tracking")
 
             self.symbols = available_symbols
-            self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
-            self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
+            self._sync_symbol_indices()
 
             if self.initialization_complete:
                 self.initialize_correlation_trackers()
@@ -492,8 +569,7 @@ class MatrixCorrelationCalculator:
 
             self.symbols = get_exchange_symbols()
 
-            self.symbol_to_idx = {sym: i for i, sym in enumerate(self.symbols)}
-            self.idx_to_symbol = {i: sym for sym, i in self.symbol_to_idx.items()}
+            self._sync_symbol_indices()
 
             for tracker in self.trackers.values():
                 tracker.sum_x = np.delete(tracker.sum_x, idx_to_remove)
@@ -603,9 +679,7 @@ class MatrixCorrelationCalculator:
         self.symbols = get_exchange_symbols()
 
         # Build symbol index mappings
-        for i, symbol in enumerate(self.symbols):
-            self.symbol_to_idx[symbol] = i
-            self.idx_to_symbol[i] = symbol
+        self._sync_symbol_indices()
 
         print("Starting pubsub listener thread...")
         pubsub_thread = threading.Thread(target=self.start_pubsub_listener)
