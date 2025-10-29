@@ -231,8 +231,6 @@ class MatrixCorrelationCalculator:
                 f"Initializing correlations for {n_symbols} symbols ({n_symbols*(n_symbols-1)//2:,} pairs)"
             )
 
-            time.sleep(180)
-
             sorted_hours = sorted(self.hours_options, reverse=True)
             max_hours = sorted_hours[0]
 
