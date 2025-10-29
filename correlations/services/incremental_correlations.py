@@ -1,3 +1,4 @@
+import json
 import redis
 import msgpack
 import time
@@ -210,6 +211,7 @@ class MatrixCorrelationCalculator:
         self.initialization_complete = False
         self.pending_message_count = 0
         self.pending_messages_lock = threading.Lock()
+        self.pending_newest_value_batches: List[Dict[str, Dict[str, float]]] = []
         self.pending_symbols: Set[str] = set()
         self.pending_symbols_lock = threading.Lock()
         self.retry_scheduler = ThreadPoolExecutor(
@@ -228,6 +230,8 @@ class MatrixCorrelationCalculator:
             print(
                 f"Initializing correlations for {n_symbols} symbols ({n_symbols*(n_symbols-1)//2:,} pairs)"
             )
+
+            time.sleep(180)
 
             sorted_hours = sorted(self.hours_options, reverse=True)
             max_hours = sorted_hours[0]
@@ -398,12 +402,18 @@ class MatrixCorrelationCalculator:
         symbol_indices = [self.symbol_to_idx[s] for s in self.symbols]
         return tracker.get_correlation_matrix_upper_vectorized(symbol_indices)
 
-    def update_and_cache_incremental_correlations(self, *, save_to_db: bool = True):
+    def update_and_cache_incremental_correlations(
+        self,
+        *,
+        save_to_db: bool = True,
+        newest_values: Optional[Dict[str, Dict[str, float]]] = None,
+    ):
         """Update correlations and cache to Redis."""
         with self.correlation_lock:
-            newest_values = get_symbol_kline_data(
-                symbols=self.symbols, exchange="binance", contract_type="perpetual"
-            )
+            if newest_values is None:
+                newest_values = get_symbol_kline_data(
+                    symbols=self.symbols, exchange="binance", contract_type="perpetual"
+                )
 
             set_pipeline = self.r.pipeline()
 
@@ -591,20 +601,24 @@ class MatrixCorrelationCalculator:
     def process_pending_messages(self):
         """Process any messages that were queued during initialization."""
         with self.pending_messages_lock:
-            if self.pending_message_count == 0:
+            if not self.pending_newest_value_batches:
                 print("No pending messages to process")
                 return
 
-            message_count = self.pending_message_count
+            message_count = len(self.pending_newest_value_batches)
+            batches = list(self.pending_newest_value_batches)
+            self.pending_newest_value_batches.clear()
+            self.pending_message_count = 0
+
             print(f"Processing {message_count} pending messages...")
 
-            start_time = time.time()
-            for _ in range(message_count):
-                self.update_and_cache_incremental_correlations(save_to_db=False)
-            elapsed = time.time() - start_time
-
-            self.pending_message_count = 0
-            print(f"Processed {message_count} pending messages in {elapsed:.2f}s")
+        start_time = time.time()
+        for newest_values in batches:
+            self.update_and_cache_incremental_correlations(
+                save_to_db=False, newest_values=newest_values
+            )
+        elapsed = time.time() - start_time
+        print(f"Processed {message_count} pending messages in {elapsed:.2f}s")
 
     def start_pubsub_listener(self):
         """Listen for Redis pubsub messages with reconnection logic."""
@@ -628,16 +642,51 @@ class MatrixCorrelationCalculator:
                         if channel == RedisPubMessages.KLINE_SAVED_TO_DB.value:
                             print(f'CORRELATIONS {message["channel"]}')
 
+                            data_raw = message.get("data")
+                            if data_raw is None:
+                                print("Received empty payload; skipping")
+                                continue
+
+                            if isinstance(data_raw, bytes):
+                                data_text = data_raw.decode("utf-8")
+                            elif isinstance(data_raw, str):
+                                data_text = data_raw
+                            else:
+                                print(
+                                    f"Unexpected payload type {type(data_raw)}; skipping"
+                                )
+                                continue
+
+                            try:
+                                payload = json.loads(data_text)
+                            except (TypeError, json.JSONDecodeError):
+                                print(
+                                    "Failed to decode newest values payload; skipping"
+                                )
+                                continue
+
+                            newest_values = payload.get("newest_values")
+                            if not isinstance(newest_values, dict):
+                                print("No newest_values found in payload; skipping")
+                                continue
+
                             if not self.initialization_complete:
                                 with self.pending_messages_lock:
-                                    self.pending_message_count += 1
+                                    self.pending_newest_value_batches.append(
+                                        newest_values
+                                    )
+                                    self.pending_message_count = len(
+                                        self.pending_newest_value_batches
+                                    )
                                     print(
                                         f"Queued message during initialization. Queue size: {self.pending_message_count}"
                                     )
                                 continue
 
                             start_time = time.time()
-                            self.update_and_cache_incremental_correlations()
+                            self.update_and_cache_incremental_correlations(
+                                newest_values=newest_values
+                            )
                             elapsed = time.time() - start_time
                             with self.print_lock:
                                 print(
@@ -696,7 +745,7 @@ class MatrixCorrelationCalculator:
         self.initialization_complete = True
         print("Initialization complete - now processing any pending messages")
 
-        # self.process_pending_messages()
+        self.process_pending_messages()
         print("Ready for real-time message processing")
 
         try:
