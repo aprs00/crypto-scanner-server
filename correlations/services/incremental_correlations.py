@@ -217,6 +217,9 @@ class MatrixCorrelationCalculator:
         self.retry_scheduler = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="symbol-retry"
         )
+        self.cleanup_interval_seconds = 15 * 60
+        self._cleanup_stop_event = threading.Event()
+        self._cleanup_thread: Optional[threading.Thread] = None
 
     def _sync_symbol_indices(self):
         """Rebuild symbol index mappings to match the current symbol ordering."""
@@ -468,7 +471,28 @@ class MatrixCorrelationCalculator:
 
             notification_service.send_correlation_update()
 
-            cleanup_old_correlation_data(retention_hours=4)
+
+    def _start_cleanup_scheduler(self):
+        """Start background thread to periodically purge old correlation data."""
+        if self._cleanup_thread and self._cleanup_thread.is_alive():
+            return
+
+        def _cleanup_loop():
+            while not self._cleanup_stop_event.is_set():
+                try:
+                    cleanup_old_correlation_data(retention_hours=4)
+                except Exception as exc:
+                    print(f"Failed to cleanup correlation data: {exc}")
+
+                if self._cleanup_stop_event.wait(timeout=self.cleanup_interval_seconds):
+                    break
+
+        self._cleanup_thread = threading.Thread(
+            target=_cleanup_loop,
+            name="correlation-cleanup",
+            daemon=True,
+        )
+        self._cleanup_thread.start()
 
     def schedule_symbol_retry(self, symbol_name: str):
         """Schedule a retry to add symbol after delay to allow data accumulation."""
@@ -732,6 +756,8 @@ class MatrixCorrelationCalculator:
         pubsub_thread = threading.Thread(target=self.start_pubsub_listener)
         pubsub_thread.start()
 
+        self._start_cleanup_scheduler()
+
         time.sleep(2)
 
         print("Starting correlation trackers initialization...")
@@ -751,6 +777,12 @@ class MatrixCorrelationCalculator:
         except KeyboardInterrupt:
             print("Shutting down...")
         finally:
+            print("Stopping cleanup scheduler...")
+            self._cleanup_stop_event.set()
+            if self._cleanup_thread and self._cleanup_thread.is_alive():
+                self._cleanup_thread.join(timeout=5)
+            print("Cleanup scheduler stopped")
+
             print("Shutting down retry scheduler...")
             self.retry_scheduler.shutdown(wait=False)
             print("Retry scheduler shut down")
