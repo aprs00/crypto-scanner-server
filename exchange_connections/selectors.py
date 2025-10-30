@@ -1,5 +1,5 @@
 from django.utils import timezone
-from datetime import timedelta
+from datetime import timedelta, timezone as dt_timezone
 from typing import Optional
 from django.db import connection
 from collections import defaultdict
@@ -44,8 +44,8 @@ def get_historical_kline_data(hours, symbols):
 
     with connection.cursor() as cursor:
         params = symbols + [
-            start_time.astimezone(timezone.utc),
-            end_time.astimezone(timezone.utc),
+            start_time.astimezone(dt_timezone.utc),
+            end_time.astimezone(dt_timezone.utc),
         ]
         cursor.execute(query, params)
 
@@ -65,7 +65,7 @@ def get_symbol_kline_data(
     symbol_placeholders = ",".join(["%s"] * len(symbols))
 
     if hours is not None:
-        target_time = timezone.now() - timezone.timedelta(hours=hours)
+        target_time = timezone.now() - timedelta(hours=hours)
         time_condition = "AND k.start_time <= %s"
         params = [target_time] + [exchange, contract_type] + symbols
     else:
