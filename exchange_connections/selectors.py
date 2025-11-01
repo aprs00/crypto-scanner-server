@@ -1,6 +1,6 @@
 from django.utils import timezone
 from datetime import timedelta, timezone as dt_timezone
-from typing import Optional
+from typing import Optional, List, Sequence, cast
 from django.db import connection
 from collections import defaultdict
 
@@ -109,3 +109,25 @@ def get_symbol_kline_data(
             }
             for row in rows
         }
+
+
+def get_top_market_cap_symbols(
+    limit: int = 100, exchange: str = "binance", contract_type: str = "perpetual"
+) -> List[str]:
+    """Return a simple list of symbols sorted by market cap descending."""
+    if limit <= 0:
+        return []
+
+    zset_key = f"market_cap:{exchange}:{contract_type}"
+    raw_entries = r.zrevrange(zset_key, 0, limit - 1)
+    entries: Sequence[bytes] = cast(Sequence[bytes], raw_entries)
+
+    symbols: List[str] = []
+    for symbol_bytes in entries:
+        try:
+            symbol = symbol_bytes.decode("utf-8")
+        except AttributeError:
+            symbol = str(symbol_bytes)
+        symbols.append(symbol)
+
+    return symbols
