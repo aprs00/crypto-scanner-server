@@ -21,9 +21,14 @@ from core.redis_config import get_redis_connection
 BINANCE_FUTURES_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/stream"
 BINANCE_USER_AGENT = "crypto-scanner/1.0"
+COINGECKO_MARKET_CAP_URL = (
+    "https://api.coingecko.com/api/v3/coins/markets"
+    "?vs_currency=usd&order=market_cap_desc&per_page={per_page}&page=1&sparkline=false"
+)
 WS_PING_INTERVAL = 20
 WS_PING_TIMEOUT = 10
 MAX_STREAMS_PER_CONNECTION = 200
+MARKET_CAP_ZSET_KEY = "market_cap:binance:perpetual"
 
 
 class ContractType(str, Enum):
@@ -133,6 +138,8 @@ class KlinesSocketManager:
             if should_reconnect:
                 self.reconnect_event.set()
 
+            self.store_top_market_cap_symbols(limit=100)
+
             self.last_symbol_check = datetime.now()
 
         except (URLError, ValueError, KeyError) as e:
@@ -145,6 +152,62 @@ class KlinesSocketManager:
             print(f"Unexpected error fetching symbols: {str(e)}")
             self.symbols_count = len(self.symbols)
             return []
+
+    def store_top_market_cap_symbols(self, limit=100):
+        """Fetch top market cap symbols and store them in Redis sorted set."""
+        if not self.symbols or limit <= 0:
+            return
+
+        per_page = min(max(limit * 2, limit), 250)
+        try:
+            request = Request(
+                COINGECKO_MARKET_CAP_URL.format(per_page=per_page),
+                headers={"User-Agent": BINANCE_USER_AGENT},
+            )
+            with urlopen(request, timeout=10) as response:
+                market_data = json.loads(response.read().decode("utf-8"))
+        except (URLError, ValueError) as exc:
+            self.store_error(f"Error fetching market cap data: {exc}")
+            return
+
+        symbol_set = set(self.symbols)
+        ranked_entries = []
+
+        for asset in market_data:
+            if not isinstance(asset, dict):
+                continue
+
+            asset_symbol = asset.get("symbol")
+            market_cap = asset.get("market_cap")
+            if not asset_symbol or market_cap is None:
+                continue
+
+            binance_symbol = f"{asset_symbol.upper()}USDT"
+            if binance_symbol not in symbol_set:
+                continue
+
+            ranked_entries.append(
+                {
+                    "symbol": binance_symbol,
+                    "market_cap": float(market_cap),
+                }
+            )
+
+            if len(ranked_entries) >= limit:
+                break
+
+        if not ranked_entries:
+            return
+
+        pipeline = self.r.pipeline()
+        pipeline.delete(MARKET_CAP_ZSET_KEY)
+
+        zadd_payload = []
+        for entry in ranked_entries:
+            zadd_payload.extend([entry["market_cap"], entry["symbol"]])
+
+        pipeline.execute_command("ZADD", MARKET_CAP_ZSET_KEY, *zadd_payload)
+        pipeline.execute()
 
     def handle_symbol_changes(self, old_symbols, new_symbols):
         """Handle added and removed symbols."""
