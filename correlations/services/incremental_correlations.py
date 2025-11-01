@@ -403,6 +403,64 @@ class MatrixCorrelationCalculator:
         symbol_indices = [self.symbol_to_idx[s] for s in self.symbols]
         return tracker.get_correlation_matrix_upper_vectorized(symbol_indices)
 
+    def _prepare_newest_values(
+        self, newest_values: Optional[Dict[str, Dict[str, float]]]
+    ) -> Optional[Dict[str, Dict[str, float]]]:
+        """
+        Ensure we have the latest values for every tracked symbol before updating trackers.
+        Returns a complete mapping or None if the data cannot be made complete.
+        """
+        if newest_values is None:
+            return None
+
+        complete_values: Dict[str, Dict[str, float]] = {
+            symbol: dict(values) for symbol, values in newest_values.items()
+        }
+
+        missing_symbols = [s for s in self.symbols if s not in complete_values]
+
+        if missing_symbols:
+            try:
+                supplemental = get_symbol_kline_data(
+                    symbols=missing_symbols,
+                    exchange="binance",
+                    contract_type="perpetual",
+                )
+            except Exception as exc:
+                with self.print_lock:
+                    print(
+                        "Failed to backfill newest values for symbols "
+                        f"{missing_symbols[:5]}{'...' if len(missing_symbols) > 5 else ''}: {exc}"
+                    )
+                return None
+
+            for symbol, values in supplemental.items():
+                symbol_entry = complete_values.setdefault(symbol, {})
+                for data_type, value in values.items():
+                    if data_type not in symbol_entry or symbol_entry[data_type] is None:
+                        symbol_entry[data_type] = value
+
+        incomplete_symbols = [
+            symbol
+            for symbol in self.symbols
+            if symbol not in complete_values
+            or any(
+                data_type not in complete_values[symbol]
+                or complete_values[symbol][data_type] is None
+                for data_type in KLINE_FIELD_MAP.keys()
+            )
+        ]
+
+        if incomplete_symbols:
+            with self.print_lock:
+                print(
+                    "Skipping correlation update; incomplete newest_values for "
+                    f"{incomplete_symbols[:5]}{'...' if len(incomplete_symbols) > 5 else ''}"
+                )
+            return None
+
+        return complete_values
+
     def update_and_cache_incremental_correlations(
         self,
         *,
@@ -415,6 +473,10 @@ class MatrixCorrelationCalculator:
                 newest_values = get_symbol_kline_data(
                     symbols=self.symbols, exchange="binance", contract_type="perpetual"
                 )
+
+            newest_values = self._prepare_newest_values(newest_values)
+            if newest_values is None:
+                return
 
             set_pipeline = self.r.pipeline()
 
