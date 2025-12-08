@@ -58,25 +58,25 @@ class MatrixCorrelationTracker:
 
         min_length = min(len(data) for data in symbol_data.values())
 
-        # Only initialize if we have sufficient data points
-        # This prevents initialization with insufficient data that would corrupt correlations
         if min_length == 0:
             return
 
+        effective_length = min(min_length, self.window_size)
+
         for idx, data in symbol_data.items():
-            data_segment = np.asarray(data[:min_length], dtype=ACCUM_DTYPE)
+            data_segment = np.asarray(data[-effective_length:], dtype=ACCUM_DTYPE)
             self.sum_x[idx] = np.sum(data_segment, dtype=ACCUM_DTYPE)
             self.sum_xx[idx] = np.sum(data_segment * data_segment, dtype=ACCUM_DTYPE)
 
         arr = np.vstack(
             [
-                np.asarray(symbol_data[i][:min_length], dtype=ACCUM_DTYPE)
+                np.asarray(symbol_data[i][-effective_length:], dtype=ACCUM_DTYPE)
                 for i in range(self.n_symbols)
             ]
         )
         self.sum_xy = arr @ arr.T
 
-        self.count = min_length
+        self.count = effective_length
 
     def update(self, new_values: np.ndarray, old_values: Optional[np.ndarray] = None):
         """Update statistics with new values (vectorized)."""
@@ -149,7 +149,7 @@ class MatrixCorrelationTracker:
         for i in range(n):
             for j in range(i + 1, n):
                 corr = self.get_correlation(symbol_indices[i], symbol_indices[j])
-                results.append(round(corr, 2))
+                results.append(corr)
 
         return results
 
@@ -194,7 +194,7 @@ class MatrixCorrelationTracker:
         iu, ju = np.triu_indices(n, k=1)
         upper = corr[iu, ju]
 
-        return [round(float(x), 2) for x in upper]
+        return [float(x) for x in upper]
 
 
 class MatrixCorrelationCalculator:
@@ -211,7 +211,9 @@ class MatrixCorrelationCalculator:
         self.initialization_complete = False
         self.pending_message_count = 0
         self.pending_messages_lock = threading.Lock()
-        self.pending_newest_value_batches: List[Dict[str, Dict[str, float]]] = []
+        self.pending_newest_value_batches: List[
+            tuple[Dict[str, Dict[str, float]], Optional[int]]
+        ] = []
         self.pending_symbols: Set[str] = set()
         self.pending_symbols_lock = threading.Lock()
         self.retry_scheduler = ThreadPoolExecutor(
@@ -243,6 +245,7 @@ class MatrixCorrelationCalculator:
             max_symbols_data = get_historical_kline_data(
                 hours=max_hours, symbols=self.symbols
             )
+            time.sleep(181)
 
             fetch_time = time.time() - start_fetch
             print(f"  Data fetch completed in {fetch_time:.2f}s")
@@ -466,6 +469,7 @@ class MatrixCorrelationCalculator:
         *,
         save_to_db: bool = True,
         newest_values: Optional[Dict[str, Dict[str, float]]] = None,
+        kline_timestamp_ms: Optional[int] = None,
     ):
         """Update correlations and cache to Redis."""
         with self.correlation_lock:
@@ -487,6 +491,7 @@ class MatrixCorrelationCalculator:
                     exchange="binance",
                     contract_type="perpetual",
                     hours=hours,
+                    kline_timestamp_ms=kline_timestamp_ms,
                 )
                 oldest_time = time.time() - start_oldest
                 print(f"Getting oldest_values for {hours}h took {oldest_time:.3f}s")
@@ -532,7 +537,6 @@ class MatrixCorrelationCalculator:
             set_pipeline.execute()
 
             notification_service.send_correlation_update()
-
 
     def _start_cleanup_scheduler(self):
         """Start background thread to periodically purge old correlation data."""
@@ -697,9 +701,11 @@ class MatrixCorrelationCalculator:
             print(f"Processing {message_count} pending messages...")
 
         start_time = time.time()
-        for newest_values in batches:
+        for newest_values, kline_timestamp in batches:
             self.update_and_cache_incremental_correlations(
-                save_to_db=False, newest_values=newest_values
+                save_to_db=False,
+                newest_values=newest_values,
+                kline_timestamp_ms=kline_timestamp,
             )
         elapsed = time.time() - start_time
         print(f"Processed {message_count} pending messages in {elapsed:.2f}s")
@@ -750,6 +756,7 @@ class MatrixCorrelationCalculator:
                                 continue
 
                             newest_values = payload.get("newest_values")
+                            kline_timestamp = payload.get("timestamp")
                             if not isinstance(newest_values, dict):
                                 print("No newest_values found in payload; skipping")
                                 continue
@@ -757,7 +764,7 @@ class MatrixCorrelationCalculator:
                             if not self.initialization_complete:
                                 with self.pending_messages_lock:
                                     self.pending_newest_value_batches.append(
-                                        newest_values
+                                        (newest_values, kline_timestamp)
                                     )
                                     self.pending_message_count = len(
                                         self.pending_newest_value_batches
@@ -769,7 +776,8 @@ class MatrixCorrelationCalculator:
 
                             start_time = time.time()
                             self.update_and_cache_incremental_correlations(
-                                newest_values=newest_values
+                                newest_values=newest_values,
+                                kline_timestamp_ms=kline_timestamp,
                             )
                             elapsed = time.time() - start_time
                             with self.print_lock:
