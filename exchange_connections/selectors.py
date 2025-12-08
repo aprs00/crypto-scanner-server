@@ -3,6 +3,7 @@ from datetime import timedelta, timezone as dt_timezone
 from typing import Optional, List, Sequence, cast
 from django.db import connection
 from collections import defaultdict
+from datetime import datetime
 
 from exchange_connections.constants import KLINE_FIELD_MAP
 from core.redis_config import get_redis_connection
@@ -18,7 +19,7 @@ def get_exchange_symbols(exchange="binance", contract_type="perpetual"):
 def get_historical_kline_data(hours, symbols):
     """Get historical ticker data from the database for all KLINE fields."""
 
-    end_time = timezone.now()
+    end_time = timezone.now().replace(second=0, microsecond=0)
     start_time = end_time - timedelta(hours=hours)
 
     symbol_placeholders = ",".join(["%s"] * len(symbols))
@@ -36,7 +37,7 @@ def get_historical_kline_data(hours, symbols):
             e.name = 'binance'
             AND s.name IN ({symbol_placeholders})
             AND k.start_time >= %s
-            AND k.start_time <= %s
+            AND k.start_time < %s
         ORDER BY s.name, k.start_time
     """
 
@@ -60,16 +61,29 @@ def get_historical_kline_data(hours, symbols):
 
 
 def get_symbol_kline_data(
-    symbols: list, exchange: str, contract_type: str, hours: Optional[int] = None
+    symbols: list,
+    exchange: str,
+    contract_type: str,
+    hours: Optional[int] = None,
+    kline_timestamp_ms: Optional[int] = None,
 ):
     symbol_placeholders = ",".join(["%s"] * len(symbols))
 
     if hours is not None:
-        target_time = timezone.now() - timedelta(hours=hours)
-        time_condition = "AND k.start_time <= %s"
+        if kline_timestamp_ms is not None:
+            kline_time = datetime.fromtimestamp(
+                kline_timestamp_ms / 1000, tz=dt_timezone.utc
+            )
+            target_time = kline_time - timedelta(hours=hours)
+        else:
+            now = timezone.now().replace(second=0, microsecond=0)
+            target_time = now - timedelta(hours=hours)
+        time_condition = "AND k.start_time >= %s"
+        order_direction = "ASC"
         params = [target_time] + [exchange, contract_type] + symbols
     else:
         time_condition = ""
+        order_direction = "DESC"
         params = [exchange, contract_type] + symbols
 
     query = f"""
@@ -88,7 +102,7 @@ def get_symbol_kline_data(
                 k.symbol_id = s.id
                 AND k.exchange_id = e.id
                 {time_condition}
-            ORDER BY k.start_time DESC
+            ORDER BY k.start_time {order_direction}
             LIMIT 1
         ) k
         WHERE 

@@ -4,9 +4,13 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import msgpack
 import logging
+import numpy as np
 
 from core.redis_config import get_redis_connection
-from exchange_connections.selectors import get_exchange_symbols
+from exchange_connections.selectors import (
+    get_exchange_symbols,
+    get_historical_kline_data,
+)
 from correlations.selectors import get_symbol_pair_correlation_history
 
 logger = logging.getLogger(__name__)
@@ -20,6 +24,32 @@ def _flatten_upper_index(i: int, j: int, size: int) -> int:
     if i > j:
         i, j = j, i
     return i * size - (i * (i + 1)) // 2 + j - i - 1
+
+
+def debug_correlation():
+    try:
+        kline_data = get_historical_kline_data(hours=2, symbols=["SOLUSDT", "BTCUSDT"])
+
+        if "SOLUSDT" in kline_data and "BTCUSDT" in kline_data:
+            sol_prices = np.array(kline_data["SOLUSDT"]["price"][-60:])
+            btc_prices = np.array(kline_data["BTCUSDT"]["price"][-60:])
+            print("SOL prices:", len(sol_prices))
+            print("BTC prices:", len(btc_prices))
+            corr_matrix = np.corrcoef(sol_prices, btc_prices)
+            pair_correlation = float(corr_matrix[0, 1])
+            print("----------------")
+            print("----------------")
+            print("----------------")
+            print("----------------")
+            print("----------------")
+            print("----------------")
+            print("----------------")
+            print(
+                "SOLUSDT/BTCUSDT correlation (last 60 prices): %s",
+                pair_correlation,
+            )
+    except Exception as e:
+        logger.error("Error calculating SOLUSDT/BTCUSDT correlation: %s", e)
 
 
 @csrf_exempt
@@ -98,6 +128,8 @@ def get_pearson_correlation(request):
                 pearson_correlations = filtered
             else:
                 pearson_correlations = []
+
+        debug_correlation()
 
         return JsonResponse(
             {"axis": axis, "data": pearson_correlations, "type": "correlation"}
