@@ -1,11 +1,34 @@
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import msgpack
+import numpy as np
 
 from zscore.utils import format_z_score_matrix_response
 from core.redis_config import get_redis_connection
+from exchange_connections.selectors import get_historical_kline_data
 
 r = get_redis_connection()
+
+
+def print_btc_zscore_comparison():
+    """Print BTC 1h z-score comparison between numpy calculation and Redis."""
+    btc_data = get_historical_kline_data(hours=1, symbols=["BTCUSDT"])
+    if "BTCUSDT" in btc_data and "price" in btc_data["BTCUSDT"]:
+        prices = np.array(btc_data["BTCUSDT"]["price"])
+        btc_zscore = (prices[-1] - np.mean(prices)) / np.std(prices)
+        print("----------")
+        print("----------")
+        print("----------")
+        print("----------")
+        print(f"Len prices: {len(prices)}")
+        print(f"BTC 1h Z-Score price (numpy): {btc_zscore:.4f}")
+
+    redis_1h_data = msgpack.unpackb(
+        r.execute_command("GET", "zscore:binance:perpetual:1"), raw=False
+    )
+    btc_redis_zscore = redis_1h_data.get("BTCUSDT", {}).get("price", "N/A")
+    print(f"BTC 1h Z-Score price (redis): {btc_redis_zscore}")
+    print("----------")
 
 
 @csrf_exempt
@@ -18,6 +41,8 @@ def get_z_score_matrix(request):
     z_axis = request.GET.get("zAxis", None)
     hours = request.GET.get("hours", None)
     hours = int(hours)
+
+    print_btc_zscore_comparison()
 
     hours_data = msgpack.unpackb(
         r.execute_command("GET", f"zscore:binance:perpetual:{hours}"), raw=False

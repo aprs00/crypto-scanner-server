@@ -48,6 +48,7 @@ class IncrementalZScore:
             self.count = 0
             self.mean = 0.0
             self.M2 = 0.0
+            return
 
         old_count = self.count
         self.count -= 1
@@ -118,7 +119,9 @@ class ZScoreProcessor:
         return zscore_dict
 
     def update_zscores(
-        self, newest_values: Optional[Dict[str, Dict[str, float]]] = None
+        self,
+        newest_values: Optional[Dict[str, Dict[str, float]]] = None,
+        kline_timestamp_ms: Optional[int] = None,
     ):
         """Update incremental Z-scores with new data"""
         if newest_values is None:
@@ -132,6 +135,7 @@ class ZScoreProcessor:
                 hours=hours,
                 exchange="binance",
                 contract_type="perpetual",
+                kline_timestamp_ms=kline_timestamp_ms,
             )
 
             for symbol in self.symbols:
@@ -152,12 +156,9 @@ class ZScoreProcessor:
         return {
             hours: {
                 symbol: {
-                    data_type: round(
-                        self.incremental_zscores[symbol][data_type][
-                            hours
-                        ].get_z_score(),
-                        2,
-                    )
+                    data_type: self.incremental_zscores[symbol][data_type][
+                        hours
+                    ].get_z_score()
                     for data_type in KLINE_FIELD_MAP.keys()
                 }
                 for symbol in self.symbols
@@ -303,7 +304,11 @@ class ZScoreProcessor:
                                 print("ZSCORE: No newest_values found in payload")
                                 continue
 
-                            self.update_zscores(newest_values=newest_values)
+                            kline_timestamp_ms = payload.get("timestamp")
+                            self.update_zscores(
+                                newest_values=newest_values,
+                                kline_timestamp_ms=kline_timestamp_ms,
+                            )
                             results = self.create_z_score_results()
 
                             pipeline = r.pipeline()
