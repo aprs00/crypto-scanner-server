@@ -245,7 +245,6 @@ class MatrixCorrelationCalculator:
             max_symbols_data = get_historical_kline_data(
                 hours=max_hours, symbols=self.symbols
             )
-            time.sleep(181)
 
             fetch_time = time.time() - start_fetch
             print(f"  Data fetch completed in {fetch_time:.2f}s")
