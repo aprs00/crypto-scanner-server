@@ -12,12 +12,14 @@ from exchange_connections.selectors import (
     get_exchange_symbols,
     get_historical_kline_data,
     get_symbol_kline_data,
+    get_symbol_kline_data_multi_hours,
 )
 from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
 from correlations.services.save_correlations import save_correlation_matrix_to_db
 from correlations.db_utils import cleanup_old_correlation_data
+
 
 class CorrelationTracker:
     """
@@ -216,6 +218,7 @@ class CorrelationCalculator:
 
                 # Save 1h correlations to DB
                 if save_to_db and hours == 1:
+                    start = time.time()
                     try:
                         save_correlation_matrix_to_db(
                             symbols=self.symbols,
@@ -224,6 +227,9 @@ class CorrelationCalculator:
                             hours=hours,
                             exchange="binance",
                             contract_type="perpetual",
+                        )
+                        print(
+                            f"Saved {data_type} correlations to DB in {time.time() - start:.2f}s"
                         )
                     except Exception as e:
                         print(f"DB save failed ({data_type}): {e}")
@@ -261,16 +267,13 @@ class CorrelationCalculator:
                     print(f"Failed to fetch missing symbols: {e}")
                     return
 
-            # Fetch oldest values for each timeframe
-            oldest_by_hours = {}
-            for hours in self.hours_options:
-                oldest_by_hours[hours] = get_symbol_kline_data(
-                    symbols=self.symbols,
-                    exchange="binance",
-                    contract_type="perpetual",
-                    hours=hours,
-                    kline_timestamp_ms=kline_timestamp_ms,
-                )
+            oldest_by_hours = get_symbol_kline_data_multi_hours(
+                symbols=self.symbols,
+                exchange="binance",
+                contract_type="perpetual",
+                hours_list=self.hours_options,
+                kline_timestamp_ms=kline_timestamp_ms,
+            )
 
             self._update_trackers(newest, oldest_by_hours)
             self._cache_correlations(save_to_db)
@@ -297,7 +300,9 @@ class CorrelationCalculator:
 
             points = min(len(data[symbol].get(dt, [])) for dt in KLINE_FIELD_MAP)
             if points < min_points:
-                print(f"Limited data for {symbol}: {points}/{min_points}, adding anyway")
+                print(
+                    f"Limited data for {symbol}: {points}/{min_points}, adding anyway"
+                )
 
             print(f"Adding {symbol}")
             self.symbols = available

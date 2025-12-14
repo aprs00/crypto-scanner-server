@@ -87,7 +87,7 @@ def get_symbol_kline_data(
         params = [exchange, contract_type] + symbols
 
     query = f"""
-        SELECT 
+        SELECT
             s.name AS symbol_name,
             k.close,
             k.base_volume,
@@ -98,14 +98,14 @@ def get_symbol_kline_data(
         CROSS JOIN LATERAL (
             SELECT close, base_volume, number_of_trades
             FROM cs_klines_1m k
-            WHERE 
+            WHERE
                 k.symbol_id = s.id
                 AND k.exchange_id = e.id
                 {time_condition}
             ORDER BY k.start_time {order_direction}
             LIMIT 1
         ) k
-        WHERE 
+        WHERE
             e.name = %s
             AND ct.name = %s
             AND s.name IN ({symbol_placeholders})
@@ -123,6 +123,72 @@ def get_symbol_kline_data(
             }
             for row in rows
         }
+
+
+def get_symbol_kline_data_multi_hours(
+    symbols: list,
+    exchange: str,
+    contract_type: str,
+    hours_list: List[int],
+    kline_timestamp_ms: Optional[int] = None,
+):
+    """
+    Fetch the oldest kline for each symbol for multiple time offsets in a single query.
+    Returns: Dict[hours, Dict[symbol, {price, volume, trades}]]
+    """
+    if not hours_list or not symbols:
+        return {}
+
+    symbol_placeholders = ",".join(["%s"] * len(symbols))
+
+    if kline_timestamp_ms is not None:
+        base_time = datetime.fromtimestamp(kline_timestamp_ms / 1000, tz=dt_timezone.utc)
+    else:
+        base_time = timezone.now().replace(second=0, microsecond=0)
+
+    query = f"""
+        SELECT
+            h.hours_offset,
+            s.name AS symbol_name,
+            k.close,
+            k.base_volume,
+            k.number_of_trades
+        FROM cs_symbols s
+        JOIN cs_exchanges e ON s.exchange_id = e.id
+        JOIN cs_contract_types ct ON s.contract_type_id = ct.id
+        CROSS JOIN LATERAL (SELECT unnest(%s::int[]) AS hours_offset) h
+        CROSS JOIN LATERAL (
+            SELECT close, base_volume, number_of_trades
+            FROM cs_klines_1m k
+            WHERE
+                k.symbol_id = s.id
+                AND k.exchange_id = e.id
+                AND k.start_time >= %s - (h.hours_offset || ' hours')::interval
+            ORDER BY k.start_time ASC
+            LIMIT 1
+        ) k
+        WHERE
+            e.name = %s
+            AND ct.name = %s
+            AND s.name IN ({symbol_placeholders})
+    """
+
+    params = [hours_list, base_time, exchange, contract_type] + symbols
+
+    result = {h: {} for h in hours_list}
+
+    with connection.cursor() as cursor:
+        cursor.execute(query, params)
+        for row in cursor.fetchall():
+            hours_offset = row[0]
+            symbol_name = row[1]
+            result[hours_offset][symbol_name] = {
+                "price": float(row[2]),
+                "volume": float(row[3]),
+                "trades": float(row[4]),
+            }
+
+    return result
 
 
 def get_top_market_cap_symbols(
