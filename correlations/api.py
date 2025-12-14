@@ -45,9 +45,31 @@ def debug_correlation():
             print("----------------")
             print("----------------")
             print(
-                "SOLUSDT/BTCUSDT correlation (last 60 prices): %s",
-                pair_correlation,
+                f"SOLUSDT/BTCUSDT correlation (numpy): {pair_correlation:.4f}"
             )
+
+        # Get redis correlation value
+        symbols = get_exchange_symbols()
+        if symbols:
+            try:
+                sol_idx = symbols.index("SOLUSDT")
+                btc_idx = symbols.index("BTCUSDT")
+
+                correlation_key = "correlations:price:1:binance:perpetual"
+                correlation_blob = r.get(correlation_key)
+                if correlation_blob:
+                    pearson_correlations = msgpack.unpackb(
+                        correlation_blob, use_list=True, raw=False
+                    )
+                    total_symbols = len(symbols)
+                    pair_idx = _flatten_upper_index(sol_idx, btc_idx, total_symbols)
+                    redis_correlation = pearson_correlations[pair_idx]
+                    print(f"SOLUSDT/BTCUSDT correlation (redis): {redis_correlation:.4f}")
+                else:
+                    print("SOLUSDT/BTCUSDT correlation (redis): N/A")
+            except (ValueError, IndexError) as e:
+                print(f"SOLUSDT/BTCUSDT correlation (redis): N/A (error: {e})")
+        print("----------------")
     except Exception as e:
         logger.error("Error calculating SOLUSDT/BTCUSDT correlation: %s", e)
 

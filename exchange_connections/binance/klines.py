@@ -413,11 +413,6 @@ class KlinesSocketManager:
                     self.message_batch = []
 
             if batch_copy:
-                thread = threading.Thread(
-                    target=self._save_batch_sync, args=(batch_copy,)
-                )
-                thread.start()
-
                 newest_values = {
                     item["s"]: {
                         "price": float(item["c"]),
@@ -433,7 +428,10 @@ class KlinesSocketManager:
                     }
                 )
 
-                self.r.publish(RedisPubMessages.KLINE_SAVED_TO_DB.value, payload)
+                thread = threading.Thread(
+                    target=self._save_batch_sync, args=(batch_copy, payload)
+                )
+                thread.start()
 
     def handle_invalid_symbol_error(self, error_msg):
         """Handle specific invalid symbol errors."""
@@ -446,7 +444,7 @@ class KlinesSocketManager:
         except Exception as e:
             self.store_error(f"Error handling invalid symbol: {str(e)}")
 
-    def _save_batch_sync(self, batch):
+    def _save_batch_sync(self, batch, payload):
         try:
             models = [
                 build_model_from_ws(
@@ -459,6 +457,8 @@ class KlinesSocketManager:
 
             if settings.STORE_TO_DB:
                 bulk_insert_klines(models, chunk_size=len(models) or 1)
+
+            self.r.publish(RedisPubMessages.KLINE_SAVED_TO_DB.value, payload)
         except Exception as e:
             self.store_error(f"kline_batch_save_error: {e}")
 
