@@ -93,21 +93,16 @@ def save_correlation_matrix_to_db(
 
     with transaction.atomic():
         with connection.cursor() as cursor:
-            cursor.execute(f"ALTER TABLE {table_name} DISABLE TRIGGER ALL")
-
-            try:
-                with cursor.cursor.copy(  # type: ignore
-                    f"COPY {table_name} ({columns_str}) FROM STDIN"
-                ) as copy:
-                    for chunk in _generate_copy_chunks(
-                        symbol_ids,
-                        correlation_matrix,
-                        data_type,
-                        hours,
-                        calculated_at_str,
-                    ):
-                        copy.write(chunk)
-            finally:
-                cursor.execute(f"ALTER TABLE {table_name} ENABLE TRIGGER ALL")
+            with cursor.cursor.copy(  # type: ignore
+                f"COPY {table_name} ({columns_str}) FROM STDIN"
+            ) as copy:
+                for chunk in _generate_copy_chunks(
+                    symbol_ids,
+                    correlation_matrix,
+                    data_type,
+                    hours,
+                    calculated_at_str,
+                ):
+                    copy.write(chunk)
 
     return expected_pairs
