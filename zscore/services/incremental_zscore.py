@@ -10,6 +10,7 @@ from django.conf import settings
 from exchange_connections.selectors import (
     get_exchange_symbols,
     get_symbol_kline_data,
+    get_symbol_kline_data_multi_hours,
     get_historical_kline_data,
 )
 from zscore.selectors.zscore import get_zscore_history_data
@@ -129,14 +130,16 @@ class ZScoreProcessor:
                 symbols=self.symbols, exchange="binance", contract_type="perpetual"
             )
 
+        oldest_by_hours = get_symbol_kline_data_multi_hours(
+            symbols=self.symbols,
+            exchange="binance",
+            contract_type="perpetual",
+            hours_list=self.hours_options,
+            kline_timestamp_ms=kline_timestamp_ms,
+        )
+
         for hours in self.hours_options:
-            oldest_values = get_symbol_kline_data(
-                symbols=self.symbols,
-                hours=hours,
-                exchange="binance",
-                contract_type="perpetual",
-                kline_timestamp_ms=kline_timestamp_ms,
-            )
+            oldest_values = oldest_by_hours.get(hours, {})
 
             for symbol in self.symbols:
                 for data_type in KLINE_FIELD_MAP.keys():
