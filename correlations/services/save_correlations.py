@@ -1,15 +1,44 @@
-import logging
-import time
-from datetime import timedelta
-from io import StringIO
 from django.db import transaction, connection
 from django.utils import timezone
-from typing import List, Dict
+from typing import List, Dict, Generator
 
 from correlations.models import CorrelationPairHistory
 from exchange_connections.models import Symbol
 
-logger = logging.getLogger(__name__)
+
+def _generate_copy_chunks(
+    symbol_ids: List[int],
+    correlation_matrix: List[float],
+    data_type: str,
+    hours: int,
+    calculated_at_str: str,
+    chunk_size: int = 10000,
+) -> Generator[bytes, None, None]:
+    """Generate COPY data in chunks for efficient streaming to PostgreSQL."""
+    n_symbols = len(symbol_ids)
+    lines: List[str] = []
+    idx = 0
+
+    for i in range(n_symbols):
+        id1 = symbol_ids[i]
+        for j in range(i + 1, n_symbols):
+            id2 = symbol_ids[j]
+            if id1 > id2:
+                s1, s2 = id2, id1
+            else:
+                s1, s2 = id1, id2
+
+            lines.append(
+                f"{s1}\t{s2}\t{correlation_matrix[idx]}\t{data_type}\t{hours}\t{calculated_at_str}"
+            )
+            idx += 1
+
+            if len(lines) >= chunk_size:
+                yield ("\n".join(lines) + "\n").encode()
+                lines.clear()
+
+    if lines:
+        yield ("\n".join(lines) + "\n").encode()
 
 
 def save_correlation_matrix_to_db(
@@ -46,45 +75,10 @@ def save_correlation_matrix_to_db(
         print(f"Symbols not found in database: {missing_symbols}")
         return 0
 
-    correlation_data = []
+    symbol_ids = [symbol_map[s].id for s in symbols]  # type: ignore
+
     calculated_at = timezone.now()
     calculated_at_str = calculated_at.isoformat()
-
-    idx = 0
-    for i in range(n_symbols):
-        for j in range(i + 1, n_symbols):
-            symbol1_name = symbols[i]
-            symbol2_name = symbols[j]
-            correlation_value = correlation_matrix[idx]
-
-            symbol1 = symbol_map[symbol1_name]
-            symbol2 = symbol_map[symbol2_name]
-
-            if symbol1.id > symbol2.id:  # type: ignore
-                symbol1, symbol2 = symbol2, symbol1
-
-            correlation_data.append(
-                (
-                    symbol1.id,  # type: ignore
-                    symbol2.id,  # type: ignore
-                    correlation_value,
-                    data_type,
-                    hours,
-                    calculated_at_str,
-                )
-            )
-
-            idx += 1
-
-    if not correlation_data:
-        return 0
-
-    data_io = StringIO()
-    for row in correlation_data:
-        data_io.write(
-            "\t".join(str(field) if field is not None else "\\N" for field in row)
-            + "\n"
-        )
 
     table_name = CorrelationPairHistory._meta.db_table
     columns = (
@@ -99,9 +93,23 @@ def save_correlation_matrix_to_db(
 
     with transaction.atomic():
         with connection.cursor() as cursor:
-            with cursor.cursor.copy(  # type: ignore
-                f"COPY {table_name} ({columns_str}) FROM STDIN"
-            ) as copy:
-                copy.write(data_io.getvalue())
+            cursor.execute("SET LOCAL session_replication_role = replica")
+            cursor.execute("SET LOCAL synchronous_commit = off")
 
-    return len(correlation_data)
+            try:
+                with cursor.cursor.copy(  # type: ignore
+                    f"COPY {table_name} ({columns_str}) FROM STDIN"
+                ) as copy:
+                    for chunk in _generate_copy_chunks(
+                        symbol_ids,
+                        correlation_matrix,
+                        data_type,
+                        hours,
+                        calculated_at_str,
+                    ):
+                        copy.write(chunk)
+            finally:
+                cursor.execute("SET LOCAL session_replication_role = DEFAULT")
+                cursor.execute("SET LOCAL synchronous_commit = on")
+
+    return expected_pairs
