@@ -93,8 +93,7 @@ def save_correlation_matrix_to_db(
 
     with transaction.atomic():
         with connection.cursor() as cursor:
-            cursor.execute("SET LOCAL session_replication_role = replica")
-            cursor.execute("SET LOCAL synchronous_commit = off")
+            cursor.execute(f"ALTER TABLE {table_name} DISABLE TRIGGER ALL")
 
             try:
                 with cursor.cursor.copy(  # type: ignore
@@ -109,7 +108,6 @@ def save_correlation_matrix_to_db(
                     ):
                         copy.write(chunk)
             finally:
-                cursor.execute("SET LOCAL session_replication_role = DEFAULT")
-                cursor.execute("SET LOCAL synchronous_commit = on")
+                cursor.execute(f"ALTER TABLE {table_name} ENABLE TRIGGER ALL")
 
     return expected_pairs
