@@ -1,5 +1,4 @@
 from django.db import models
-from django.db.models import UniqueConstraint
 
 from exchange_connections.models import Symbol
 
@@ -39,10 +38,7 @@ class CorrelationPairHistory(models.Model):
     class Meta:
         ordering = ["-calculated_at"]
         db_table = "cs_correlation_pair_history"
-        indexes = [
-            models.Index(fields=['data_type', 'hours', '-calculated_at']),
-            models.Index(fields=['calculated_at']),
-        ]
+        indexes = []
 
     def __str__(self):
         return f"{self.symbol1.name}-{self.symbol2.name} ({self.data_type}, {self.hours}h): {self.correlation_value:.2f} @ {self.calculated_at}"
