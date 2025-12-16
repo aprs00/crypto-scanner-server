@@ -79,7 +79,7 @@ def get_symbol_pair_correlation_history(
 
             if sym2 in results_by_pair:
                 results_by_pair[sym2].append(
-                    [corr["calculated_at"].isoformat(), corr["correlation_value"]]
+                    [corr["calculated_at"].isoformat(), round(corr["correlation_value"], 3)]
                 )
 
         return [results_by_pair.get(sym2_name, []) for sym2_name in comparison_symbols]

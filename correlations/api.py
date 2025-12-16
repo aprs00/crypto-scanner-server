@@ -105,9 +105,9 @@ def get_pearson_correlation(request):
                 status=503,
             )
 
-        pearson_correlations = msgpack.unpackb(
-            correlation_blob, use_list=True, raw=False
-        )
+        pearson_correlations = [
+            round(v, 3) for v in msgpack.unpackb(correlation_blob, use_list=True, raw=False)
+        ]
         axis = [ticker[:-4] if len(ticker) > 4 else ticker for ticker in symbols]
 
         # Build lookup table that supports both full symbols (BTCUSDT) and shortened axis (BTC)
