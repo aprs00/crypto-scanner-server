@@ -79,7 +79,7 @@ def get_z_score_heatmap(request):
             continue
 
         transformed_zscore_data.setdefault(record["symbol__name"], []).append(
-            record[type]
+            round(record[type], 3)
         )
         if record["symbol__name"] == "BTCUSDT":
             times.append(record["time"])
