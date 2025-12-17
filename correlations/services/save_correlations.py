@@ -33,7 +33,6 @@ def _generate_copy_data(
     """
     n = len(symbol_ids)
 
-    # Use precomputed indices if provided, otherwise compute them
     if precomputed_indices is not None:
         i_idx, j_idx = precomputed_indices
     else:
@@ -43,15 +42,13 @@ def _generate_copy_data(
     s1 = symbol_ids[i_idx]
     s2 = symbol_ids[j_idx]
 
-    # Ensure s1 < s2 for consistent ordering
     mask = s1 > s2
     s1_result = np.where(mask, s2, s1)
     s2_result = np.where(mask, s1, s2)
 
-    # Build output efficiently using StringIO
     suffix = f"\t{data_type}\t{hours}\t{calculated_at_str}\n"
     buf = StringIO()
-    write = buf.write  # Local reference for speed
+    write = buf.write
 
     for i in range(len(s1_result)):
         write(str(s1_result[i]))
@@ -117,14 +114,12 @@ def save_correlation_matrix_to_db(
         print(f"Symbols not found in database: {missing_symbols}")
         return 0
 
-    # Convert to numpy arrays for efficient processing
     symbol_ids = np.array([symbol_map[s].id for s in symbols], dtype=np.int64)
     corr_matrix = np.asarray(correlation_matrix, dtype=np.float64)
 
     calculated_at = timezone.now()
     calculated_at_str = calculated_at.isoformat()
 
-    # Generate COPY data
     copy_data = _generate_copy_data(
         symbol_ids,
         corr_matrix,
@@ -146,7 +141,6 @@ def save_correlation_matrix_to_db(
 
     with transaction.atomic():
         with connection.cursor() as cursor:
-            # Disable triggers for faster inserts (FK validation in app layer)
             cursor.execute(f"ALTER TABLE {table_name} DISABLE TRIGGER ALL")
 
             try:
@@ -155,7 +149,6 @@ def save_correlation_matrix_to_db(
                 ) as copy:
                     copy.write(copy_data)
             finally:
-                # Always re-enable triggers
                 cursor.execute(f"ALTER TABLE {table_name} ENABLE TRIGGER ALL")
 
     return expected_pairs

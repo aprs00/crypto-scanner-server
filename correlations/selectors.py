@@ -42,9 +42,10 @@ def get_symbol_pair_correlation_history(
             sym2 = symbol_map.get(sym2_name)
             if not sym2:
                 continue
-            q |= models.Q(symbol1=symbol1, symbol2=sym2) | models.Q(
-                symbol1=sym2, symbol2=symbol1
-            )
+            if symbol1.id < sym2.id:  # type: ignore
+                q |= models.Q(symbol1=symbol1, symbol2=sym2)
+            else:
+                q |= models.Q(symbol1=sym2, symbol2=symbol1)
 
         if not q:
             logger.warning("No valid symbol2s found")
@@ -79,7 +80,10 @@ def get_symbol_pair_correlation_history(
 
             if sym2 in results_by_pair:
                 results_by_pair[sym2].append(
-                    [corr["calculated_at"].isoformat(), round(corr["correlation_value"], 3)]
+                    [
+                        corr["calculated_at"].isoformat(),
+                        round(corr["correlation_value"], 3),
+                    ]
                 )
 
         return [results_by_pair.get(sym2_name, []) for sym2_name in comparison_symbols]
