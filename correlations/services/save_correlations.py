@@ -6,6 +6,7 @@ from io import StringIO
 import numpy as np
 
 from correlations.models import CorrelationPairHistory
+from correlations.db_utils import ensure_partition_exists
 from exchange_connections.models import Symbol
 
 
@@ -119,6 +120,8 @@ def save_correlation_matrix_to_db(
 
     calculated_at = timezone.now()
     calculated_at_str = calculated_at.isoformat()
+
+    ensure_partition_exists(calculated_at)
 
     copy_data = _generate_copy_data(
         symbol_ids,
