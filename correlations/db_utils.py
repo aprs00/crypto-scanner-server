@@ -38,31 +38,16 @@ def cleanup_old_correlation_data(retention_hours):
         print(f"Dropped {total_dropped} partitions older than {cutoff_time}")
 
 
-def ensure_partition_exists(target_time=None):
+def ensure_partition_exists(target_time):
     """
     Ensure partition exists for the given hour (or current hour if not specified).
     Creates partition if it doesn't exist.
     """
-    if target_time is None:
-        target_time = timezone.now()
-
-    # Round down to hour
     hour_start = target_time.replace(minute=0, second=0, microsecond=0)
     hour_end = hour_start + timedelta(hours=1)
-
     partition_name = f"cs_correlation_pair_history_{hour_start.strftime('%Y%m%d%H')}"
 
     with connection.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT 1 FROM pg_tables
-            WHERE schemaname = 'public' AND tablename = %s
-            """,
-            [partition_name],
-        )
-        if cursor.fetchone():
-            return partition_name
-
         cursor.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {partition_name}
