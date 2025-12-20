@@ -343,12 +343,8 @@ class ZScoreProcessor:
 
                 retries = 0
 
-            except (redis.ConnectionError, redis.TimeoutError) as e:
+            except Exception as e:
                 retries += 1
                 wait = min(2**retries, 40)
-                print(f"[ZScore] Disconnected from Redis: {e}. Retrying in {wait}s...")
+                print(f"[ZScore] Unexpected error: {e}. Retrying in {wait}s...")
                 time.sleep(wait)
-
-            except Exception as e:
-                print(f"[ZScore] Unexpected error: {e}")
-                time.sleep(5)
