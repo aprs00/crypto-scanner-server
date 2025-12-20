@@ -1,3 +1,4 @@
+import json
 from itertools import combinations
 
 from django.http import HttpResponse, JsonResponse
@@ -76,14 +77,17 @@ def debug_correlation():
 
 @csrf_exempt
 def get_pearson_correlation(request):
-    if request.method != "GET":
+    if request.method != "POST":
         return HttpResponse(status=405)
 
-    data_type = request.GET.get("type")
-    hours = request.GET.get("hours")
-    requested_symbols = request.GET.getlist("symbols[]") or request.GET.getlist(
-        "symbols"
-    )
+    try:
+        body = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+
+    data_type = body.get("type")
+    hours = body.get("hours")
+    requested_symbols = body.get("symbols", [])
 
     if not data_type or not hours:
         return JsonResponse(
@@ -167,13 +171,20 @@ def get_correlation_pair_history(request):
     """
     Get historical correlation values for base_symbol against multiple symbols.
     """
-    if request.method != "GET":
+    if request.method != "POST":
         return HttpResponse(status=405)
 
-    base_symbol = request.GET.get("baseSymbol")
-    comparison_symbols = request.GET.getlist("comparisonSymbols[]")
-    data_type = request.GET.get("type")
-    hours = request.GET.get("hours")
+    try:
+        body = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+
+    base_symbol = body.get("baseSymbol")
+    comparison_symbols = body.get("comparisonSymbols", [])
+    data_type = body.get("type")
+    hours = body.get("hours")
+    if hours is None:
+        return JsonResponse({"error": "Parameter 'hours' is required"}, status=400)
     hours = int(hours)
 
     try:
