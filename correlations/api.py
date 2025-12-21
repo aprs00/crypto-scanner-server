@@ -45,9 +45,7 @@ def debug_correlation():
             print("----------------")
             print("----------------")
             print("----------------")
-            print(
-                f"SOLUSDT/BTCUSDT correlation (numpy): {pair_correlation:.4f}"
-            )
+            print(f"SOLUSDT/BTCUSDT correlation (numpy): {pair_correlation:.4f}")
 
         # Get redis correlation value
         symbols = get_exchange_symbols()
@@ -65,7 +63,9 @@ def debug_correlation():
                     total_symbols = len(symbols)
                     pair_idx = _flatten_upper_index(sol_idx, btc_idx, total_symbols)
                     redis_correlation = pearson_correlations[pair_idx]
-                    print(f"SOLUSDT/BTCUSDT correlation (redis): {redis_correlation:.4f}")
+                    print(
+                        f"SOLUSDT/BTCUSDT correlation (redis): {redis_correlation:.4f}"
+                    )
                 else:
                     print("SOLUSDT/BTCUSDT correlation (redis): N/A")
             except (ValueError, IndexError) as e:
@@ -110,7 +110,8 @@ def get_pearson_correlation(request):
             )
 
         pearson_correlations = [
-            round(v, 3) for v in msgpack.unpackb(correlation_blob, use_list=True, raw=False)
+            round(v, 3)
+            for v in msgpack.unpackb(correlation_blob, use_list=True, raw=False)
         ]
         axis = [ticker[:-4] if len(ticker) > 4 else ticker for ticker in symbols]
 
@@ -121,6 +122,11 @@ def get_pearson_correlation(request):
             short_symbol = axis[idx].upper()
             if short_symbol not in symbol_lookup:
                 symbol_lookup[short_symbol] = idx
+
+        if not requested_symbols:
+            return JsonResponse(
+                {"axis": [], "data": [], "type": "correlation"}
+            )
 
         selected_indices = []
         seen = set()
@@ -136,10 +142,8 @@ def get_pearson_correlation(request):
         total_symbols = len(symbols)
         expected_length = total_symbols * (total_symbols - 1) // 2
         if len(pearson_correlations) != expected_length:
-            logger.error(
-                "Correlation vector size mismatch: expected %s, got %s",
-                expected_length,
-                len(pearson_correlations),
+            print(
+                f"Correlation vector size mismatch: expected {expected_length}, got {len(pearson_correlations)}",
             )
             return JsonResponse({"error": "Correlation data invalid"}, status=503)
 
