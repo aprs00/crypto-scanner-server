@@ -16,6 +16,7 @@ from correlations.selectors import get_symbol_pair_correlation_history
 
 logger = logging.getLogger(__name__)
 r = get_redis_connection()
+_request_count = 0
 
 
 def _flatten_upper_index(i: int, j: int, size: int) -> int:
@@ -28,6 +29,12 @@ def _flatten_upper_index(i: int, j: int, size: int) -> int:
 
 
 def debug_correlation():
+    global _request_count
+    _request_count += 1
+    if _request_count != 10:
+        return
+    _request_count = 0
+
     try:
         kline_data = get_historical_kline_data(hours=2, symbols=["SOLUSDT", "BTCUSDT"])
 
@@ -94,6 +101,9 @@ def get_pearson_correlation(request):
             {"error": "Parameters 'type' and 'hours' are required."}, status=400
         )
 
+    if not requested_symbols:
+        return JsonResponse({"axis": [], "data": [], "type": "correlation"})
+
     try:
         symbols = get_exchange_symbols()
         if not symbols:
@@ -115,29 +125,13 @@ def get_pearson_correlation(request):
         ]
         axis = [ticker[:-4] if len(ticker) > 4 else ticker for ticker in symbols]
 
-        # Build lookup table that supports both full symbols (BTCUSDT) and shortened axis (BTC)
-        symbol_lookup = {}
-        for idx, ticker in enumerate(symbols):
-            symbol_lookup[ticker.upper()] = idx
-            short_symbol = axis[idx].upper()
-            if short_symbol not in symbol_lookup:
-                symbol_lookup[short_symbol] = idx
+        symbol_lookup = {ticker: idx for idx, ticker in enumerate(symbols)}
 
-        if not requested_symbols:
-            return JsonResponse(
-                {"axis": [], "data": [], "type": "correlation"}
-            )
-
-        selected_indices = []
-        seen = set()
-        for symbol in requested_symbols:
-            normalized = symbol.strip().upper()
-            if not normalized:
-                continue
-            idx = symbol_lookup.get(normalized)
-            if idx is not None and idx not in seen:
-                selected_indices.append(idx)
-                seen.add(idx)
+        selected_indices = [
+            symbol_lookup[symbol]
+            for symbol in requested_symbols
+            if symbol in symbol_lookup
+        ]
 
         total_symbols = len(symbols)
         expected_length = total_symbols * (total_symbols - 1) // 2
