@@ -305,7 +305,7 @@ class CorrelationCalculator:
                 )
 
             print(f"Adding {symbol}")
-            self.symbols = available
+            self.symbols = get_exchange_symbols()
             self._rebuild_indices()
             self._init_trackers()
             self.update_correlations()
@@ -328,6 +328,8 @@ class CorrelationCalculator:
                 tracker.sum_xy = np.delete(tracker.sum_xy, idx, axis=0)
                 tracker.sum_xy = np.delete(tracker.sum_xy, idx, axis=1)
                 tracker.n_symbols = len(self.symbols)
+
+            self._cache_correlations(save_to_db=False)
 
     def _cleanup_loop(self):
         """Background cleanup of old correlation data."""
