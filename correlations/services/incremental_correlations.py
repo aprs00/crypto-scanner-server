@@ -131,6 +131,8 @@ class CorrelationCalculator:
         self.initialized = False
         self.pending_updates: List[tuple] = []
         self.cleanup_stop = threading.Event()
+        self.last_update_time: float = 0
+        self.update_count: int = 0
 
     def _rebuild_indices(self):
         """Rebuild symbol index mapping."""
@@ -182,21 +184,38 @@ class CorrelationCalculator:
 
             for data_type in KLINE_FIELD_MAP:
                 tracker = self.trackers.get((hours, data_type))
-                if not tracker or tracker.n_symbols != n:
+                if not tracker:
+                    print(f"[DEBUG] No tracker found for ({hours}, {data_type})")
+                    continue
+                if tracker.n_symbols != n:
+                    print(f"[DEBUG] CRITICAL MISMATCH: tracker({hours},{data_type}) n_symbols={tracker.n_symbols} != len(symbols)={n}")
                     continue
 
                 new_arr = np.full(n, np.nan, dtype=np.float64)
                 old_arr = np.full(n, np.nan, dtype=np.float64)
 
+                missing_new = 0
+                missing_old = 0
                 for sym, idx in self.symbol_to_idx.items():
                     if sym in newest and data_type in newest[sym]:
                         new_arr[idx] = newest[sym][data_type]
+                    else:
+                        missing_new += 1
                     if (
                         tracker.count >= window
                         and sym in oldest
                         and data_type in oldest[sym]
                     ):
                         old_arr[idx] = oldest[sym][data_type]
+                    elif tracker.count >= window:
+                        missing_old += 1
+
+                # Log only for 1h close to avoid spam
+                if hours == 1 and data_type == "close":
+                    new_valid = np.sum(~np.isnan(new_arr))
+                    old_valid = np.sum(~np.isnan(old_arr)) if tracker.count >= window else 0
+                    if missing_new > 0 or missing_old > 0:
+                        print(f"[DEBUG] _update_trackers(1h,close): new_valid={new_valid}/{n}, old_valid={old_valid}/{n}, missing_new={missing_new}, missing_old={missing_old}")
 
                 tracker.update(new_arr, old_arr if tracker.count >= window else None)
 
@@ -245,8 +264,11 @@ class CorrelationCalculator:
     ):
         """Main update method - fetch data, update trackers, cache results."""
         with self.lock:
+            print(f"[DEBUG] update_correlations called - tracked symbols: {len(self.symbols)}, save_to_db: {save_to_db}")
+
             # Get newest values if not provided
             if newest is None:
+                print("[DEBUG] Fetching newest values (not provided)")
                 newest = get_symbol_kline_data(
                     symbols=self.symbols,
                     exchange="binance",
@@ -256,6 +278,7 @@ class CorrelationCalculator:
             # Validate we have data for all symbols
             missing = [s for s in self.symbols if s not in newest]
             if missing:
+                print(f"[DEBUG] Missing symbols in newest data: {len(missing)} - {missing[:5]}...")
                 try:
                     extra = get_symbol_kline_data(
                         symbols=missing,
@@ -263,9 +286,15 @@ class CorrelationCalculator:
                         contract_type="perpetual",
                     )
                     newest.update(extra)
+                    print(f"[DEBUG] Fetched {len(extra)} missing symbols")
                 except Exception as e:
                     print(f"Failed to fetch missing symbols: {e}")
                     return
+
+            # Check tracker state before update
+            sample_tracker = self.trackers.get((1, "close"))
+            if sample_tracker:
+                print(f"[DEBUG] Before update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
 
             oldest_by_hours = get_symbol_kline_data_multi_hours(
                 symbols=self.symbols,
@@ -276,15 +305,26 @@ class CorrelationCalculator:
             )
 
             self._update_trackers(newest, oldest_by_hours)
+
+            # Check tracker state after update
+            if sample_tracker:
+                print(f"[DEBUG] After update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
+
             self._cache_correlations(save_to_db)
 
     def add_symbol(self, symbol: str):
         """Add new symbol to tracking."""
         with self.lock:
+            print(f"[DEBUG] add_symbol called for: {symbol}")
+            print(f"[DEBUG] Current state before add - symbols: {len(self.symbols)}, trackers: {len(self.trackers)}")
+
             if symbol in self.symbols:
+                print(f"[DEBUG] Symbol {symbol} already in list, skipping")
                 return
 
             available = get_exchange_symbols()
+            print(f"[DEBUG] Available symbols from exchange: {len(available)}")
+
             if symbol not in available:
                 print(f"Symbol {symbol} not available")
                 return
@@ -304,32 +344,102 @@ class CorrelationCalculator:
                     f"Limited data for {symbol}: {points}/{min_points}, adding anyway"
                 )
 
-            print(f"Adding {symbol}")
+            old_symbols = self.symbols.copy()
+            print(f"[DEBUG] Adding {symbol} - rebuilding all trackers")
             self.symbols = get_exchange_symbols()
             self._rebuild_indices()
+
+            # Log symbol list changes
+            added = set(self.symbols) - set(old_symbols)
+            removed = set(old_symbols) - set(self.symbols)
+            if added:
+                print(f"[DEBUG] Symbols added to list: {added}")
+            if removed:
+                print(f"[DEBUG] Symbols removed from list (unexpected): {removed}")
+
+            print(f"[DEBUG] Reinitializing trackers for {len(self.symbols)} symbols")
             self._init_trackers()
+
+            # Verify tracker state
+            sample_tracker = self.trackers.get((1, "close"))
+            if sample_tracker:
+                print(f"[DEBUG] After add_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
+
             self.update_correlations()
+            print(f"[DEBUG] add_symbol completed for {symbol}")
 
     def remove_symbol(self, symbol: str):
         """Remove symbol from tracking."""
         with self.lock:
+            print(f"[DEBUG] remove_symbol called for: {symbol}")
+            print(f"[DEBUG] Current state before remove - symbols: {len(self.symbols)}, trackers: {len(self.trackers)}")
+
             if symbol not in self.symbols:
+                print(f"[DEBUG] Symbol {symbol} not in list, skipping")
                 return
 
             print(f"Removing {symbol}")
             idx = self.symbol_to_idx[symbol]
+            print(f"[DEBUG] Symbol {symbol} has index {idx}")
+
+            old_symbols = self.symbols.copy()
             self.symbols = get_exchange_symbols()
             self._rebuild_indices()
 
+            # Log symbol list changes
+            added = set(self.symbols) - set(old_symbols)
+            removed = set(old_symbols) - set(self.symbols)
+            print(f"[DEBUG] Symbols removed from list: {removed}")
+            if added:
+                print(f"[DEBUG] Symbols added to list (unexpected during remove): {added}")
+
+            print(f"[DEBUG] New symbol count: {len(self.symbols)}, removing index {idx} from trackers")
+
             # Remove from all trackers
-            for tracker in self.trackers.values():
+            for key, tracker in self.trackers.items():
+                old_n = tracker.n_symbols
                 tracker.sum_x = np.delete(tracker.sum_x, idx)
                 tracker.sum_xx = np.delete(tracker.sum_xx, idx)
                 tracker.sum_xy = np.delete(tracker.sum_xy, idx, axis=0)
                 tracker.sum_xy = np.delete(tracker.sum_xy, idx, axis=1)
                 tracker.n_symbols = len(self.symbols)
 
+                # Verify array shapes match
+                if tracker.sum_x.shape[0] != tracker.n_symbols:
+                    print(f"[DEBUG] MISMATCH in tracker {key}: sum_x shape {tracker.sum_x.shape[0]} != n_symbols {tracker.n_symbols}")
+                if tracker.sum_xy.shape[0] != tracker.n_symbols:
+                    print(f"[DEBUG] MISMATCH in tracker {key}: sum_xy shape {tracker.sum_xy.shape} != n_symbols {tracker.n_symbols}")
+
+            # Verify final state
+            sample_tracker = self.trackers.get((1, "close"))
+            if sample_tracker:
+                print(f"[DEBUG] After remove_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
+                print(f"[DEBUG] Array shapes - sum_x: {sample_tracker.sum_x.shape}, sum_xy: {sample_tracker.sum_xy.shape}")
+
             self._cache_correlations(save_to_db=False)
+            print(f"[DEBUG] remove_symbol completed for {symbol}")
+
+    def _log_state_summary(self):
+        """Log periodic state summary for debugging."""
+        print(f"[DEBUG] === STATE SUMMARY (update #{self.update_count}) ===")
+        print(f"[DEBUG] Symbols tracked: {len(self.symbols)}")
+        print(f"[DEBUG] Symbol-to-index mapping size: {len(self.symbol_to_idx)}")
+        print(f"[DEBUG] Trackers: {len(self.trackers)}")
+
+        for hours in self.hours_options:
+            tracker = self.trackers.get((hours, "close"))
+            if tracker:
+                print(f"[DEBUG] Tracker({hours}h,close): n_symbols={tracker.n_symbols}, count={tracker.count}, sum_x_shape={tracker.sum_x.shape}, sum_xy_shape={tracker.sum_xy.shape}")
+
+                # Check for consistency
+                if tracker.n_symbols != len(self.symbols):
+                    print(f"[DEBUG] CONSISTENCY ERROR: tracker n_symbols ({tracker.n_symbols}) != len(symbols) ({len(self.symbols)})")
+                if tracker.sum_x.shape[0] != tracker.n_symbols:
+                    print(f"[DEBUG] CONSISTENCY ERROR: sum_x shape ({tracker.sum_x.shape[0]}) != n_symbols ({tracker.n_symbols})")
+                if tracker.sum_xy.shape[0] != tracker.n_symbols:
+                    print(f"[DEBUG] CONSISTENCY ERROR: sum_xy shape ({tracker.sum_xy.shape[0]}) != n_symbols ({tracker.n_symbols})")
+
+        print(f"[DEBUG] === END STATE SUMMARY ===")
 
     def _cleanup_loop(self):
         """Background cleanup of old correlation data."""
@@ -382,22 +492,38 @@ class CorrelationCalculator:
         try:
             payload = json.loads(data)
         except json.JSONDecodeError:
+            print(f"[DEBUG] Failed to decode kline update JSON: {data[:100]}")
             return
 
         newest = payload.get("newest_values")
         timestamp = payload.get("timestamp")
 
         if not isinstance(newest, dict):
+            print(f"[DEBUG] newest_values is not a dict: {type(newest)}")
             return
+
+        current_time = time.time()
+        time_since_last = current_time - self.last_update_time if self.last_update_time > 0 else 0
+        self.update_count += 1
+
+        print(f"[DEBUG] Kline update #{self.update_count} - timestamp: {timestamp}, symbols in payload: {len(newest)}, tracked symbols: {len(self.symbols)}, time_since_last: {time_since_last:.1f}s")
+
+        if time_since_last > 90 and self.last_update_time > 0:
+            print(f"[DEBUG] WARNING: Gap of {time_since_last:.1f}s since last update (expected ~60s)")
 
         if not self.initialized:
             self.pending_updates.append((newest, timestamp))
             print(f"Queued update (pending: {len(self.pending_updates)})")
             return
 
+        self.last_update_time = current_time
         start = time.time()
         self.update_correlations(newest, timestamp)
         print(f"Update completed in {time.time() - start:.2f}s")
+
+        # Periodic state dump every 10 updates
+        if self.update_count % 10 == 0:
+            self._log_state_summary()
 
     def run(self):
         """Main entry point."""

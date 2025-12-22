@@ -16,7 +16,6 @@ from correlations.selectors import get_symbol_pair_correlation_history
 
 logger = logging.getLogger(__name__)
 r = get_redis_connection()
-_request_count = 0
 
 
 def _flatten_upper_index(i: int, j: int, size: int) -> int:
@@ -29,12 +28,6 @@ def _flatten_upper_index(i: int, j: int, size: int) -> int:
 
 
 def debug_correlation():
-    global _request_count
-    _request_count += 1
-    if _request_count != 10:
-        return
-    _request_count = 0
-
     try:
         kline_data = get_historical_kline_data(hours=2, symbols=["SOLUSDT", "BTCUSDT"])
 
