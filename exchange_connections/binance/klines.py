@@ -27,7 +27,7 @@ COINGECKO_MARKET_CAP_URL = (
     "?vs_currency=usd&order=market_cap_desc&per_page={per_page}&page=1&sparkline=false"
 )
 WS_PING_INTERVAL = 20
-WS_PING_TIMEOUT = 10
+WS_PING_TIMEOUT = 30
 MAX_STREAMS_PER_CONNECTION = 200
 RECONNECT_BASE_DELAY = 5
 RECONNECT_MAX_DELAY = 60
@@ -64,6 +64,7 @@ class KlinesSocketManager:
 
         self.message_batch: List[Dict] = []
         self.message_lock = threading.Lock()
+        self.batch_timestamp: Optional[int] = None
 
         self.reconnect_event = threading.Event()
         self.reconnect_lock = threading.Lock()
@@ -115,6 +116,7 @@ class KlinesSocketManager:
         self.ws_apps = []
         self.ws_threads = []
         self.message_batch = []
+        self.batch_timestamp = None
         self._last_pong_time = {}
 
     def reconnect(self):
@@ -348,13 +350,25 @@ class KlinesSocketManager:
 
     def _add_to_batch(self, kline: Dict) -> Optional[List[Dict]]:
         """Add kline to batch, return batch if complete."""
+        kline_ts = kline.get("t")
+
         with self.message_lock:
+            if self.batch_timestamp is not None and kline_ts != self.batch_timestamp:
+                if self.message_batch:
+                    print(
+                        f"Discarding {len(self.message_batch)} klines from ts {self.batch_timestamp}, new ts {kline_ts}"
+                    )
+                self.message_batch = []
+
+            self.batch_timestamp = kline_ts
             self.message_batch.append(kline)
 
             if len(self.message_batch) >= self.symbols_count:
                 batch = self.message_batch
                 self.message_batch = []
+                self.batch_timestamp = None
                 return batch
+
         return None
 
     def _save_batch(self, batch: List[Dict]):
