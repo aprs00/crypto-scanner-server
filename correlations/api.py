@@ -4,17 +4,11 @@ from itertools import combinations
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import msgpack
-import logging
-import numpy as np
 
 from core.redis_config import get_redis_connection
-from exchange_connections.selectors import (
-    get_exchange_symbols,
-    get_historical_kline_data,
-)
+from exchange_connections.selectors import get_exchange_symbols
 from correlations.selectors import get_symbol_pair_correlation_history
 
-logger = logging.getLogger(__name__)
 r = get_redis_connection()
 
 
@@ -25,54 +19,6 @@ def _flatten_upper_index(i: int, j: int, size: int) -> int:
     if i > j:
         i, j = j, i
     return i * size - (i * (i + 1)) // 2 + j - i - 1
-
-
-def debug_correlation():
-    try:
-        kline_data = get_historical_kline_data(hours=2, symbols=["SOLUSDT", "BTCUSDT"])
-
-        if "SOLUSDT" in kline_data and "BTCUSDT" in kline_data:
-            sol_prices = np.array(kline_data["SOLUSDT"]["price"][-60:])
-            btc_prices = np.array(kline_data["BTCUSDT"]["price"][-60:])
-            print("SOL prices:", len(sol_prices))
-            print("BTC prices:", len(btc_prices))
-            corr_matrix = np.corrcoef(sol_prices, btc_prices)
-            pair_correlation = float(corr_matrix[0, 1])
-            print("----------------")
-            print("----------------")
-            print("----------------")
-            print("----------------")
-            print("----------------")
-            print("----------------")
-            print("----------------")
-            print(f"SOLUSDT/BTCUSDT correlation (numpy): {pair_correlation:.4f}")
-
-        # Get redis correlation value
-        symbols = get_exchange_symbols()
-        if symbols:
-            try:
-                sol_idx = symbols.index("SOLUSDT")
-                btc_idx = symbols.index("BTCUSDT")
-
-                correlation_key = "correlations:price:1:binance:perpetual"
-                correlation_blob = r.get(correlation_key)
-                if correlation_blob:
-                    pearson_correlations = msgpack.unpackb(
-                        correlation_blob, use_list=True, raw=False
-                    )
-                    total_symbols = len(symbols)
-                    pair_idx = _flatten_upper_index(sol_idx, btc_idx, total_symbols)
-                    redis_correlation = pearson_correlations[pair_idx]
-                    print(
-                        f"SOLUSDT/BTCUSDT correlation (redis): {redis_correlation:.4f}"
-                    )
-                else:
-                    print("SOLUSDT/BTCUSDT correlation (redis): N/A")
-            except (ValueError, IndexError) as e:
-                print(f"SOLUSDT/BTCUSDT correlation (redis): N/A (error: {e})")
-        print("----------------")
-    except Exception as e:
-        logger.error("Error calculating SOLUSDT/BTCUSDT correlation: %s", e)
 
 
 @csrf_exempt
@@ -100,13 +46,13 @@ def get_pearson_correlation(request):
     try:
         symbols = get_exchange_symbols()
         if not symbols:
-            logger.error("Symbols data not found in Redis")
+            print("Symbols data not found in Redis")
             return JsonResponse({"error": "Symbols data not available"}, status=503)
 
         correlation_key = f"correlations:{data_type}:{hours}:binance:perpetual"
         correlation_blob = r.get(correlation_key)
         if not correlation_blob:
-            logger.error("Correlation data not found for key %s", correlation_key)
+            print("Correlation data not found for key", correlation_key)
             return JsonResponse(
                 {"error": "Correlation data not available for specified parameters"},
                 status=503,
@@ -146,14 +92,12 @@ def get_pearson_correlation(request):
             else:
                 pearson_correlations = []
 
-        debug_correlation()
-
         return JsonResponse(
             {"axis": axis, "data": pearson_correlations, "type": "correlation"}
         )
 
     except Exception as exc:
-        logger.error("Error in get_pearson_correlation: %s", exc, exc_info=True)
+        print("Error in get_pearson_correlation:", exc)
         return JsonResponse({"error": "Internal server error"}, status=500)
 
 
@@ -192,5 +136,5 @@ def get_correlation_pair_history(request):
         )
 
     except Exception as e:
-        logger.error(f"Error in get_correlation_pair_history: {str(e)}")
+        print("Error in get_correlation_pair_history:", e)
         return JsonResponse({"error": "Internal server error"}, status=500)

@@ -119,6 +119,9 @@ class CorrelationTracker:
 class CorrelationCalculator:
     """Main correlation calculator with Redis pubsub integration."""
 
+    VALIDATION_SYMBOLS = ["BTCUSDT", "SOLUSDT"]
+    CORRELATION_TOLERANCE = 0.01  # Allow 1% difference
+
     def __init__(self):
         self.redis = get_redis_connection()
         self.lock = threading.RLock()
@@ -219,6 +222,105 @@ class CorrelationCalculator:
 
                 tracker.update(new_arr, old_arr if tracker.count >= window else None)
 
+    def _validate_btc_sol_correlation(self):
+        """
+        Validate incremental BTC-SOL correlation against manual numpy calculation.
+        Fetches data from DB and computes correlation manually to detect drift.
+        """
+        try:
+            # Check if validation symbols are in our tracked symbols
+            btc_sym, sol_sym = self.VALIDATION_SYMBOLS
+            if btc_sym not in self.symbol_to_idx or sol_sym not in self.symbol_to_idx:
+                print(f"[VALIDATION] Skipping - {btc_sym} or {sol_sym} not in tracked symbols")
+                return
+
+            # Fetch 60 minutes of data for both symbols
+            data = get_historical_kline_data(hours=1, symbols=[btc_sym, sol_sym])
+
+            if btc_sym not in data or sol_sym not in data:
+                print(f"[VALIDATION] Could not fetch data for {btc_sym} or {sol_sym}")
+                return
+
+            # Get the 1h close tracker for comparison
+            tracker = self.trackers.get((1, "price"))
+            if not tracker:
+                print("[VALIDATION] No 1h price tracker found")
+                return
+
+            # Get incremental correlation value
+            btc_idx = self.symbol_to_idx[btc_sym]
+            sol_idx = self.symbol_to_idx[sol_sym]
+
+            # The correlation matrix is stored as upper triangle
+            # We need to find the index of the BTC-SOL pair
+            incremental_matrix = tracker.get_correlations()
+            if not incremental_matrix:
+                print("[VALIDATION] Empty incremental matrix")
+                return
+
+            # Calculate flat index for upper triangle
+            n = tracker.n_symbols
+            if btc_idx < sol_idx:
+                # For upper triangle, pair (i,j) where i<j has index:
+                # sum(n-1-k for k in range(i)) + (j - i - 1)
+                # = i*n - i*(i+1)/2 + (j - i - 1)
+                flat_idx = btc_idx * n - (btc_idx * (btc_idx + 1)) // 2 + (sol_idx - btc_idx - 1)
+            else:
+                flat_idx = sol_idx * n - (sol_idx * (sol_idx + 1)) // 2 + (btc_idx - sol_idx - 1)
+
+            if flat_idx >= len(incremental_matrix):
+                print(f"[VALIDATION] flat_idx {flat_idx} out of bounds for matrix len {len(incremental_matrix)}")
+                return
+
+            incremental_corr = incremental_matrix[flat_idx]
+
+            # Calculate manual correlation with numpy
+            btc_prices = np.array(data[btc_sym]["price"], dtype=np.float64)
+            sol_prices = np.array(data[sol_sym]["price"], dtype=np.float64)
+
+            # Make sure both arrays have the same length
+            min_len = min(len(btc_prices), len(sol_prices))
+            if min_len < 10:
+                print(f"[VALIDATION] Not enough data points: {min_len}")
+                return
+
+            btc_prices = btc_prices[-min_len:]
+            sol_prices = sol_prices[-min_len:]
+
+            # Calculate Pearson correlation manually
+            manual_corr = np.corrcoef(btc_prices, sol_prices)[0, 1]
+
+            # Compare and log
+            diff = abs(incremental_corr - manual_corr)
+
+            log_msg = (
+                f"[VALIDATION] BTC-SOL 1h price correlation: "
+                f"Incremental={incremental_corr:.6f}, Manual={manual_corr:.6f}, "
+                f"Diff={diff:.6f}, DataPoints={min_len}, "
+                f"TrackerCount={tracker.count}"
+            )
+
+            if diff > self.CORRELATION_TOLERANCE:
+                print("\n" + "=" * 80)
+                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                print("[CORRELATION MISMATCH DETECTED] Incremental and manual calculations DISAGREE!")
+                print(log_msg)
+                print(f"BTC prices (last 5): {btc_prices[-5:].tolist()}")
+                print(f"SOL prices (last 5): {sol_prices[-5:].tolist()}")
+                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                print("=" * 80 + "\n")
+
+                # Store error in Redis for monitoring
+                error_msg = f"[CORRELATION MISMATCH] {log_msg}"
+                self.redis.lpush("error_log", error_msg)
+            else:
+                print(log_msg)
+
+        except Exception as e:
+            print(f"[VALIDATION] Error during BTC-SOL validation: {e}")
+            import traceback
+            traceback.print_exc()
+
     def _cache_correlations(self, save_to_db: bool = True):
         """Cache correlation matrices to Redis and optionally DB."""
         pipe = self.redis.pipeline()
@@ -255,6 +357,9 @@ class CorrelationCalculator:
 
         pipe.execute()
         notification_service.send_correlation_update()
+
+        # Validate BTC-SOL correlation on every update
+        self._validate_btc_sol_correlation()
 
     def update_correlations(
         self,
@@ -397,7 +502,6 @@ class CorrelationCalculator:
 
             # Remove from all trackers
             for key, tracker in self.trackers.items():
-                old_n = tracker.n_symbols
                 tracker.sum_x = np.delete(tracker.sum_x, idx)
                 tracker.sum_xx = np.delete(tracker.sum_xx, idx)
                 tracker.sum_xy = np.delete(tracker.sum_xy, idx, axis=0)
@@ -487,6 +591,48 @@ class CorrelationCalculator:
                 print(f"Pubsub error: {e}")
                 time.sleep(5)
 
+    def _validate_newest_values(self, newest: Dict, timestamp: int) -> bool:
+        """Validate the newest_values payload for issues."""
+        issues = []
+
+        # Check symbol count
+        if len(newest) != len(self.symbols):
+            issues.append(f"Symbol count mismatch: payload has {len(newest)}, tracking {len(self.symbols)}")
+
+        # Check for missing symbols
+        missing_from_payload = set(self.symbols) - set(newest.keys())
+        if missing_from_payload:
+            issues.append(f"Missing from payload: {list(missing_from_payload)[:10]}{'...' if len(missing_from_payload) > 10 else ''}")
+
+        # Check for extra symbols in payload
+        extra_in_payload = set(newest.keys()) - set(self.symbols)
+        if extra_in_payload:
+            issues.append(f"Extra in payload: {list(extra_in_payload)[:10]}{'...' if len(extra_in_payload) > 10 else ''}")
+
+        # Check for invalid values
+        invalid_values = []
+        for sym, vals in newest.items():
+            if not isinstance(vals, dict):
+                invalid_values.append(f"{sym}: not a dict")
+                continue
+            for key in ["price", "volume", "trades"]:
+                if key not in vals:
+                    invalid_values.append(f"{sym}: missing {key}")
+                elif vals[key] is None or (isinstance(vals[key], float) and (vals[key] != vals[key])):  # NaN check
+                    invalid_values.append(f"{sym}: {key} is None/NaN")
+
+        if invalid_values:
+            issues.append(f"Invalid values: {invalid_values[:5]}{'...' if len(invalid_values) > 5 else ''}")
+
+        if issues:
+            print(f"[PAYLOAD VALIDATION] Issues found in update (ts={timestamp}):")
+            for issue in issues:
+                print(f"  - {issue}")
+            self.redis.lpush("error_log", f"[PAYLOAD VALIDATION] ts={timestamp}: {'; '.join(issues)}")
+            return False
+
+        return True
+
     def _handle_kline_update(self, data: str):
         """Process kline update message."""
         try:
@@ -510,6 +656,10 @@ class CorrelationCalculator:
 
         if time_since_last > 90 and self.last_update_time > 0:
             print(f"[DEBUG] WARNING: Gap of {time_since_last:.1f}s since last update (expected ~60s)")
+
+        # Validate payload
+        if self.initialized:
+            self._validate_newest_values(newest, timestamp)
 
         if not self.initialized:
             self.pending_updates.append((newest, timestamp))

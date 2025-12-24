@@ -367,9 +367,41 @@ class KlinesSocketManager:
                 batch = self.message_batch
                 self.message_batch = []
                 self.batch_timestamp = None
+
+                # Check for duplicates before returning
+                self._check_batch_duplicates(batch)
+
                 return batch
 
         return None
+
+    def _check_batch_duplicates(self, batch: List[Dict]):
+        """Check for duplicate symbols in batch and log errors."""
+        symbols_in_batch = [k.get("s") for k in batch]
+        seen = set()
+        duplicates = []
+
+        for sym in symbols_in_batch:
+            if sym in seen:
+                duplicates.append(sym)
+            seen.add(sym)
+
+        if duplicates:
+            dup_counts = {}
+            for sym in symbols_in_batch:
+                dup_counts[sym] = dup_counts.get(sym, 0) + 1
+            dup_details = {sym: cnt for sym, cnt in dup_counts.items() if cnt > 1}
+
+            error_msg = f"[DUPLICATE ERROR] Batch has {len(duplicates)} duplicate symbols! Details: {dup_details}"
+            print(error_msg)
+            self.store_error(error_msg)
+
+        # Also check if batch has fewer unique symbols than expected
+        unique_count = len(seen)
+        if unique_count != self.symbols_count:
+            error_msg = f"[BATCH SIZE MISMATCH] Expected {self.symbols_count} unique symbols, got {unique_count}"
+            print(error_msg)
+            self.store_error(error_msg)
 
     def _save_batch(self, batch: List[Dict]):
         """Save a batch of klines to the database."""
