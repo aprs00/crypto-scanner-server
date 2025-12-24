@@ -26,8 +26,8 @@ COINGECKO_MARKET_CAP_URL = (
     "https://api.coingecko.com/api/v3/coins/markets"
     "?vs_currency=usd&order=market_cap_desc&per_page={per_page}&page=1&sparkline=false"
 )
-WS_PING_INTERVAL = 20
-WS_PING_TIMEOUT = 30
+WS_PING_INTERVAL = 30
+WS_PING_TIMEOUT = 10
 MAX_STREAMS_PER_CONNECTION = 200
 RECONNECT_BASE_DELAY = 5
 RECONNECT_MAX_DELAY = 60
