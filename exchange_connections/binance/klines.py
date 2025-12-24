@@ -1,14 +1,11 @@
 import json
 import time
 import threading
+import requests
 import websocket
-from datetime import datetime, timedelta
-from enum import Enum
-from urllib.request import Request, urlopen
-from typing import Set, List, Dict, Optional
-from dataclasses import dataclass, field
-
-from django.conf import settings
+from datetime import datetime, timezone as dt_timezone
+from typing import Dict, Set, Optional
+from decimal import Decimal
 
 from exchange_connections.constants import BinanceContractStatus
 from core.constants import RedisPubMessages
@@ -21,482 +18,438 @@ from core.redis_config import get_redis_connection
 
 BINANCE_FUTURES_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/stream"
-BINANCE_USER_AGENT = "crypto-scanner/1.0"
-COINGECKO_MARKET_CAP_URL = (
-    "https://api.coingecko.com/api/v3/coins/markets"
-    "?vs_currency=usd&order=market_cap_desc&per_page={per_page}&page=1&sparkline=false"
-)
-WS_PING_INTERVAL = 30
-WS_PING_TIMEOUT = 10
-MAX_STREAMS_PER_CONNECTION = 200
-RECONNECT_BASE_DELAY = 5
-RECONNECT_MAX_DELAY = 60
-WS_24H_RECONNECT_INTERVAL = 23 * 60 * 60
-STALE_CONNECTION_THRESHOLD = 120
+COINGECKO_MARKET_CAP_URL = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false"
 MARKET_CAP_ZSET_KEY = "market_cap:binance:perpetual"
 SYMBOLS_REDIS_KEY = "symbols:binance:perpetual"
+ERROR_LOG_KEY = "error_log"
+
+SYMBOL_REFRESH_INTERVAL = 1800
+MARKET_CAP_REFRESH_INTERVAL = 3600
+WS_RECONNECT_DELAY = 5
+WS_PING_INTERVAL = 60
+WS_PING_TIMEOUT = 30
+MAX_STREAMS_PER_CONNECTION = 1024
 
 
-class ContractType(str, Enum):
-    PERPETUAL = "PERPETUAL"
+class BinanceKlineCollector:
+    """
+    Collects 1-minute kline data for all Binance perpetual futures symbols.
 
+    Handles:
+    - Symbol discovery and change detection
+    - WebSocket connection with automatic reconnection (24h limit)
+    - Kline batching by timestamp for complete minute collection
+    - Bulk database inserts
+    - Redis pubsub for correlation updates
+    - Market cap ranking from CoinGecko
+    """
 
-@dataclass
-class SymbolEvent:
-    """Represents a symbol listing/delisting event."""
-
-    symbol: str
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-
-
-class KlinesSocketManager:
     def __init__(self):
-        self.r = get_redis_connection()
-        self.symbols: List[str] = []
-        self.active_symbols_set: Set[str] = set()
+        self.redis = get_redis_connection()
+        self.symbols: Set[str] = set()
+        self.ws: Optional[websocket.WebSocketApp] = None
+        self.ws_connected = False
+        self.should_run = True
+        self.connection_start_time: Optional[float] = None
 
-        self.ws_apps: List[websocket.WebSocketApp] = []
-        self.ws_threads: List[threading.Thread] = []
-        self._last_pong_time: Dict[int, float] = {}
-        self._connection_start_time: Optional[float] = None
-        self._manual_close = False
-        self._reconnect_count = 0
+        self.kline_batch: Dict[int, Dict[str, dict]] = (
+            {}
+        )  # timestamp_ms -> {symbol: kline_data}
+        self.batch_lock = (
+            threading.RLock()
+        )  # RLock allows reentrant locking from same thread
+        self.expected_symbols: Set[str] = set()
 
-        self.message_batch: List[Dict] = []
-        self.message_lock = threading.Lock()
-        self.batch_timestamp: Optional[int] = None
+        self.last_symbol_refresh = 0
+        self.last_market_cap_refresh = 0
 
-        self.reconnect_event = threading.Event()
-        self.reconnect_lock = threading.Lock()
-        self.shutdown_event = threading.Event()
-
-        self.symbol_check_interval = 1800
-        self.last_symbol_check: Optional[datetime] = None
-
-    @property
-    def symbols_count(self) -> int:
-        return len(self.symbols)
-
-    def store_error(self, error: str):
-        self.r.lpush("error_log", str(error))
-
-    def initialize(self):
-        if websocket is None:
-            raise RuntimeError("websocket-client is required")
-
-        monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        monitor_thread.start()
-
-    def start(self):
-        self.fetch_futures_symbols()
-        self._start_socket()
-
-    def stop(self):
-        self._manual_close = True
-        self._close_all_websockets()
-        self._reset_websocket_state()
-
-    def _close_all_websockets(self):
-        current_thread = threading.current_thread()
-
-        for ws_app in self.ws_apps:
-            try:
-                ws_app.close()
-            except Exception as e:
-                self.store_error(f"Error closing websocket: {e}")
-
-        for ws_thread in self.ws_threads:
-            if ws_thread.is_alive() and ws_thread is not current_thread:
-                try:
-                    ws_thread.join(timeout=5)
-                except Exception as e:
-                    self.store_error(f"Error joining thread: {e}")
-
-    def _reset_websocket_state(self):
-        self.ws_apps = []
-        self.ws_threads = []
-        self.message_batch = []
-        self.batch_timestamp = None
-        self._last_pong_time = {}
-
-    def reconnect(self):
-        if not self.reconnect_lock.acquire(blocking=False):
-            return
-
+    def log_error(self, error_msg: str):
+        """Store error message to Redis for monitoring."""
+        timestamp = datetime.now(dt_timezone.utc).isoformat()
+        full_msg = f"[{timestamp}] {error_msg}"
+        print(f"ERROR: {full_msg}")
         try:
-            seconds_in_minute = datetime.now().second
-            if seconds_in_minute < 7:
-                wait_time = 7 - seconds_in_minute
-                print(f"Waiting {wait_time}s to avoid socket update window")
-                time.sleep(wait_time)
-
-            self.stop()
-            delay = min(
-                RECONNECT_BASE_DELAY * (2**self._reconnect_count), RECONNECT_MAX_DELAY
-            )
-            self._reconnect_count += 1
-            print(f"Reconnecting in {delay}s (attempt {self._reconnect_count})")
-            time.sleep(delay)
-
-            if not self.shutdown_event.is_set():
-                self.start()
-        finally:
-            self.reconnect_lock.release()
-
-    def fetch_futures_symbols(self):
-        """Fetch all perpetual futures symbols from Binance."""
-        try:
-            exchange_info = self._fetch_json(BINANCE_FUTURES_EXCHANGE_INFO_URL)
-            active_symbols = [
-                s["symbol"]
-                for s in exchange_info["symbols"]
-                if s["contractType"] == ContractType.PERPETUAL.value
-                and s["status"] == BinanceContractStatus.TRADING.value
-            ]
-
-            self._update_symbols_in_redis(active_symbols)
-            self._check_symbol_changes(set(active_symbols))
-            self.store_top_market_cap_symbols(limit=100)
-            self.last_symbol_check = datetime.now()
-
+            self.redis.lpush(ERROR_LOG_KEY, full_msg)
+            self.redis.ltrim(ERROR_LOG_KEY, 0, 999)
         except Exception as e:
-            self.store_error(f"Error fetching futures symbols: {e}")
+            print(f"Failed to log error to Redis: {e}")
 
-    def _fetch_json(self, url: str) -> Dict:
-        """Fetch and parse JSON from a URL."""
-        request = Request(url, headers={"User-Agent": BINANCE_USER_AGENT})
-        with urlopen(request, timeout=10) as response:
-            return json.loads(response.read().decode("utf-8"))
+    def fetch_perpetual_symbols(self) -> Set[str]:
+        """Fetch all perpetual futures symbols from Binance API."""
+        try:
+            response = requests.get(BINANCE_FUTURES_EXCHANGE_INFO_URL, timeout=30)
+            response.raise_for_status()
+            data = response.json()
 
-    def _update_symbols_in_redis(self, symbols: List[str]):
-        """Update the symbols set in Redis."""
-        self.r.delete(SYMBOLS_REDIS_KEY)
-        if symbols:
-            self.r.sadd(SYMBOLS_REDIS_KEY, *symbols)
-        self.symbols = symbols
+            symbols = set()
+            for symbol_info in data.get("symbols", []):
+                if (
+                    symbol_info.get("contractType") == "PERPETUAL"
+                    and symbol_info.get("quoteAsset") == "USDT"
+                    and symbol_info.get("status") == BinanceContractStatus.TRADING.value
+                ):
+                    symbols.add(symbol_info["symbol"])
 
-    def _check_symbol_changes(self, new_symbols: Set[str]):
-        """Check for symbol changes and trigger reconnect if needed."""
-        if not self.active_symbols_set:
-            self.active_symbols_set = new_symbols
-            return
+            print(f"Fetched {len(symbols)} perpetual futures symbols from Binance")
+            return symbols
+        except Exception as e:
+            self.log_error(f"Failed to fetch symbols from Binance: {e}")
+            return set()
 
-        removed = self.active_symbols_set - new_symbols
-        added = new_symbols - self.active_symbols_set
-
-        if removed:
-            print(f"Symbols removed: {removed}")
-            self._publish_symbol_events(removed, is_delisting=True)
-
-        if added:
-            print(f"Symbols added: {added}")
-            self._publish_symbol_events(added, is_delisting=False)
-
-        self.active_symbols_set = new_symbols
-
-        if removed or added:
-            self.reconnect_event.set()
-
-    def _publish_symbol_events(self, symbols: Set[str], is_delisting: bool):
-        """Publish symbol listing/delisting events to Redis."""
-        if is_delisting:
-            redis_set = "delisted_symbols"
-            key_prefix = "delisted"
-            channel = RedisPubMessages.SYMBOL_DELISTED.value
-        else:
-            redis_set = "newly_listed_symbols"
-            key_prefix = "listed"
-            channel = RedisPubMessages.SYMBOL_ADDED.value
-
-        for symbol in symbols:
-            try:
-                event = SymbolEvent(symbol)
-                self.r.sadd(redis_set, symbol)
-                self.r.set(f"{key_prefix}:{symbol}:timestamp", event.timestamp)
-                self.r.publish(channel, f"{symbol}:{event.timestamp}")
-            except Exception as e:
-                self.store_error(f"Error publishing event for {symbol}: {e}")
-
-    def store_top_market_cap_symbols(self, limit: int = 100):
-        """Fetch and store top market cap symbols in Redis sorted set."""
-        if not self.symbols or limit <= 0:
+    def update_symbols(self):
+        """Update symbols in Redis and detect changes."""
+        new_symbols = self.fetch_perpetual_symbols()
+        if not new_symbols:
+            print("No symbols fetched, keeping existing symbols")
             return
 
         try:
-            per_page = min(limit * 2, 250)
-            market_data = self._fetch_json(
-                COINGECKO_MARKET_CAP_URL.format(per_page=per_page)
-            )
+            current_bytes = self.redis.smembers(SYMBOLS_REDIS_KEY)
+            current_symbols = {s.decode("utf-8") for s in current_bytes}  # type: ignore[union-attr]
         except Exception as e:
-            self.store_error(f"Error fetching market cap data: {e}")
-            return
+            self.log_error(f"Failed to get current symbols from Redis: {e}")
+            current_symbols = set()
 
-        symbol_set = set(self.symbols)
-        zadd_args = []
+        added = new_symbols - current_symbols
+        removed = current_symbols - new_symbols
 
-        for asset in market_data:
-            if not isinstance(asset, dict):
-                continue
+        timestamp = int(time.time() * 1000)
 
-            asset_symbol = asset.get("symbol")
-            market_cap = asset.get("market_cap")
-            if not asset_symbol or market_cap is None:
-                continue
+        for symbol in added:
+            print(f"New symbol listed: {symbol}")
+            try:
+                self.redis.sadd(SYMBOLS_REDIS_KEY, symbol)
+                self.redis.publish(
+                    RedisPubMessages.SYMBOL_ADDED.value, f"{symbol}:{timestamp}"
+                )
+            except Exception as e:
+                self.log_error(f"Failed to add symbol {symbol}: {e}")
 
-            binance_symbol = f"{asset_symbol.upper()}USDT"
-            if binance_symbol in symbol_set:
-                zadd_args.extend([float(market_cap), binance_symbol])
-                if len(zadd_args) >= limit * 2:
-                    break
+        for symbol in removed:
+            print(f"Symbol delisted: {symbol}")
+            try:
+                self.redis.srem(SYMBOLS_REDIS_KEY, symbol)
+                self.redis.publish(
+                    RedisPubMessages.SYMBOL_DELISTED.value, f"{symbol}:{timestamp}"
+                )
+            except Exception as e:
+                self.log_error(f"Failed to remove symbol {symbol}: {e}")
 
-        if zadd_args:
-            pipe = self.r.pipeline()
+        self.symbols = new_symbols
+        self.expected_symbols = new_symbols.copy()
+        self.last_symbol_refresh = time.time()
+
+        print(
+            f"Symbol update complete: {len(added)} added, {len(removed)} removed, {len(self.symbols)} total"
+        )
+
+    def fetch_market_cap_ranking(self):
+        """Fetch top coins by market cap from CoinGecko and store matching symbols."""
+        try:
+            response = requests.get(COINGECKO_MARKET_CAP_URL, timeout=30)
+            response.raise_for_status()
+            coins = response.json()
+
+            coin_ranks = {}
+            for rank, coin in enumerate(coins, 1):
+                coin_symbol = coin.get("symbol", "").upper()
+                if coin_symbol:
+                    coin_ranks[coin_symbol] = rank
+
+            matched = []
+            for symbol in self.symbols:
+                base = symbol.replace("USDT", "")
+                if base in coin_ranks:
+                    matched.append((symbol, coin_ranks[base]))
+
+            matched.sort(key=lambda x: x[1])
+            top_100 = matched[:100]
+
+            pipe = self.redis.pipeline()
             pipe.delete(MARKET_CAP_ZSET_KEY)
-            pipe.zadd(MARKET_CAP_ZSET_KEY, dict(zip(zadd_args[1::2], zadd_args[::2])))
+            for symbol, rank in top_100:
+                pipe.zadd(MARKET_CAP_ZSET_KEY, {symbol: -rank})
             pipe.execute()
 
-    def _start_socket(self):
-        if not self.symbols:
-            print("No symbols available for subscription")
-            return
-
-        self._manual_close = False
-        self._connection_start_time = time.time()
-
-        for idx, symbol_chunk in enumerate(
-            self._chunk_list(self.symbols, MAX_STREAMS_PER_CONNECTION)
-        ):
-            streams = "/".join(f"{s.lower()}@kline_1m" for s in symbol_chunk)
-            url = f"{BINANCE_FUTURES_WS_URL}?streams={streams}"
-
-            ws_app = websocket.WebSocketApp(
-                url,
-                on_message=self._on_message,
-                on_error=self._on_error,
-                on_close=self._on_close,
-                on_open=lambda ws, i=idx: self._on_open(ws, i),
-                on_pong=lambda ws, msg, i=idx: self._on_pong(ws, msg, i),
-            )
-            self.ws_apps.append(ws_app)
-
-            thread = threading.Thread(
-                target=ws_app.run_forever,
-                kwargs={
-                    "ping_interval": WS_PING_INTERVAL,
-                    "ping_timeout": WS_PING_TIMEOUT,
-                },
-                daemon=True,
-            )
-            self.ws_threads.append(thread)
-            thread.start()
-
-    @staticmethod
-    def _chunk_list(lst: List, size: int):
-        """Yield successive chunks from a list."""
-        for i in range(0, len(lst), size):
-            yield lst[i : i + size]
-
-    def _on_open(self, _ws, idx: int):
-        print(f"WebSocket {idx} connected")
-        self._last_pong_time[idx] = time.time()
-        self._reconnect_count = 0
-
-    def _on_pong(self, _ws, _msg, idx: int):
-        self._last_pong_time[idx] = time.time()
-
-    def _on_error(self, _ws, error):
-        self.store_error(f"WebSocket error: {error}")
-        if not self._manual_close and not self.shutdown_event.is_set():
-            self.reconnect_event.set()
-
-    def _on_close(self, _ws, code, msg):
-        if not self._manual_close and not self.shutdown_event.is_set():
-            print(f"WebSocket closed: code={code}, msg={msg}")
-            self.reconnect_event.set()
-
-    def _on_message(self, _ws, message: str):
-        try:
-            payload = json.loads(message)
-        except json.JSONDecodeError as e:
-            self.store_error(f"Invalid JSON: {e}")
-            return
-
-        if self._is_error_message(payload):
-            self.store_error(str(payload))
-            self.reconnect()
-            return
-
-        self._handle_kline_message(payload)
-
-    @staticmethod
-    def _is_error_message(msg: Dict) -> bool:
-        return msg.get("e") == "error"
-
-    def _handle_kline_message(self, msg: Dict):
-        """Process incoming kline data."""
-        kline = msg.get("data", {}).get("k")
-
-        if not kline or not kline.get("x"):
-            return
-
-        batch_to_process = self._add_to_batch(kline)
-
-        if batch_to_process:
-            threading.Thread(
-                target=self._save_batch,
-                args=(batch_to_process,),
-                daemon=True,
-            ).start()
-
-    def _add_to_batch(self, kline: Dict) -> Optional[List[Dict]]:
-        """Add kline to batch, return batch if complete."""
-        kline_ts = kline.get("t")
-
-        with self.message_lock:
-            if self.batch_timestamp is not None and kline_ts != self.batch_timestamp:
-                if self.message_batch:
-                    print(
-                        f"Discarding {len(self.message_batch)} klines from ts {self.batch_timestamp}, new ts {kline_ts}"
-                    )
-                self.message_batch = []
-
-            self.batch_timestamp = kline_ts
-            self.message_batch.append(kline)
-
-            if len(self.message_batch) >= self.symbols_count:
-                batch = self.message_batch
-                self.message_batch = []
-                self.batch_timestamp = None
-
-                # Check for duplicates before returning
-                self._check_batch_duplicates(batch)
-
-                return batch
-
-        return None
-
-    def _check_batch_duplicates(self, batch: List[Dict]):
-        """Check for duplicate symbols in batch and log errors."""
-        symbols_in_batch = [k.get("s") for k in batch]
-        seen = set()
-        duplicates = []
-
-        for sym in symbols_in_batch:
-            if sym in seen:
-                duplicates.append(sym)
-            seen.add(sym)
-
-        if duplicates:
-            dup_counts = {}
-            for sym in symbols_in_batch:
-                dup_counts[sym] = dup_counts.get(sym, 0) + 1
-            dup_details = {sym: cnt for sym, cnt in dup_counts.items() if cnt > 1}
-
-            error_msg = f"[DUPLICATE ERROR] Batch has {len(duplicates)} duplicate symbols! Details: {dup_details}"
-            print(error_msg)
-            self.store_error(error_msg)
-
-        # Also check if batch has fewer unique symbols than expected
-        unique_count = len(seen)
-        if unique_count != self.symbols_count:
-            error_msg = f"[BATCH SIZE MISMATCH] Expected {self.symbols_count} unique symbols, got {unique_count}"
-            print(error_msg)
-            self.store_error(error_msg)
-
-    def _save_batch(self, batch: List[Dict]):
-        """Save a batch of klines to the database."""
-        try:
-            models = [
-                build_model_from_ws(
-                    kline,
-                    exchange="binance",
-                    contract_type=ContractType.PERPETUAL.value.lower(),
-                )
-                for kline in batch
-            ]
-
-            if settings.STORE_TO_DB:
-                bulk_insert_klines(models, chunk_size=len(models))
-
-            payload = json.dumps(
-                {
-                    "timestamp": batch[0]["t"],
-                    "newest_values": {
-                        k["s"]: {
-                            "price": float(k["c"]),
-                            "volume": float(k["v"]),
-                            "trades": float(k["n"]),
-                        }
-                        for k in batch
-                    },
-                }
-            )
-            self.r.publish(RedisPubMessages.KLINE_SAVED_TO_DB.value, payload)
+            print(f"Updated market cap ranking: {len(top_100)} symbols")
+            self.last_market_cap_refresh = time.time()
 
         except Exception as e:
-            self.store_error(f"Batch save error: {e}")
+            self.log_error(f"Failed to fetch market cap ranking: {e}")
 
-    def _monitor_loop(self):
-        """Background monitoring for reconnects and symbol changes."""
-        time.sleep(5)
+    def build_ws_url(self) -> str:
+        """Build WebSocket URL with all kline streams."""
+        streams = [f"{symbol.lower()}@kline_1m" for symbol in self.symbols]
 
-        while not self.shutdown_event.is_set():
-            try:
-                self._check_and_handle_reconnect()
-                self._check_symbol_refresh()
-            except Exception as e:
-                self.store_error(f"Monitor error: {e}")
+        if len(streams) > MAX_STREAMS_PER_CONNECTION:
+            self.log_error(
+                f"Warning: {len(streams)} streams exceed limit of {MAX_STREAMS_PER_CONNECTION}"
+            )
+            streams = streams[:MAX_STREAMS_PER_CONNECTION]
 
-            time.sleep(60)
+        streams_param = "/".join(streams)
+        return f"{BINANCE_FUTURES_WS_URL}?streams={streams_param}"
 
-    def _check_and_handle_reconnect(self):
-        """Check various reconnect conditions."""
-        # Handle pending reconnect event
-        if self.reconnect_event.is_set():
-            self.reconnect_event.clear()
-            self.reconnect()
-            return
+    def process_kline(self, data: dict):
+        """Process a kline message from WebSocket."""
+        try:
+            kline = data.get("k", {})
+            symbol = kline.get("s")
+            is_closed = kline.get("x", False)
 
-        # Proactive 24h reconnect
-        if self._connection_start_time:
-            if time.time() - self._connection_start_time > WS_24H_RECONNECT_INTERVAL:
-                print("Proactive 24h reconnect")
-                self._reconnect_count = 0
-                self.reconnect()
+            if not is_closed:
                 return
 
-        # Stale connection check
-        current_time = time.time()
-        for idx, last_pong in self._last_pong_time.items():
-            if current_time - last_pong > STALE_CONNECTION_THRESHOLD:
-                print(f"Connection {idx} stale, reconnecting")
-                self.reconnect_event.set()
+            timestamp_ms = kline.get("t")
+            if not timestamp_ms or not symbol:
                 return
 
-    def _check_symbol_refresh(self):
-        """Periodically refresh symbols list."""
-        should_refresh = (
-            self.last_symbol_check is None
-            or datetime.now() - self.last_symbol_check
-            > timedelta(seconds=self.symbol_check_interval)
-        )
-        if should_refresh:
-            self.fetch_futures_symbols()
+            with self.batch_lock:
+                if timestamp_ms not in self.kline_batch:
+                    self.kline_batch[timestamp_ms] = {}
 
-    def main(self):
-        """Main entry point."""
-        self.initialize()
-        self.start()
+                if self.kline_batch:
+                    latest_ts = max(self.kline_batch.keys())
+                    if timestamp_ms < latest_ts:
+                        print(
+                            f"Discarding stale kline for {symbol} ts={timestamp_ms} (latest={latest_ts})"
+                        )
+                        return
+                    elif timestamp_ms > latest_ts:
+                        old_batches = [
+                            ts for ts in self.kline_batch.keys() if ts < timestamp_ms
+                        ]
+                        for old_ts in old_batches:
+                            self._process_batch(old_ts)
+
+                self.kline_batch[timestamp_ms][symbol] = kline
+
+                received = set(self.kline_batch[timestamp_ms].keys())
+                expected = self.expected_symbols
+
+                if len(received) == len(expected):
+                    self._process_batch(timestamp_ms)
+
+        except Exception as e:
+            self.log_error(f"Error processing kline: {e}")
+
+    def _process_batch(self, timestamp_ms: int):
+        """Process a complete batch of klines for a timestamp."""
+        with self.batch_lock:
+            if timestamp_ms not in self.kline_batch:
+                return
+
+            batch = self.kline_batch.pop(timestamp_ms)
+
+        print(f"Processing batch: ts={timestamp_ms}, symbols={len(batch)}")
 
         try:
-            while not self.shutdown_event.is_set():
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("Shutting down...")
-        finally:
-            self.shutdown_event.set()
-            self.stop()
+            kline_models = []
+            newest_values = {}
+
+            for symbol, kline_data in batch.items():
+                try:
+                    model = build_model_from_ws(
+                        kline_dict=kline_data,
+                        exchange="binance",
+                        contract_type="perpetual",
+                    )
+                    kline_models.append(model)
+
+                    newest_values[symbol] = {
+                        "price": float(Decimal(kline_data["c"])),
+                        "volume": float(Decimal(kline_data["v"])),
+                        "trades": float(kline_data["n"]),
+                    }
+                except Exception as e:
+                    self.log_error(f"Error building model for {symbol}: {e}")
+
+            if kline_models:
+                inserted = bulk_insert_klines(kline_models)
+                print(f"Inserted {inserted} klines to database")
+
+            if newest_values:
+                self.redis.publish(
+                    RedisPubMessages.KLINE_SAVED_TO_DB.value,
+                    json.dumps(
+                        {
+                            "newest_values": newest_values,
+                            "timestamp": timestamp_ms,
+                        }
+                    ),
+                )
+                print(f"Published KLINE_SAVED_TO_DB with {len(newest_values)} symbols")
+
+        except Exception as e:
+            self.log_error(f"Error processing batch: {e}")
+
+    def on_message(self, _ws, message):
+        """Handle incoming WebSocket message."""
+        try:
+            data = json.loads(message)
+
+            if "stream" in data and "data" in data:
+                stream = data["stream"]
+                if "@kline_1m" in stream:
+                    self.process_kline(data["data"])
+
+        except Exception as e:
+            self.log_error(f"Error handling WebSocket message: {e}")
+
+    def on_error(self, _ws, error):
+        """Handle WebSocket errors."""
+        error_msg = str(error)
+        self.log_error(f"WebSocket error: {error_msg}")
+
+        if "Reconnection signal" in error_msg or "close" in error_msg.lower():
+            for _ in range(10):
+                print("WebSocket error indicates need to reconnect")
+            print(error_msg)
+
+    def on_close(self, _ws, close_status_code, close_msg):
+        """Handle WebSocket close."""
+        self.ws_connected = False
+        print(f"WebSocket closed: code={close_status_code}, msg={close_msg}")
+
+        if self.connection_start_time:
+            duration = time.time() - self.connection_start_time
+            hours = duration / 3600
+            if hours >= 23.5:
+                print(
+                    f"WebSocket closed after {hours:.2f} hours (expected 24h disconnect)"
+                )
+
+    def on_open(self, _ws):
+        """Handle WebSocket open."""
+        self.ws_connected = True
+        self.connection_start_time = time.time()
+        print(f"WebSocket connected, subscribed to {len(self.symbols)} streams")
+
+    def on_ping(self, _ws, _message):
+        """Handle ping from server."""
+
+    def connect_websocket(self) -> Optional[threading.Thread]:
+        """Create and connect WebSocket."""
+        if not self.symbols:
+            print("No symbols to connect to")
+            return None
+
+        url = self.build_ws_url()
+        print(f"Connecting to WebSocket with {len(self.symbols)} streams...")
+
+        self.ws = websocket.WebSocketApp(
+            url,
+            on_open=self.on_open,
+            on_message=self.on_message,
+            on_error=self.on_error,
+            on_close=self.on_close,
+            on_ping=self.on_ping,
+        )
+
+        ws_thread = threading.Thread(
+            target=lambda: self.ws.run_forever(  # type: ignore[union-attr]
+                ping_interval=WS_PING_INTERVAL,
+                ping_timeout=WS_PING_TIMEOUT,
+            ),
+            daemon=True,
+        )
+        ws_thread.start()
+
+        return ws_thread
+
+    def check_pending_batches(self):
+        """Check for stale batches that should be processed."""
+        current_time = int(time.time() * 1000)
+
+        with self.batch_lock:
+            stale_timestamps = []
+            for timestamp_ms in self.kline_batch:
+                if current_time - timestamp_ms > 90000:
+                    stale_timestamps.append(timestamp_ms)
+
+            for ts in stale_timestamps:
+                batch = self.kline_batch.get(ts, {})
+                if batch:
+                    print(
+                        f"Processing stale batch: ts={ts}, symbols={len(batch)}/{len(self.expected_symbols)}"
+                    )
+
+        for ts in stale_timestamps:
+            self._process_batch(ts)
+
+    def run(self):
+        """Main run loop."""
+        print("Starting Binance Kline Collector...")
+
+        self.update_symbols()
+        if not self.symbols:
+            self.log_error("No symbols available, exiting")
+            return
+
+        self.fetch_market_cap_ranking()
+
+        while self.should_run:
+            try:
+                ws_thread = self.connect_websocket()
+                if ws_thread is None:
+                    time.sleep(WS_RECONNECT_DELAY)
+                    continue
+
+                while self.should_run and ws_thread.is_alive():
+                    time.sleep(10)
+
+                    self.check_pending_batches()
+
+                    if time.time() - self.last_symbol_refresh > SYMBOL_REFRESH_INTERVAL:
+                        old_symbols = self.symbols.copy()
+                        self.update_symbols()
+
+                        if self.symbols != old_symbols:
+                            print("Symbols changed, reconnecting WebSocket...")
+                            if self.ws:
+                                self.ws.close()
+                            break
+                    if (
+                        time.time() - self.last_market_cap_refresh
+                        > MARKET_CAP_REFRESH_INTERVAL
+                    ):
+                        self.fetch_market_cap_ranking()
+
+                    if self.connection_start_time:
+                        duration = time.time() - self.connection_start_time
+                        if duration > 23.5 * 3600:
+                            print(
+                                "Approaching 24-hour limit, proactively reconnecting..."
+                            )
+                            if self.ws:
+                                self.ws.close()
+                            break
+                if self.should_run:
+                    print(
+                        f"WebSocket disconnected, reconnecting in {WS_RECONNECT_DELAY}s..."
+                    )
+                    time.sleep(WS_RECONNECT_DELAY)
+
+            except Exception as e:
+                self.log_error(f"Error in main loop: {e}")
+                time.sleep(WS_RECONNECT_DELAY)
+
+    def stop(self):
+        """Stop the collector."""
+        self.should_run = False
+        if self.ws:
+            self.ws.close()
 
 
 def main():
-    KlinesSocketManager().main()
+    """Entry point for the kline collector."""
+    collector = BinanceKlineCollector()
+    try:
+        collector.run()
+    except KeyboardInterrupt:
+        print("Shutting down...")
+        collector.stop()
+
+
+if __name__ == "__main__":
+    main()
