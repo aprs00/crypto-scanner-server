@@ -31,7 +31,7 @@ def format_data(data, time_period: TimePeriod):
     return formatted_data, time_labels
 
 
-def average_price_change(hours, symbol, time_period: str):
+def average_price_change(hours, symbol, time_period: str, exchange: str, contract_type: str):
     start_time_utc = timezone.now() - timedelta(hours=hours)
 
     try:
@@ -43,9 +43,9 @@ def average_price_change(hours, symbol, time_period: str):
 
     price_change_data = get_average_price_change_by_period(
         symbol=symbol,
-        exchange="binance",
+        exchange=exchange,
         start_time_utc=start_time_utc,
-        contract_type="perpetual",
+        contract_type=contract_type,
         period_type=period_enum,
     )
 

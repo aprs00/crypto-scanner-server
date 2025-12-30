@@ -34,6 +34,8 @@ def get_pearson_correlation(request):
     data_type = body.get("type")
     hours = body.get("hours")
     requested_symbols = body.get("symbols", [])
+    exchange = body.get("exchange")
+    contract_type = body.get("contractType")
 
     if not data_type or not hours:
         return JsonResponse(
@@ -44,12 +46,12 @@ def get_pearson_correlation(request):
         return JsonResponse({"axis": [], "data": [], "type": "correlation"})
 
     try:
-        symbols = get_exchange_symbols()
+        symbols = get_exchange_symbols(exchange=exchange, contract_type=contract_type)
         if not symbols:
-            print("Symbols data not found in Redis")
+            print(f"Symbols data not found in Redis for {exchange}:{contract_type}")
             return JsonResponse({"error": "Symbols data not available"}, status=503)
 
-        correlation_key = f"correlations:{data_type}:{hours}:binance:perpetual"
+        correlation_key = f"correlations:{data_type}:{hours}:{exchange}:{contract_type}"
         correlation_blob = r.get(correlation_key)
         if not correlation_blob:
             print("Correlation data not found for key", correlation_key)
@@ -62,7 +64,7 @@ def get_pearson_correlation(request):
             round(v, 3)
             for v in msgpack.unpackb(correlation_blob, use_list=True, raw=False)
         ]
-        axis = [ticker[:-4] if len(ticker) > 4 else ticker for ticker in symbols]
+        axis = list(symbols)
 
         symbol_lookup = {ticker: idx for idx, ticker in enumerate(symbols)}
 
@@ -118,6 +120,9 @@ def get_correlation_pair_history(request):
     comparison_symbols = body.get("comparisonSymbols", [])
     data_type = body.get("type")
     hours = body.get("hours")
+    exchange = body.get("exchange")
+    contract_type = body.get("contractType")
+
     if hours is None:
         return JsonResponse({"error": "Parameter 'hours' is required"}, status=400)
     hours = int(hours)
@@ -130,6 +135,8 @@ def get_correlation_pair_history(request):
                     comparison_symbols=comparison_symbols,
                     data_type=data_type,
                     hours=hours,
+                    exchange=exchange,
+                    contract_type=contract_type,
                 ),
             },
             safe=False,

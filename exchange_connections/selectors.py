@@ -16,7 +16,7 @@ def get_exchange_symbols(exchange="binance", contract_type="perpetual"):
     return sorted([symbol.decode("utf-8") for symbol in symbols_b])
 
 
-def get_historical_kline_data(hours, symbols):
+def get_historical_kline_data(hours, symbols, exchange="binance"):
     """Get historical ticker data from the database for all KLINE fields."""
 
     end_time = timezone.now().replace(second=0, microsecond=0)
@@ -34,7 +34,7 @@ def get_historical_kline_data(hours, symbols):
         JOIN cs_symbols s ON k.symbol_id = s.id
         JOIN cs_exchanges e ON k.exchange_id = e.id
         WHERE
-            e.name = 'binance'
+            e.name = %s
             AND s.name IN ({symbol_placeholders})
             AND k.start_time >= %s
             AND k.start_time < %s
@@ -44,7 +44,7 @@ def get_historical_kline_data(hours, symbols):
     klines_data = defaultdict(lambda: {field: [] for field in KLINE_FIELD_MAP.keys()})
 
     with connection.cursor() as cursor:
-        params = symbols + [
+        params = [exchange] + symbols + [
             start_time.astimezone(dt_timezone.utc),
             end_time.astimezone(dt_timezone.utc),
         ]
