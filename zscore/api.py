@@ -2,6 +2,7 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import msgpack
 import numpy as np
+import json
 
 from zscore.utils import format_z_score_matrix_response
 from core.redis_config import get_redis_connection
@@ -78,8 +79,6 @@ def get_z_score_matrix(request):
 
 @csrf_exempt
 def get_z_score_heatmap(request):
-    import json
-
     if request.method != "POST":
         return HttpResponse(status=405)
 

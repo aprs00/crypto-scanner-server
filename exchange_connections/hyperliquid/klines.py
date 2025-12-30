@@ -23,6 +23,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
     - Uses per-symbol subscriptions (not combined stream URL)
     - Symbol naming: "BTC" instead of "BTCUSDT"
     - Missing quote_volume and taker volume fields
+    - Sends real-time streaming updates (not just candle-close events)
     """
 
     def __init__(self):
@@ -31,6 +32,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         self.ws_connected = False
         self.subscribed_symbols: Set[str] = set()
         self.generate_synthetic_candles = True
+        self.pending_candles: dict[str, dict] = {}
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         """Fetch all active perpetual symbols from Hyperliquid API.
@@ -55,13 +57,15 @@ class HyperliquidKlineCollector(BaseKlineCollector):
                 name = asset.get("name")
                 if not name:
                     continue
-                # Skip delisted symbols - they have no trading activity
+
                 if asset.get("isDelisted"):
                     delisted_count += 1
                     continue
                 symbols.add(name)
 
-            print(f"[hyperliquid] Fetched {len(symbols)} active perpetual symbols (skipped {delisted_count} delisted)")
+            print(
+                f"[hyperliquid] Fetched {len(symbols)} active perpetual symbols (skipped {delisted_count} delisted)"
+            )
             return symbols
 
         except Exception as e:
@@ -125,7 +129,9 @@ class HyperliquidKlineCollector(BaseKlineCollector):
 
         Uses 1-hour lookback to handle low-volume symbols with sporadic trading.
         """
-        print(f"[hyperliquid] Fetching initial prices for {len(self.symbols)} symbols...")
+        print(
+            f"[hyperliquid] Fetching initial prices for {len(self.symbols)} symbols..."
+        )
 
         current_time_ms = int(time.time() * 1000)
         # 1 hour lookback to capture low-volume symbols with sporadic trading
@@ -187,15 +193,28 @@ class HyperliquidKlineCollector(BaseKlineCollector):
             self.log_error(f"Error handling message: {e}")
 
     def _process_candle_update(self, candle_data: dict):
-        """Process a candle update, only process closed candles."""
-        try:
-            close_time_ms = int(candle_data.get("T", 0))
-            current_time_ms = int(time.time() * 1000)
+        """Process a candle update from streaming WebSocket.
 
-            if current_time_ms >= close_time_ms:
-                candle = self.normalize_candle(candle_data)
-                if candle:
-                    self.process_kline(candle)
+        Hyperliquid sends real-time updates on every trade, not just at candle close.
+        When we receive data for a new minute, the previous minute's candle is complete.
+        """
+        try:
+            symbol = candle_data.get("s")
+            open_time_ms = int(candle_data.get("t", 0))
+
+            if not symbol:
+                return
+
+            if symbol in self.pending_candles:
+                pending = self.pending_candles[symbol]
+                pending_open_time = int(pending.get("t", 0))
+
+                if open_time_ms != pending_open_time:
+                    candle = self.normalize_candle(pending)
+                    if candle:
+                        self.process_kline(candle)
+
+            self.pending_candles[symbol] = candle_data
 
         except Exception as e:
             self.log_error(f"Error processing candle update: {e}")
@@ -208,6 +227,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         """Handle WebSocket close."""
         self.ws_connected = False
         self.subscribed_symbols.clear()
+        self.pending_candles.clear()
         print(
             f"[hyperliquid] WebSocket closed: code={close_status_code}, msg={close_msg}"
         )
@@ -239,8 +259,9 @@ class HyperliquidKlineCollector(BaseKlineCollector):
             on_close=self._on_close,
         )
 
+        ws = self.ws
         ws_thread = threading.Thread(
-            target=lambda: self.ws.run_forever(
+            target=lambda: ws.run_forever(
                 ping_interval=WS_PING_INTERVAL,
                 ping_timeout=WS_PING_TIMEOUT,
             ),

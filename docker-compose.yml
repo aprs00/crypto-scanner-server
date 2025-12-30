@@ -59,7 +59,7 @@ services:
     binance-klines:
         container_name: cs-binance-klines
         build: .
-        command: python manage.py klines
+        command: python manage.py binance_klines
         volumes:
             - .:/code
         environment:

@@ -3,7 +3,6 @@ import time
 import threading
 import requests
 import websocket
-from datetime import datetime, timezone as dt_timezone
 from typing import Set, Optional
 from decimal import Decimal
 
@@ -140,7 +139,9 @@ class BinanceKlineCollector(BaseKlineCollector):
         """Handle WebSocket open."""
         self.ws_connected = True
         self.connection_start_time = time.time()
-        print(f"[binance] WebSocket connected, subscribed to {len(self.symbols)} streams")
+        print(
+            f"[binance] WebSocket connected, subscribed to {len(self.symbols)} streams"
+        )
 
     def connect_websocket(self) -> Optional[threading.Thread]:
         """Create and connect WebSocket."""
@@ -159,8 +160,9 @@ class BinanceKlineCollector(BaseKlineCollector):
             on_close=self.on_close,
         )
 
+        ws = self.ws
         ws_thread = threading.Thread(
-            target=lambda: self.ws.run_forever(
+            target=lambda: ws.run_forever(
                 ping_interval=WS_PING_INTERVAL,
                 ping_timeout=WS_PING_TIMEOUT,
             ),

@@ -4,12 +4,15 @@ import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone as dt_timezone
 from decimal import Decimal
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, cast
 
 import requests
 
 from exchange_connections.candle_types import NormalizedCandle
-from exchange_connections.services.klines_ingest import bulk_insert_klines, build_model_from_ws
+from exchange_connections.services.klines_ingest import (
+    bulk_insert_klines,
+    build_model_from_ws,
+)
 from core.constants import RedisPubMessages
 from core.redis_config import get_redis_connection
 
@@ -107,7 +110,9 @@ class BaseKlineCollector(ABC):
             return
 
         try:
-            current_bytes = self.redis.smembers(self.symbols_redis_key)
+            current_bytes = cast(
+                Set[bytes], self.redis.smembers(self.symbols_redis_key)
+            )
             current_symbols = {s.decode("utf-8") for s in current_bytes}
         except Exception as e:
             self.log_error(f"Failed to get current symbols from Redis: {e}")
@@ -158,7 +163,7 @@ class BaseKlineCollector(ABC):
         cache_key = "coingecko:market_cap_rankings"
 
         try:
-            cached = self.redis.get(cache_key)
+            cached = cast(Optional[bytes], self.redis.get(cache_key))
             if cached:
                 return json.loads(cached)
         except Exception as e:
@@ -176,11 +181,15 @@ class BaseKlineCollector(ABC):
                     coin_ranks[coin_symbol] = rank
 
             try:
-                self.redis.setex(cache_key, MARKET_CAP_REFRESH_INTERVAL, json.dumps(coin_ranks))
+                self.redis.setex(
+                    cache_key, MARKET_CAP_REFRESH_INTERVAL, json.dumps(coin_ranks)
+                )
             except Exception as e:
                 self.log_error(f"Failed to cache CoinGecko data: {e}")
 
-            print(f"[{self.exchange}] Fetched fresh CoinGecko market cap data: {len(coin_ranks)} coins")
+            print(
+                f"[{self.exchange}] Fetched fresh CoinGecko market cap data: {len(coin_ranks)} coins"
+            )
             return coin_ranks
 
         except Exception as e:
@@ -209,7 +218,9 @@ class BaseKlineCollector(ABC):
                 pipe.zadd(self.market_cap_redis_key, {symbol: -rank})
             pipe.execute()
 
-            print(f"[{self.exchange}] Updated market cap ranking: {len(top_100)} symbols")
+            print(
+                f"[{self.exchange}] Updated market cap ranking: {len(top_100)} symbols"
+            )
             self.last_market_cap_refresh = time.time()
 
         except Exception as e:
@@ -295,7 +306,9 @@ class BaseKlineCollector(ABC):
                     f"[{self.exchange}] Generated {synthetic_count} synthetic candles for ts={timestamp_ms}"
                 )
 
-        print(f"[{self.exchange}] Processing batch: ts={timestamp_ms}, symbols={len(batch)}")
+        print(
+            f"[{self.exchange}] Processing batch: ts={timestamp_ms}, symbols={len(batch)}"
+        )
 
         try:
             kline_models = []
@@ -325,14 +338,18 @@ class BaseKlineCollector(ABC):
             if newest_values:
                 self.redis.publish(
                     RedisPubMessages.KLINE_SAVED_TO_DB.value,
-                    json.dumps({
-                        "exchange": self.exchange,
-                        "contract_type": self.contract_type,
-                        "newest_values": newest_values,
-                        "timestamp": timestamp_ms,
-                    }),
+                    json.dumps(
+                        {
+                            "exchange": self.exchange,
+                            "contract_type": self.contract_type,
+                            "newest_values": newest_values,
+                            "timestamp": timestamp_ms,
+                        }
+                    ),
                 )
-                print(f"[{self.exchange}] Published KLINE_SAVED_TO_DB with {len(newest_values)} symbols")
+                print(
+                    f"[{self.exchange}] Published KLINE_SAVED_TO_DB with {len(newest_values)} symbols"
+                )
 
         except Exception as e:
             self.log_error(f"Error processing batch: {e}")
@@ -380,16 +397,24 @@ class BaseKlineCollector(ABC):
                     time.sleep(10)
                     self.check_pending_batches()
 
-                    if time.time() - self.last_symbol_refresh > self.symbol_refresh_interval:
+                    if (
+                        time.time() - self.last_symbol_refresh
+                        > self.symbol_refresh_interval
+                    ):
                         old_symbols = self.symbols.copy()
                         self.update_symbols()
 
                         if self.symbols != old_symbols:
-                            print(f"[{self.exchange}] Symbols changed, reconnecting WebSocket...")
+                            print(
+                                f"[{self.exchange}] Symbols changed, reconnecting WebSocket..."
+                            )
                             self.on_symbols_changed()
                             break
 
-                    if time.time() - self.last_market_cap_refresh > MARKET_CAP_REFRESH_INTERVAL:
+                    if (
+                        time.time() - self.last_market_cap_refresh
+                        > MARKET_CAP_REFRESH_INTERVAL
+                    ):
                         self.fetch_market_cap_ranking()
 
                 if self.should_run:

@@ -1,5 +1,4 @@
 import json
-import redis
 import numpy as np
 import msgpack
 import time

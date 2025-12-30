@@ -1,7 +1,7 @@
 import redis
 
 
-def get_redis_connection():
+def get_redis_connection() -> redis.Redis:
     return redis.Redis(
         host="redis",
         socket_keepalive=True,
