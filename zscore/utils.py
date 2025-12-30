@@ -1,5 +1,8 @@
 def format_z_score_matrix_response(
-    data: dict, x_axis: str, y_axis: str, z_axis: str | None = None
+    data: dict,
+    x_axis: str,
+    y_axis: str,
+    z_axis: str | None = None,
 ):
     return [
         {

@@ -7,6 +7,13 @@ KLINE_FIELD_MAP = {
 }
 
 
+def get_btc_symbol(exchange: str) -> str:
+    """Get the BTC symbol for a given exchange."""
+    if exchange == "binance":
+        return "BTCUSDT"
+    return "BTC"
+
+
 class BinanceContractStatus(Enum):
     PENDING_TRADING = "PENDING_TRADING"
     TRADING = "TRADING"

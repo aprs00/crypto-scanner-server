@@ -7,7 +7,7 @@ import redis
 import msgpack
 from typing import Dict, List, Optional
 
-from exchange_connections.constants import KLINE_FIELD_MAP
+from exchange_connections.constants import KLINE_FIELD_MAP, get_btc_symbol
 from exchange_connections.selectors import (
     get_exchange_symbols,
     get_historical_kline_data,
@@ -119,23 +119,30 @@ class CorrelationTracker:
 class CorrelationCalculator:
     """Main correlation calculator with Redis pubsub integration."""
 
-    VALIDATION_SYMBOLS = ["BTCUSDT", "SOLUSDT"]
     CORRELATION_TOLERANCE = 0.01  # Allow 1% difference
 
-    def __init__(self):
+    def __init__(self, exchange: str = "binance", contract_type: str = "perpetual"):
+        self.exchange = exchange
+        self.contract_type = contract_type
         self.redis = get_redis_connection()
         self.lock = threading.RLock()
         self.symbols: List[str] = []
         self.symbol_to_idx: Dict[str, int] = {}
         self.hours_options: List[int] = []
-        self.trackers: Dict[tuple, CorrelationTracker] = (
-            {}
-        )  # (hours, data_type) -> tracker
+        self.trackers: Dict[tuple, CorrelationTracker] = {}
         self.initialized = False
         self.pending_updates: List[tuple] = []
         self.cleanup_stop = threading.Event()
         self.last_update_time: float = 0
         self.update_count: int = 0
+
+        self._validation_symbols = self._get_validation_symbols()
+
+    def _get_validation_symbols(self) -> List[str]:
+        """Get validation symbol pair for the exchange."""
+        btc = get_btc_symbol(self.exchange)
+        sol = "SOLUSDT" if self.exchange == "binance" else "SOL"
+        return [btc, sol]
 
     def _rebuild_indices(self):
         """Rebuild symbol index mapping."""
@@ -144,14 +151,16 @@ class CorrelationCalculator:
     def _init_trackers(self):
         """Initialize all correlation trackers from historical data."""
         n = len(self.symbols)
-        print(f"Initializing correlations for {n} symbols ({n*(n-1)//2:,} pairs)")
+        print(f"[{self.exchange}] Initializing correlations for {n} symbols ({n*(n-1)//2:,} pairs)")
 
         max_hours = max(self.hours_options)
-        print(f"Fetching {max_hours}h of historical data...")
+        print(f"[{self.exchange}] Fetching {max_hours}h of historical data...")
 
         start = time.time()
-        all_data = get_historical_kline_data(hours=max_hours, symbols=self.symbols)
-        print(f"Data fetch: {time.time() - start:.2f}s")
+        all_data = get_historical_kline_data(
+            hours=max_hours, symbols=self.symbols, exchange=self.exchange
+        )
+        print(f"[{self.exchange}] Data fetch: {time.time() - start:.2f}s")
 
         for hours in sorted(self.hours_options, reverse=True):
             window = hours * 60
@@ -164,7 +173,6 @@ class CorrelationCalculator:
                     if sym in all_data and data_type in all_data[sym]:
                         idx = self.symbol_to_idx[sym]
                         data = np.asarray(all_data[sym][data_type], dtype=np.float64)
-                        # Trim to window size for smaller timeframes
                         indexed[idx] = data[-window:] if len(data) > window else data
 
                 if indexed:
@@ -172,7 +180,7 @@ class CorrelationCalculator:
 
                 self.trackers[(hours, data_type)] = tracker
 
-            print(f"Initialized {hours}h timeframe")
+            print(f"[{self.exchange}] Initialized {hours}h timeframe")
 
         del all_data
         gc.collect()
@@ -213,7 +221,6 @@ class CorrelationCalculator:
                     elif tracker.count >= window:
                         missing_old += 1
 
-                # Log only for 1h close to avoid spam
                 if hours == 1 and data_type == "close":
                     new_valid = np.sum(~np.isnan(new_arr))
                     old_valid = np.sum(~np.isnan(old_arr)) if tracker.count >= window else 0
@@ -223,47 +230,40 @@ class CorrelationCalculator:
                 tracker.update(new_arr, old_arr if tracker.count >= window else None)
 
     def _validate_btc_sol_correlation(self):
-        """
-        Validate incremental BTC-SOL correlation against manual numpy calculation.
-        Fetches data from DB and computes correlation manually to detect drift.
-        """
+        """Validate incremental correlation against manual numpy calculation to detect drift."""
         try:
-            # Check if validation symbols are in our tracked symbols
-            btc_sym, sol_sym = self.VALIDATION_SYMBOLS
-            if btc_sym not in self.symbol_to_idx or sol_sym not in self.symbol_to_idx:
-                print(f"[VALIDATION] Skipping - {btc_sym} or {sol_sym} not in tracked symbols")
+            if len(self._validation_symbols) < 2:
                 return
 
-            # Fetch 60 minutes of data for both symbols
-            data = get_historical_kline_data(hours=1, symbols=[btc_sym, sol_sym])
+            btc_sym, sol_sym = self._validation_symbols[:2]
+            if btc_sym not in self.symbol_to_idx or sol_sym not in self.symbol_to_idx:
+                print(f"[{self.exchange}][VALIDATION] Skipping - {btc_sym} or {sol_sym} not in tracked symbols")
+                return
+
+            data = get_historical_kline_data(
+                hours=1, symbols=[btc_sym, sol_sym], exchange=self.exchange
+            )
 
             if btc_sym not in data or sol_sym not in data:
                 print(f"[VALIDATION] Could not fetch data for {btc_sym} or {sol_sym}")
                 return
 
-            # Get the 1h close tracker for comparison
             tracker = self.trackers.get((1, "price"))
             if not tracker:
                 print("[VALIDATION] No 1h price tracker found")
                 return
 
-            # Get incremental correlation value
             btc_idx = self.symbol_to_idx[btc_sym]
             sol_idx = self.symbol_to_idx[sol_sym]
 
-            # The correlation matrix is stored as upper triangle
-            # We need to find the index of the BTC-SOL pair
             incremental_matrix = tracker.get_correlations()
             if not incremental_matrix:
                 print("[VALIDATION] Empty incremental matrix")
                 return
 
-            # Calculate flat index for upper triangle
+            # Upper triangle flat index: pair (i,j) where i<j = i*n - i*(i+1)/2 + (j-i-1)
             n = tracker.n_symbols
             if btc_idx < sol_idx:
-                # For upper triangle, pair (i,j) where i<j has index:
-                # sum(n-1-k for k in range(i)) + (j - i - 1)
-                # = i*n - i*(i+1)/2 + (j - i - 1)
                 flat_idx = btc_idx * n - (btc_idx * (btc_idx + 1)) // 2 + (sol_idx - btc_idx - 1)
             else:
                 flat_idx = sol_idx * n - (sol_idx * (sol_idx + 1)) // 2 + (btc_idx - sol_idx - 1)
@@ -274,11 +274,9 @@ class CorrelationCalculator:
 
             incremental_corr = incremental_matrix[flat_idx]
 
-            # Calculate manual correlation with numpy
             btc_prices = np.array(data[btc_sym]["price"], dtype=np.float64)
             sol_prices = np.array(data[sol_sym]["price"], dtype=np.float64)
 
-            # Make sure both arrays have the same length
             min_len = min(len(btc_prices), len(sol_prices))
             if min_len < 10:
                 print(f"[VALIDATION] Not enough data points: {min_len}")
@@ -287,10 +285,8 @@ class CorrelationCalculator:
             btc_prices = btc_prices[-min_len:]
             sol_prices = sol_prices[-min_len:]
 
-            # Calculate Pearson correlation manually
             manual_corr = np.corrcoef(btc_prices, sol_prices)[0, 1]
 
-            # Compare and log
             diff = abs(incremental_corr - manual_corr)
 
             log_msg = (
@@ -310,7 +306,6 @@ class CorrelationCalculator:
                 print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                 print("=" * 80 + "\n")
 
-                # Store error in Redis for monitoring
                 error_msg = f"[CORRELATION MISMATCH] {log_msg}"
                 self.redis.lpush("error_log", error_msg)
             else:
@@ -332,12 +327,11 @@ class CorrelationCalculator:
                     continue
 
                 matrix = tracker.get_correlations()
-                key = f"correlations:{data_type}:{hours}:binance:perpetual"
+                key = f"correlations:{data_type}:{hours}:{self.exchange}:{self.contract_type}"
                 packed_data = msgpack.packb(matrix)
                 if packed_data is not None:
                     pipe.set(key, packed_data)
 
-                # Save 1h correlations to DB
                 if save_to_db and hours == 1:
                     start = time.time()
                     try:
@@ -346,19 +340,17 @@ class CorrelationCalculator:
                             correlation_matrix=matrix,
                             data_type=data_type,
                             hours=hours,
-                            exchange="binance",
-                            contract_type="perpetual",
+                            exchange=self.exchange,
+                            contract_type=self.contract_type,
                         )
                         print(
-                            f"Saved {data_type} correlations to DB in {time.time() - start:.2f}s"
+                            f"[{self.exchange}] Saved {data_type} correlations to DB in {time.time() - start:.2f}s"
                         )
                     except Exception as e:
-                        print(f"DB save failed ({data_type}): {e}")
+                        print(f"[{self.exchange}] DB save failed ({data_type}): {e}")
 
         pipe.execute()
         notification_service.send_correlation_update()
-
-        # Validate BTC-SOL correlation on every update
         self._validate_btc_sol_correlation()
 
     def update_correlations(
@@ -369,138 +361,136 @@ class CorrelationCalculator:
     ):
         """Main update method - fetch data, update trackers, cache results."""
         with self.lock:
-            print(f"[DEBUG] update_correlations called - tracked symbols: {len(self.symbols)}, save_to_db: {save_to_db}")
+            print(f"[{self.exchange}][DEBUG] update_correlations called - tracked symbols: {len(self.symbols)}, save_to_db: {save_to_db}")
 
-            # Get newest values if not provided
             if newest is None:
-                print("[DEBUG] Fetching newest values (not provided)")
+                print(f"[{self.exchange}][DEBUG] Fetching newest values (not provided)")
                 newest = get_symbol_kline_data(
                     symbols=self.symbols,
-                    exchange="binance",
-                    contract_type="perpetual",
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
                 )
 
-            # Validate we have data for all symbols
             missing = [s for s in self.symbols if s not in newest]
             if missing:
-                print(f"[DEBUG] Missing symbols in newest data: {len(missing)} - {missing[:5]}...")
+                print(f"[{self.exchange}][DEBUG] Missing symbols in newest data: {len(missing)} - {missing[:5]}...")
                 try:
                     extra = get_symbol_kline_data(
                         symbols=missing,
-                        exchange="binance",
-                        contract_type="perpetual",
+                        exchange=self.exchange,
+                        contract_type=self.contract_type,
                     )
                     newest.update(extra)
-                    print(f"[DEBUG] Fetched {len(extra)} missing symbols")
+                    print(f"[{self.exchange}][DEBUG] Fetched {len(extra)} missing symbols")
                 except Exception as e:
-                    print(f"Failed to fetch missing symbols: {e}")
+                    print(f"[{self.exchange}] Failed to fetch missing symbols: {e}")
                     return
 
-            # Check tracker state before update
             sample_tracker = self.trackers.get((1, "close"))
             if sample_tracker:
-                print(f"[DEBUG] Before update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
+                print(f"[{self.exchange}][DEBUG] Before update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
 
             oldest_by_hours = get_symbol_kline_data_multi_hours(
                 symbols=self.symbols,
-                exchange="binance",
-                contract_type="perpetual",
+                exchange=self.exchange,
+                contract_type=self.contract_type,
                 hours_list=self.hours_options,
                 kline_timestamp_ms=kline_timestamp_ms,
             )
 
             self._update_trackers(newest, oldest_by_hours)
 
-            # Check tracker state after update
             if sample_tracker:
-                print(f"[DEBUG] After update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
+                print(f"[{self.exchange}][DEBUG] After update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
 
             self._cache_correlations(save_to_db)
 
     def add_symbol(self, symbol: str):
         """Add new symbol to tracking."""
         with self.lock:
-            print(f"[DEBUG] add_symbol called for: {symbol}")
-            print(f"[DEBUG] Current state before add - symbols: {len(self.symbols)}, trackers: {len(self.trackers)}")
+            print(f"[{self.exchange}][DEBUG] add_symbol called for: {symbol}")
+            print(f"[{self.exchange}][DEBUG] Current state before add - symbols: {len(self.symbols)}, trackers: {len(self.trackers)}")
 
             if symbol in self.symbols:
-                print(f"[DEBUG] Symbol {symbol} already in list, skipping")
+                print(f"[{self.exchange}][DEBUG] Symbol {symbol} already in list, skipping")
                 return
 
-            available = get_exchange_symbols()
-            print(f"[DEBUG] Available symbols from exchange: {len(available)}")
+            available = get_exchange_symbols(
+                exchange=self.exchange, contract_type=self.contract_type
+            )
+            print(f"[{self.exchange}][DEBUG] Available symbols from exchange: {len(available)}")
 
             if symbol not in available:
-                print(f"Symbol {symbol} not available")
+                print(f"[{self.exchange}] Symbol {symbol} not available")
                 return
 
             min_points = min(self.hours_options) * 60
             data = get_historical_kline_data(
-                hours=max(self.hours_options), symbols=[symbol]
+                hours=max(self.hours_options), symbols=[symbol], exchange=self.exchange
             )
 
             if symbol not in data:
-                print(f"No data for {symbol}")
+                print(f"[{self.exchange}] No data for {symbol}")
                 return
 
             points = min(len(data[symbol].get(dt, [])) for dt in KLINE_FIELD_MAP)
             if points < min_points:
                 print(
-                    f"Limited data for {symbol}: {points}/{min_points}, adding anyway"
+                    f"[{self.exchange}] Limited data for {symbol}: {points}/{min_points}, adding anyway"
                 )
 
             old_symbols = self.symbols.copy()
-            print(f"[DEBUG] Adding {symbol} - rebuilding all trackers")
-            self.symbols = get_exchange_symbols()
+            print(f"[{self.exchange}][DEBUG] Adding {symbol} - rebuilding all trackers")
+            self.symbols = get_exchange_symbols(
+                exchange=self.exchange, contract_type=self.contract_type
+            )
             self._rebuild_indices()
 
-            # Log symbol list changes
             added = set(self.symbols) - set(old_symbols)
             removed = set(old_symbols) - set(self.symbols)
             if added:
-                print(f"[DEBUG] Symbols added to list: {added}")
+                print(f"[{self.exchange}][DEBUG] Symbols added to list: {added}")
             if removed:
-                print(f"[DEBUG] Symbols removed from list (unexpected): {removed}")
+                print(f"[{self.exchange}][DEBUG] Symbols removed from list (unexpected): {removed}")
 
-            print(f"[DEBUG] Reinitializing trackers for {len(self.symbols)} symbols")
+            print(f"[{self.exchange}][DEBUG] Reinitializing trackers for {len(self.symbols)} symbols")
             self._init_trackers()
 
-            # Verify tracker state
             sample_tracker = self.trackers.get((1, "close"))
             if sample_tracker:
-                print(f"[DEBUG] After add_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
+                print(f"[{self.exchange}][DEBUG] After add_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
 
             self.update_correlations()
-            print(f"[DEBUG] add_symbol completed for {symbol}")
+            print(f"[{self.exchange}][DEBUG] add_symbol completed for {symbol}")
 
     def remove_symbol(self, symbol: str):
         """Remove symbol from tracking."""
         with self.lock:
-            print(f"[DEBUG] remove_symbol called for: {symbol}")
-            print(f"[DEBUG] Current state before remove - symbols: {len(self.symbols)}, trackers: {len(self.trackers)}")
+            print(f"[{self.exchange}][DEBUG] remove_symbol called for: {symbol}")
+            print(f"[{self.exchange}][DEBUG] Current state before remove - symbols: {len(self.symbols)}, trackers: {len(self.trackers)}")
 
             if symbol not in self.symbols:
-                print(f"[DEBUG] Symbol {symbol} not in list, skipping")
+                print(f"[{self.exchange}][DEBUG] Symbol {symbol} not in list, skipping")
                 return
 
-            print(f"Removing {symbol}")
+            print(f"[{self.exchange}] Removing {symbol}")
             idx = self.symbol_to_idx[symbol]
-            print(f"[DEBUG] Symbol {symbol} has index {idx}")
+            print(f"[{self.exchange}][DEBUG] Symbol {symbol} has index {idx}")
 
             old_symbols = self.symbols.copy()
-            self.symbols = get_exchange_symbols()
+            self.symbols = get_exchange_symbols(
+                exchange=self.exchange, contract_type=self.contract_type
+            )
             self._rebuild_indices()
 
-            # Log symbol list changes
             added = set(self.symbols) - set(old_symbols)
             removed = set(old_symbols) - set(self.symbols)
-            print(f"[DEBUG] Symbols removed from list: {removed}")
+            print(f"[{self.exchange}][DEBUG] Symbols removed from list: {removed}")
             if added:
-                print(f"[DEBUG] Symbols added to list (unexpected during remove): {added}")
+                print(f"[{self.exchange}][DEBUG] Symbols added to list (unexpected during remove): {added}")
 
-            print(f"[DEBUG] New symbol count: {len(self.symbols)}, removing index {idx} from trackers")
+            print(f"[{self.exchange}][DEBUG] New symbol count: {len(self.symbols)}, removing index {idx} from trackers")
 
-            # Remove from all trackers
             for key, tracker in self.trackers.items():
                 tracker.sum_x = np.delete(tracker.sum_x, idx)
                 tracker.sum_xx = np.delete(tracker.sum_xx, idx)
@@ -508,42 +498,39 @@ class CorrelationCalculator:
                 tracker.sum_xy = np.delete(tracker.sum_xy, idx, axis=1)
                 tracker.n_symbols = len(self.symbols)
 
-                # Verify array shapes match
                 if tracker.sum_x.shape[0] != tracker.n_symbols:
-                    print(f"[DEBUG] MISMATCH in tracker {key}: sum_x shape {tracker.sum_x.shape[0]} != n_symbols {tracker.n_symbols}")
+                    print(f"[{self.exchange}][DEBUG] MISMATCH in tracker {key}: sum_x shape {tracker.sum_x.shape[0]} != n_symbols {tracker.n_symbols}")
                 if tracker.sum_xy.shape[0] != tracker.n_symbols:
-                    print(f"[DEBUG] MISMATCH in tracker {key}: sum_xy shape {tracker.sum_xy.shape} != n_symbols {tracker.n_symbols}")
+                    print(f"[{self.exchange}][DEBUG] MISMATCH in tracker {key}: sum_xy shape {tracker.sum_xy.shape} != n_symbols {tracker.n_symbols}")
 
-            # Verify final state
             sample_tracker = self.trackers.get((1, "close"))
             if sample_tracker:
-                print(f"[DEBUG] After remove_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
-                print(f"[DEBUG] Array shapes - sum_x: {sample_tracker.sum_x.shape}, sum_xy: {sample_tracker.sum_xy.shape}")
+                print(f"[{self.exchange}][DEBUG] After remove_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}")
+                print(f"[{self.exchange}][DEBUG] Array shapes - sum_x: {sample_tracker.sum_x.shape}, sum_xy: {sample_tracker.sum_xy.shape}")
 
             self._cache_correlations(save_to_db=False)
-            print(f"[DEBUG] remove_symbol completed for {symbol}")
+            print(f"[{self.exchange}][DEBUG] remove_symbol completed for {symbol}")
 
     def _log_state_summary(self):
         """Log periodic state summary for debugging."""
-        print(f"[DEBUG] === STATE SUMMARY (update #{self.update_count}) ===")
-        print(f"[DEBUG] Symbols tracked: {len(self.symbols)}")
-        print(f"[DEBUG] Symbol-to-index mapping size: {len(self.symbol_to_idx)}")
-        print(f"[DEBUG] Trackers: {len(self.trackers)}")
+        print(f"[{self.exchange}][DEBUG] === STATE SUMMARY (update #{self.update_count}) ===")
+        print(f"[{self.exchange}][DEBUG] Symbols tracked: {len(self.symbols)}")
+        print(f"[{self.exchange}][DEBUG] Symbol-to-index mapping size: {len(self.symbol_to_idx)}")
+        print(f"[{self.exchange}][DEBUG] Trackers: {len(self.trackers)}")
 
         for hours in self.hours_options:
             tracker = self.trackers.get((hours, "close"))
             if tracker:
-                print(f"[DEBUG] Tracker({hours}h,close): n_symbols={tracker.n_symbols}, count={tracker.count}, sum_x_shape={tracker.sum_x.shape}, sum_xy_shape={tracker.sum_xy.shape}")
+                print(f"[{self.exchange}][DEBUG] Tracker({hours}h,close): n_symbols={tracker.n_symbols}, count={tracker.count}, sum_x_shape={tracker.sum_x.shape}, sum_xy_shape={tracker.sum_xy.shape}")
 
-                # Check for consistency
                 if tracker.n_symbols != len(self.symbols):
-                    print(f"[DEBUG] CONSISTENCY ERROR: tracker n_symbols ({tracker.n_symbols}) != len(symbols) ({len(self.symbols)})")
+                    print(f"[{self.exchange}][DEBUG] CONSISTENCY ERROR: tracker n_symbols ({tracker.n_symbols}) != len(symbols) ({len(self.symbols)})")
                 if tracker.sum_x.shape[0] != tracker.n_symbols:
-                    print(f"[DEBUG] CONSISTENCY ERROR: sum_x shape ({tracker.sum_x.shape[0]}) != n_symbols ({tracker.n_symbols})")
+                    print(f"[{self.exchange}][DEBUG] CONSISTENCY ERROR: sum_x shape ({tracker.sum_x.shape[0]}) != n_symbols ({tracker.n_symbols})")
                 if tracker.sum_xy.shape[0] != tracker.n_symbols:
-                    print(f"[DEBUG] CONSISTENCY ERROR: sum_xy shape ({tracker.sum_xy.shape[0]}) != n_symbols ({tracker.n_symbols})")
+                    print(f"[{self.exchange}][DEBUG] CONSISTENCY ERROR: sum_xy shape ({tracker.sum_xy.shape[0]}) != n_symbols ({tracker.n_symbols})")
 
-        print(f"[DEBUG] === END STATE SUMMARY ===")
+        print(f"[{self.exchange}][DEBUG] === END STATE SUMMARY ===")
 
     def _cleanup_loop(self):
         """Background cleanup of old correlation data."""
@@ -580,16 +567,29 @@ class CorrelationCalculator:
                     if channel == RedisPubMessages.KLINE_SAVED_TO_DB.value:
                         self._handle_kline_update(data)
                     elif channel == RedisPubMessages.SYMBOL_ADDED.value:
-                        self.add_symbol(data.split(":")[0])
+                        self._handle_symbol_event(data, self.add_symbol)
                     elif channel == RedisPubMessages.SYMBOL_DELISTED.value:
-                        self.remove_symbol(data.split(":")[0])
+                        self._handle_symbol_event(data, self.remove_symbol)
 
             except (redis.ConnectionError, redis.TimeoutError) as e:
-                print(f"Redis error: {e}, reconnecting...")
+                print(f"[{self.exchange}] Redis error: {e}, reconnecting...")
                 time.sleep(5)
             except Exception as e:
-                print(f"Pubsub error: {e}")
+                print(f"[{self.exchange}] Pubsub error: {e}")
                 time.sleep(5)
+
+    def _handle_symbol_event(self, data: str, handler):
+        """Handle symbol add/remove events with exchange filtering."""
+        parts = data.split(":")
+        if len(parts) >= 3:
+            msg_exchange, symbol = parts[0], parts[1]
+            if msg_exchange != self.exchange:
+                return
+        else:
+            symbol = parts[0]
+            if self.exchange != "binance":
+                return
+        handler(symbol)
 
     def _validate_newest_values(self, newest: Dict, timestamp: int) -> bool:
         """Validate the newest_values payload for issues."""
@@ -638,24 +638,29 @@ class CorrelationCalculator:
         try:
             payload = json.loads(data)
         except json.JSONDecodeError:
-            print(f"[DEBUG] Failed to decode kline update JSON: {data[:100]}")
+            print(f"[{self.exchange}][DEBUG] Failed to decode kline update JSON: {data[:100]}")
+            return
+
+        # Filter by exchange - ignore messages from other exchanges
+        msg_exchange = payload.get("exchange", "binance")  # Default to binance for backward compatibility
+        if msg_exchange != self.exchange:
             return
 
         newest = payload.get("newest_values")
         timestamp = payload.get("timestamp")
 
         if not isinstance(newest, dict):
-            print(f"[DEBUG] newest_values is not a dict: {type(newest)}")
+            print(f"[{self.exchange}][DEBUG] newest_values is not a dict: {type(newest)}")
             return
 
         current_time = time.time()
         time_since_last = current_time - self.last_update_time if self.last_update_time > 0 else 0
         self.update_count += 1
 
-        print(f"[DEBUG] Kline update #{self.update_count} - timestamp: {timestamp}, symbols in payload: {len(newest)}, tracked symbols: {len(self.symbols)}, time_since_last: {time_since_last:.1f}s")
+        print(f"[{self.exchange}][DEBUG] Kline update #{self.update_count} - timestamp: {timestamp}, symbols in payload: {len(newest)}, tracked symbols: {len(self.symbols)}, time_since_last: {time_since_last:.1f}s")
 
         if time_since_last > 90 and self.last_update_time > 0:
-            print(f"[DEBUG] WARNING: Gap of {time_since_last:.1f}s since last update (expected ~60s)")
+            print(f"[{self.exchange}][DEBUG] WARNING: Gap of {time_since_last:.1f}s since last update (expected ~60s)")
 
         # Validate payload
         if self.initialized:
@@ -663,13 +668,13 @@ class CorrelationCalculator:
 
         if not self.initialized:
             self.pending_updates.append((newest, timestamp))
-            print(f"Queued update (pending: {len(self.pending_updates)})")
+            print(f"[{self.exchange}] Queued update (pending: {len(self.pending_updates)})")
             return
 
         self.last_update_time = current_time
         start = time.time()
         self.update_correlations(newest, timestamp)
-        print(f"Update completed in {time.time() - start:.2f}s")
+        print(f"[{self.exchange}] Update completed in {time.time() - start:.2f}s")
 
         # Periodic state dump every 10 updates
         if self.update_count % 10 == 0:
@@ -677,8 +682,11 @@ class CorrelationCalculator:
 
     def run(self):
         """Main entry point."""
+        print(f"[{self.exchange}] Starting correlation calculator...")
         self.hours_options = list(tf_options["correlation"].values())
-        self.symbols = get_exchange_symbols()
+        self.symbols = get_exchange_symbols(
+            exchange=self.exchange, contract_type=self.contract_type
+        )
         self._rebuild_indices()
 
         pubsub_thread = threading.Thread(target=self._pubsub_loop, daemon=True)
@@ -689,23 +697,23 @@ class CorrelationCalculator:
 
         time.sleep(2)
 
-        print("Initializing correlation trackers...")
+        print(f"[{self.exchange}] Initializing correlation trackers...")
         start = time.time()
         self._init_trackers()
-        print(f"Initialization completed in {time.time() - start:.2f}s")
+        print(f"[{self.exchange}] Initialization completed in {time.time() - start:.2f}s")
 
         self.initialized = True
 
         if self.pending_updates:
-            print(f"Processing {len(self.pending_updates)} pending updates...")
+            print(f"[{self.exchange}] Processing {len(self.pending_updates)} pending updates...")
             for newest, ts in self.pending_updates:
                 self.update_correlations(newest, ts, save_to_db=False)
             self.pending_updates.clear()
 
-        print("Ready for real-time updates")
+        print(f"[{self.exchange}] Ready for real-time updates")
 
         try:
             pubsub_thread.join()
         except KeyboardInterrupt:
-            print("Shutting down...")
+            print(f"[{self.exchange}] Shutting down...")
             self.cleanup_stop.set()

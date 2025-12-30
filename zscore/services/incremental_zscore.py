@@ -91,8 +91,12 @@ class IncrementalZScore:
 
 
 class ZScoreProcessor:
-    def __init__(self):
-        self.symbols = get_exchange_symbols()
+    def __init__(self, exchange: str = "binance", contract_type: str = "perpetual"):
+        self.exchange = exchange
+        self.contract_type = contract_type
+        self.symbols = get_exchange_symbols(
+            exchange=self.exchange, contract_type=self.contract_type
+        )
         self.hours_options = list(tf_options["zscore"].values())
         self.incremental_zscores = self.initialize_zscores()
 
@@ -100,7 +104,9 @@ class ZScoreProcessor:
         """Initialize Z-score objects using historical kline data from DB"""
         zscore_dict = {}
         data_by_hours = {
-            hours: get_historical_kline_data(hours=hours, symbols=self.symbols)
+            hours: get_historical_kline_data(
+                hours=hours, symbols=self.symbols, exchange=self.exchange
+            )
             for hours in self.hours_options
         }
 
@@ -127,13 +133,15 @@ class ZScoreProcessor:
         """Update incremental Z-scores with new data"""
         if newest_values is None:
             newest_values = get_symbol_kline_data(
-                symbols=self.symbols, exchange="binance", contract_type="perpetual"
+                symbols=self.symbols,
+                exchange=self.exchange,
+                contract_type=self.contract_type,
             )
 
         oldest_by_hours = get_symbol_kline_data_multi_hours(
             symbols=self.symbols,
-            exchange="binance",
-            contract_type="perpetual",
+            exchange=self.exchange,
+            contract_type=self.contract_type,
             hours_list=self.hours_options,
             kline_timestamp_ms=kline_timestamp_ms,
         )
@@ -169,21 +177,20 @@ class ZScoreProcessor:
             for hours in self.hours_options
         }
 
-    @staticmethod
-    def store_z_score_results(results):
+    def store_z_score_results(self, results):
         """Store calculated Z-scores in DB"""
         current_time = timezone.now()
-        print("STORING ZSCORES")
+        print(f"[{self.exchange}] STORING ZSCORES")
 
         try:
-            exchange = Exchange.objects.get(name="binance")
-            contract_type = ContractType.objects.get(name="perpetual")
+            exchange = Exchange.objects.get(name=self.exchange)
+            contract_type = ContractType.objects.get(name=self.contract_type)
             symbols = Symbol.objects.filter(
                 exchange=exchange, contract_type=contract_type
             )
             symbol_map = {s.name: s for s in symbols}
         except (Exchange.DoesNotExist, ContractType.DoesNotExist) as e:
-            print("Exchange or ContractType not found:", e)
+            print(f"[{self.exchange}] Exchange or ContractType not found:", e)
             return
 
         db_entries = []
@@ -212,10 +219,10 @@ class ZScoreProcessor:
     def add_new_symbol(self, symbol_name):
         """Add a new symbol to zscore tracking"""
         if symbol_name in self.symbols:
-            print(f"Symbol {symbol_name} already being tracked")
+            print(f"[{self.exchange}] Symbol {symbol_name} already being tracked")
             return
 
-        print(f"Adding {symbol_name} to zscore tracking")
+        print(f"[{self.exchange}] Adding {symbol_name} to zscore tracking")
 
         self.symbols.append(symbol_name)
 
@@ -226,7 +233,7 @@ class ZScoreProcessor:
                 )[hours] = IncrementalZScore(hours * 60)
 
                 historical_data = get_historical_kline_data(
-                    hours=hours, symbols=[symbol_name]
+                    hours=hours, symbols=[symbol_name], exchange=self.exchange
                 )
                 series = historical_data.get(symbol_name, {}).get(data_type, [])
 
@@ -238,10 +245,10 @@ class ZScoreProcessor:
     def remove_symbol(self, symbol_name):
         """Remove a symbol from zscore tracking"""
         if symbol_name not in self.symbols:
-            print(f"Symbol {symbol_name} not being tracked")
+            print(f"[{self.exchange}] Symbol {symbol_name} not being tracked")
             return
 
-        print(f"Removing symbol {symbol_name} from zscore tracking")
+        print(f"[{self.exchange}] Removing symbol {symbol_name} from zscore tracking")
 
         self.symbols.remove(symbol_name)
 
@@ -254,19 +261,35 @@ class ZScoreProcessor:
 
             redis_pipeline.execute_command(
                 "SET",
-                f"zscore:heatmap:binance:perpetual:{hours}",
+                f"zscore:heatmap:{self.exchange}:{self.contract_type}:{hours}",
                 msgpack.packb(zscore_heatmap_data),
             )
 
-        print("ZSCORE: Stored zscore history data to redis")
+        print(f"[{self.exchange}] ZSCORE: Stored zscore history data to redis")
+
+    def _handle_symbol_event(self, data: str, handler):
+        """Handle symbol add/remove events with exchange filtering."""
+        parts = data.split(":")
+        if len(parts) >= 3:
+            # New format: "exchange:symbol:timestamp"
+            msg_exchange, symbol = parts[0], parts[1]
+            if msg_exchange != self.exchange:
+                return
+        else:
+            # Legacy format: "symbol:timestamp" - assume binance
+            symbol = parts[0]
+            if self.exchange != "binance":
+                return
+        handler(symbol)
 
     def run(self):
         """Main processing loop listening for Redis updates"""
         retries = 0
+        print(f"[{self.exchange}] Starting ZScore processor...")
 
         while True:
             try:
-                print("Subscribing to Redis channels...")
+                print(f"[{self.exchange}] Subscribing to Redis channels...")
                 pubsub = r.pubsub()
                 pubsub.subscribe(
                     RedisPubMessages.KLINE_SAVED_TO_DB.value,
@@ -280,10 +303,11 @@ class ZScoreProcessor:
                         channel = message["channel"]
 
                         if channel == RedisPubMessages.KLINE_SAVED_TO_DB.value:
-                            print(f'ZSCORE {message["channel"]}')
                             data_raw = message.get("data")
                             if data_raw is None:
-                                print("ZSCORE: Received empty payload")
+                                print(
+                                    f"[{self.exchange}] ZSCORE: Received empty payload"
+                                )
                                 continue
 
                             if isinstance(data_raw, bytes):
@@ -292,19 +316,29 @@ class ZScoreProcessor:
                                 data_text = data_raw
                             else:
                                 print(
-                                    f"ZSCORE: Unexpected payload type {type(data_raw)}"
+                                    f"[{self.exchange}] ZSCORE: Unexpected payload type {type(data_raw)}"
                                 )
                                 continue
 
                             try:
                                 payload = json.loads(data_text)
                             except (TypeError, json.JSONDecodeError):
-                                print("ZSCORE: Failed to decode newest values payload")
+                                print(
+                                    f"[{self.exchange}] ZSCORE: Failed to decode newest values payload"
+                                )
                                 continue
+
+                            msg_exchange = payload.get("exchange", "binance")
+                            if msg_exchange != self.exchange:
+                                continue
+
+                            print(f"[{self.exchange}] ZSCORE: Processing update")
 
                             newest_values = payload.get("newest_values")
                             if not isinstance(newest_values, dict):
-                                print("ZSCORE: No newest_values found in payload")
+                                print(
+                                    f"[{self.exchange}] ZSCORE: No newest_values found in payload"
+                                )
                                 continue
 
                             kline_timestamp_ms = payload.get("timestamp")
@@ -318,7 +352,7 @@ class ZScoreProcessor:
                             for tf, tf_data in results.items():
                                 pipeline.execute_command(
                                     "SET",
-                                    f"zscore:binance:perpetual:{tf}",
+                                    f"zscore:{self.exchange}:{self.contract_type}:{tf}",
                                     msgpack.packb(tf_data),
                                 )
                             self.store_z_score_results(results)
@@ -331,20 +365,24 @@ class ZScoreProcessor:
 
                         elif channel == RedisPubMessages.SYMBOL_ADDED.value:
                             data = message.get("data", b"").decode("utf-8")
-                            print(f"ZSCORE: Received symbol added event: {data}")
-                            symbol_name = data.split(":")[0]
-                            self.add_new_symbol(symbol_name)
+                            print(
+                                f"[{self.exchange}] ZSCORE: Received symbol added event: {data}"
+                            )
+                            self._handle_symbol_event(data, self.add_new_symbol)
 
                         elif channel == RedisPubMessages.SYMBOL_DELISTED.value:
                             data = message.get("data", b"").decode("utf-8")
-                            print(f"ZSCORE: Received symbol delisted event: {data}")
-                            symbol_name = data.split(":")[0]
-                            self.remove_symbol(symbol_name)
+                            print(
+                                f"[{self.exchange}] ZSCORE: Received symbol delisted event: {data}"
+                            )
+                            self._handle_symbol_event(data, self.remove_symbol)
 
                 retries = 0
 
             except Exception as e:
                 retries += 1
                 wait = min(2**retries, 40)
-                print(f"[ZScore] Unexpected error: {e}. Retrying in {wait}s...")
+                print(
+                    f"[{self.exchange}][ZScore] Unexpected error: {e}. Retrying in {wait}s..."
+                )
                 time.sleep(wait)
