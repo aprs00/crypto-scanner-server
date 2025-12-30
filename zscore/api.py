@@ -15,7 +15,9 @@ def print_btc_zscore_comparison(exchange="binance", contract_type="perpetual"):
     """Print BTC 1h z-score comparison between numpy calculation and Redis."""
     btc_symbol = get_btc_symbol(exchange)
 
-    btc_data = get_historical_kline_data(hours=1, symbols=[btc_symbol], exchange=exchange)
+    btc_data = get_historical_kline_data(
+        hours=1, symbols=[btc_symbol], exchange=exchange
+    )
     if btc_symbol in btc_data and "price" in btc_data[btc_symbol]:
         prices = np.array(btc_data[btc_symbol]["price"])
         if len(prices) > 0 and np.std(prices) > 0:
@@ -58,7 +60,9 @@ def get_z_score_matrix(request):
     redis_key = f"zscore:{exchange}:{contract_type}:{hours}"
     redis_data = r.execute_command("GET", redis_key)
     if not redis_data:
-        return JsonResponse({"error": f"Z-score data not available for {exchange}"}, status=503)
+        return JsonResponse(
+            {"error": f"Z-score data not available for {exchange}"}, status=503
+        )
 
     hours_data = msgpack.unpackb(redis_data, raw=False)
 
@@ -74,13 +78,17 @@ def get_z_score_matrix(request):
 
 @csrf_exempt
 def get_z_score_heatmap(request):
-    if request.method != "GET":
+    import json
+
+    if request.method != "POST":
         return HttpResponse(status=405)
 
-    type = request.GET.get("type", None)
-    hours = request.GET.get("hours", None)
-    exchange = request.GET.get("exchange")
-    contract_type = request.GET.get("contractType")
+    body = json.loads(request.body)
+    data_type = body.get("type")
+    hours = body.get("hours")
+    exchange = body.get("exchange")
+    contract_type = body.get("contractType")
+    requested_symbols = body.get("symbols", [])
 
     if not hours or not exchange or not contract_type:
         return JsonResponse(
@@ -93,11 +101,14 @@ def get_z_score_heatmap(request):
     redis_key = f"zscore:heatmap:{exchange}:{contract_type}:{hours}"
     redis_data = r.execute_command("GET", redis_key)
     if not redis_data:
-        return JsonResponse({"error": f"Heatmap data not available for {exchange}"}, status=503)
+        return JsonResponse(
+            {"error": f"Heatmap data not available for {exchange}"}, status=503
+        )
 
     zscore_data = msgpack.unpackb(redis_data)
 
     ref_symbol = get_btc_symbol(exchange)
+    requested_symbols_set = set(requested_symbols) if requested_symbols else None
 
     transformed_zscore_data = {}
     times = []
@@ -106,10 +117,15 @@ def get_z_score_heatmap(request):
         if record["hours"] != 1:
             continue
 
-        transformed_zscore_data.setdefault(record["symbol__name"], []).append(
-            round(record[type], 3)
+        symbol = record["symbol__name"]
+
+        if requested_symbols_set and symbol not in requested_symbols_set:
+            continue
+
+        transformed_zscore_data.setdefault(symbol, []).append(
+            round(record[data_type], 3)
         )
-        if record["symbol__name"] == ref_symbol:
+        if symbol == ref_symbol or (not times and symbol in transformed_zscore_data):
             times.append(record["time"])
 
     matrix = [value for values in transformed_zscore_data.values() for value in values]

@@ -17,7 +17,7 @@ def get_chart_defaults(exchange: str, market_cap_symbols: list[str]) -> dict:
     default_symbol = get_btc_symbol(exchange)
 
     return {
-        "beta_heatmap": {
+        "heatmap": {
             "symbols": market_cap_symbols[:50],
         },
         "price_change_percentage": {

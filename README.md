@@ -25,5 +25,5 @@ docker exec -it cs-exchange-connections python manage.py populate_klines
 Populate klines for a specific ticker:
 
 ```sh
-docker exec -it cs-exchange-connections python manage.py populate_klines --start-date "10 Aug 2025"
+docker exec -it cs-binance-klines python manage.py populate_klines --start-date "10 Aug 2025"
 ```
