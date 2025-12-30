@@ -257,7 +257,11 @@ class ZScoreProcessor:
 
     def fetch_and_store_zscore_history_data(self, redis_pipeline):
         for hours in self.hours_options:
-            zscore_heatmap_data = get_zscore_history_data(hours)
+            zscore_heatmap_data = get_zscore_history_data(
+                hours=hours,
+                exchange=self.exchange,
+                contract_type=self.contract_type,
+            )
 
             redis_pipeline.execute_command(
                 "SET",
