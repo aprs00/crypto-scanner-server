@@ -1,204 +1,154 @@
 version: '3.8'
 
+x-app-common: &app-common
+  image: crypto-scanner:latest
+  volumes:
+    - .:/code
+  depends_on:
+    - db
+    - redis
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-env-common: &env-common
+  POSTGRES_NAME: ${POSTGRES_NAME}
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
 services:
-    db:
-        container_name: cs-db
-        image: timescale/timescaledb:2.14.2-pg15
-        volumes:
-            - pgdata:/var/lib/postgresql/data
-        environment:
-            - POSTGRES_DB=${POSTGRES_NAME}
-            - POSTGRES_USER=${POSTGRES_USER}
-            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-            - POSTGRES_HOST=${POSTGRES_HOST}
-        ports:
-            - "${POSTGRES_PORT}:5432"
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
+  db:
+    container_name: cs-db
+    image: timescale/timescaledb:2.14.2-pg15
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=${POSTGRES_NAME}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-    app:
-        container_name: cs-app
-        build: .
-        restart: always
-        command: python manage.py runserver 0.0.0.0:8000
-        volumes:
-            - .:/code
-        ports:
-            - "8000:8000"
-        environment:
-            - POSTGRES_NAME=${POSTGRES_NAME}
-            - POSTGRES_USER=${POSTGRES_USER}
-            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-        depends_on:
-            - db
-            - redis
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
+  redis:
+    container_name: cs-redis
+    image: "redis/redis-stack-server:latest"
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    ports:
+      - "6378:6379"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-    redis:
-        container_name: cs-redis
-        image: "redis/redis-stack-server:latest"
-        command: redis-server /usr/local/etc/redis/redis.conf
-        volumes:
-            - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
-        ports:
-            - "6378:6379"
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
+  app:
+    <<: *app-common
+    build:
+      context: .
+      target: runtime
+    container_name: cs-app
+    restart: always
+    command: python manage.py runserver 0.0.0.0:8000
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *env-common
 
+  binance-klines:
+    <<: *app-common
+    container_name: cs-binance-klines
+    command: python manage.py binance_klines
+    environment:
+      <<: *env-common
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f klines || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-    binance-klines:
-        container_name: cs-binance-klines
-        build: .
-        command: python manage.py binance_klines
-        volumes:
-            - .:/code
-        environment:
-            - POSTGRES_NAME=${POSTGRES_NAME}
-            - POSTGRES_USER=${POSTGRES_USER}
-            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-        depends_on:
-            - db
-            - redis
-        healthcheck:
-            test: ["CMD-SHELL", "pgrep -f klines || exit 1"]
-            interval: 30s
-            timeout: 10s
-            retries: 3
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
+  binance-correlations:
+    <<: *app-common
+    container_name: cs-binance-correlations
+    command: python manage.py incremental_correlations --exchange binance
+    depends_on:
+      - db
+      - redis
+      - binance-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f incremental_correlations || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-    binance-correlations:
-        container_name: cs-binance-correlations
-        build: .
-        command: python manage.py incremental_correlations --exchange binance
-        volumes:
-            - .:/code
-        depends_on:
-            - db
-            - redis
-            - binance-klines
-        healthcheck:
-            test: ["CMD-SHELL", "pgrep -f incremental_correlations || exit 1"]
-            interval: 30s
-            timeout: 10s
-            retries: 3
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
+  binance-zscore:
+    <<: *app-common
+    container_name: cs-binance-zscore
+    command: python manage.py incremental_zscore --exchange binance
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - redis
+      - binance-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f incremental_zscore || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-    binance-zscore:
-        container_name: cs-binance-zscore
-        build: .
-        command: python manage.py incremental_zscore --exchange binance
-        volumes:
-            - .:/code
-        environment:
-            - POSTGRES_NAME=${POSTGRES_NAME}
-            - POSTGRES_USER=${POSTGRES_USER}
-            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-        depends_on:
-            - db
-            - redis
-            - binance-klines
-        healthcheck:
-            test: ["CMD-SHELL", "pgrep -f incremental_zscore || exit 1"]
-            interval: 30s
-            timeout: 10s
-            retries: 3
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
+  hyperliquid-klines:
+    <<: *app-common
+    container_name: cs-hyperliquid-klines
+    command: python manage.py hyperliquid_klines
+    environment:
+      <<: *env-common
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f hyperliquid_klines || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-    hyperliquid-klines:
-        container_name: cs-hyperliquid-klines
-        build: .
-        command: python manage.py hyperliquid_klines
-        volumes:
-            - .:/code
-        environment:
-            - POSTGRES_NAME=${POSTGRES_NAME}
-            - POSTGRES_USER=${POSTGRES_USER}
-            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-        depends_on:
-            - db
-            - redis
-        healthcheck:
-            test: ["CMD-SHELL", "pgrep -f hyperliquid_klines || exit 1"]
-            interval: 30s
-            timeout: 10s
-            retries: 3
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
+  hyperliquid-correlations:
+    <<: *app-common
+    container_name: cs-hyperliquid-correlations
+    command: python manage.py incremental_correlations --exchange hyperliquid
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - redis
+      - hyperliquid-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'incremental_correlations.*hyperliquid' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-    hyperliquid-correlations:
-        container_name: cs-hyperliquid-correlations
-        build: .
-        command: python manage.py incremental_correlations --exchange hyperliquid
-        volumes:
-            - .:/code
-        environment:
-            - POSTGRES_NAME=${POSTGRES_NAME}
-            - POSTGRES_USER=${POSTGRES_USER}
-            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-        depends_on:
-            - db
-            - redis
-            - hyperliquid-klines
-        healthcheck:
-            test: ["CMD-SHELL", "pgrep -f 'incremental_correlations.*hyperliquid' || exit 1"]
-            interval: 30s
-            timeout: 10s
-            retries: 3
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
-
-    hyperliquid-zscore:
-        container_name: cs-hyperliquid-zscore
-        build: .
-        command: python manage.py incremental_zscore --exchange hyperliquid
-        volumes:
-            - .:/code
-        environment:
-            - POSTGRES_NAME=${POSTGRES_NAME}
-            - POSTGRES_USER=${POSTGRES_USER}
-            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-        depends_on:
-            - db
-            - redis
-            - hyperliquid-klines
-        healthcheck:
-            test: ["CMD-SHELL", "pgrep -f 'incremental_zscore.*hyperliquid' || exit 1"]
-            interval: 30s
-            timeout: 10s
-            retries: 3
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "10m"
-                max-file: "3"
+  hyperliquid-zscore:
+    <<: *app-common
+    container_name: cs-hyperliquid-zscore
+    command: python manage.py incremental_zscore --exchange hyperliquid
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - redis
+      - hyperliquid-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'incremental_zscore.*hyperliquid' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
-    pgdata:
+  pgdata:
