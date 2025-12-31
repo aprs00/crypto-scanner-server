@@ -38,21 +38,26 @@ def print_btc_zscore_comparison(exchange="binance", contract_type="perpetual"):
 
 @csrf_exempt
 def get_z_score_matrix(request):
-    if request.method != "GET":
+    if request.method != "POST":
         return HttpResponse(status=405)
 
-    x_axis = request.GET.get("xAxis", None)
-    y_axis = request.GET.get("yAxis", None)
-    z_axis = request.GET.get("zAxis", None)
-    hours = request.GET.get("hours", None)
-    exchange = request.GET.get("exchange")
-    contract_type = request.GET.get("contractType")
+    body = json.loads(request.body)
+    x_axis = body.get("xAxis")
+    y_axis = body.get("yAxis")
+    z_axis = body.get("zAxis")
+    hours = body.get("hours")
+    exchange = body.get("exchange")
+    contract_type = body.get("contractType")
+    symbols = body.get("symbols", [])
 
     if not hours or not exchange or not contract_type:
         return JsonResponse(
             {"error": "Missing required parameters: hours, exchange, contractType"},
             status=400,
         )
+
+    if not symbols:
+        return JsonResponse([], safe=False)
 
     hours = int(hours)
 
@@ -72,6 +77,7 @@ def get_z_score_matrix(request):
         x_axis=x_axis,
         y_axis=y_axis,
         z_axis=z_axis,
+        symbols=symbols,
     )
 
     return JsonResponse(response, safe=False)

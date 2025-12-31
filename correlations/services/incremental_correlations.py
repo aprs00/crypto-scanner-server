@@ -381,7 +381,6 @@ class CorrelationCalculator:
 
                 matrix = tracker.get_correlations()
                 key = f"correlations:{data_type}:{hours}:{self.exchange}:{self.contract_type}"
-                print("STORING KEY:", key, "MATRIX LEN:", len(matrix))
                 packed_data = msgpack.packb(matrix)
                 if packed_data is not None:
                     pipe.set(key, packed_data)
