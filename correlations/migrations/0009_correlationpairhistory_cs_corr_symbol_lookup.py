@@ -6,13 +6,19 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('correlations', '0008_remove_correlationpairhistory_cs_correlat_data_ty_11981e_idx_and_more'),
-        ('exchange_connections', '0003_delete_binancespotkline5m_delete_ticker'),
+        (
+            "correlations",
+            "0008_remove_correlationpairhistory_cs_correlat_data_ty_11981e_idx_and_more",
+        ),
+        ("exchange_connections", "0003_delete_binancespotkline5m_delete_ticker"),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='correlationpairhistory',
-            index=models.Index(fields=['data_type', 'hours', 'symbol1', 'symbol2'], name='cs_corr_symbol_lookup'),
+            model_name="correlationpairhistory",
+            index=models.Index(
+                fields=["data_type", "hours", "symbol1", "symbol2"],
+                name="cs_corr_symbol_lookup",
+            ),
         ),
     ]

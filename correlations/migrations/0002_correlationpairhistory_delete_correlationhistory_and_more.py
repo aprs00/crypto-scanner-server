@@ -6,13 +6,13 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('exchange_connections', '0003_delete_binancespotkline5m_delete_ticker'),
-        ('correlations', '0001_initial'),
+        ("exchange_connections", "0003_delete_binancespotkline5m_delete_ticker"),
+        ("correlations", "0001_initial"),
     ]
 
     operations = [
         migrations.RenameModel(
-            old_name='CorrelationHistory',
-            new_name='CorrelationPairHistory',
+            old_name="CorrelationHistory",
+            new_name="CorrelationPairHistory",
         ),
     ]

@@ -9,28 +9,78 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('exchange_connections', '0003_delete_binancespotkline5m_delete_ticker'),
+        ("exchange_connections", "0003_delete_binancespotkline5m_delete_ticker"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='CorrelationHistory',
+            name="CorrelationHistory",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('correlation_value', models.FloatField(help_text='Pearson correlation coefficient (-1 to 1)')),
-                ('data_type', models.CharField(db_index=True, help_text="Type of data used for correlation (e.g., 'close', 'volume', 'trades')", max_length=20)),
-                ('hours', models.IntegerField(db_index=True, help_text='Time window in hours used for correlation calculation')),
-                ('calculated_at', models.DateTimeField(auto_now_add=True, db_index=True, help_text='Timestamp when this correlation was calculated')),
-                ('symbol1', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='correlations_as_symbol1', to='exchange_connections.symbol')),
-                ('symbol2', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='correlations_as_symbol2', to='exchange_connections.symbol')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "correlation_value",
+                    models.FloatField(
+                        help_text="Pearson correlation coefficient (-1 to 1)"
+                    ),
+                ),
+                (
+                    "data_type",
+                    models.CharField(
+                        db_index=True,
+                        help_text="Type of data used for correlation (e.g., 'close', 'volume', 'trades')",
+                        max_length=20,
+                    ),
+                ),
+                (
+                    "hours",
+                    models.IntegerField(
+                        db_index=True,
+                        help_text="Time window in hours used for correlation calculation",
+                    ),
+                ),
+                (
+                    "calculated_at",
+                    models.DateTimeField(
+                        auto_now_add=True,
+                        db_index=True,
+                        help_text="Timestamp when this correlation was calculated",
+                    ),
+                ),
+                (
+                    "symbol1",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="correlations_as_symbol1",
+                        to="exchange_connections.symbol",
+                    ),
+                ),
+                (
+                    "symbol2",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="correlations_as_symbol2",
+                        to="exchange_connections.symbol",
+                    ),
+                ),
             ],
             options={
-                'db_table': 'cs_correlation_history',
-                'ordering': ['-calculated_at'],
+                "db_table": "cs_correlation_history",
+                "ordering": ["-calculated_at"],
             },
         ),
         migrations.AddConstraint(
-            model_name='correlationhistory',
-            constraint=models.UniqueConstraint(fields=('symbol1', 'symbol2', 'data_type', 'hours', 'calculated_at'), name='unique_correlation_entry'),
+            model_name="correlationhistory",
+            constraint=models.UniqueConstraint(
+                fields=("symbol1", "symbol2", "data_type", "hours", "calculated_at"),
+                name="unique_correlation_entry",
+            ),
         ),
     ]

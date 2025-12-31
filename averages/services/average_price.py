@@ -31,7 +31,9 @@ def format_data(data, time_period: TimePeriod):
     return formatted_data, time_labels
 
 
-def average_price_change(hours, symbol, time_period: str, exchange: str, contract_type: str):
+def average_price_change(
+    hours, symbol, time_period: str, exchange: str, contract_type: str
+):
     start_time_utc = timezone.now() - timedelta(hours=hours)
 
     try:

@@ -27,7 +27,7 @@ class Migration(migrations.Migration):
     atomic = False
 
     dependencies = [
-        ('correlations', '0006_correlationpairhistory_cs_correlat_calcula_4f6504_idx'),
+        ("correlations", "0006_correlationpairhistory_cs_correlat_calcula_4f6504_idx"),
     ]
 
     operations = [
@@ -54,7 +54,6 @@ class Migration(migrations.Migration):
                 FOREIGN KEY (symbol2_id) REFERENCES cs_symbols(id) DEFERRABLE INITIALLY DEFERRED;
             """,
         ),
-
         # Drop the symbol indexes (not needed for queries)
         migrations.RunSQL(
             sql="DROP INDEX IF EXISTS cs_correlation_history_symbol1_id_740fd206;",
@@ -64,13 +63,11 @@ class Migration(migrations.Migration):
             sql="DROP INDEX IF EXISTS cs_correlation_history_symbol2_id_0037573c;",
             reverse_sql="CREATE INDEX cs_correlation_history_symbol2_id_0037573c ON cs_correlation_pair_history(symbol2_id);",
         ),
-
         # Drop primary key (the id column stays but without index overhead)
         migrations.RunSQL(
             sql="ALTER TABLE cs_correlation_pair_history DROP CONSTRAINT IF EXISTS cs_correlation_history_pkey;",
             reverse_sql="ALTER TABLE cs_correlation_pair_history ADD CONSTRAINT cs_correlation_history_pkey PRIMARY KEY (id);",
         ),
-
         # Add BRIN index for calculated_at (for cleanup queries)
         migrations.RunSQL(
             sql="""
@@ -79,7 +76,6 @@ class Migration(migrations.Migration):
             """,
             reverse_sql="DROP INDEX IF EXISTS cs_correlation_calculated_at_brin;",
         ),
-
         # Add BRIN index for query pattern (data_type, hours, calculated_at)
         migrations.RunSQL(
             sql="""

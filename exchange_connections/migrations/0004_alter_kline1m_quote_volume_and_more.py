@@ -6,23 +6,29 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('exchange_connections', '0003_delete_binancespotkline5m_delete_ticker'),
+        ("exchange_connections", "0003_delete_binancespotkline5m_delete_ticker"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='kline1m',
-            name='quote_volume',
-            field=models.DecimalField(blank=True, decimal_places=8, max_digits=24, null=True),
+            model_name="kline1m",
+            name="quote_volume",
+            field=models.DecimalField(
+                blank=True, decimal_places=8, max_digits=24, null=True
+            ),
         ),
         migrations.AlterField(
-            model_name='kline1m',
-            name='taker_buy_base_volume',
-            field=models.DecimalField(blank=True, decimal_places=8, max_digits=24, null=True),
+            model_name="kline1m",
+            name="taker_buy_base_volume",
+            field=models.DecimalField(
+                blank=True, decimal_places=8, max_digits=24, null=True
+            ),
         ),
         migrations.AlterField(
-            model_name='kline1m',
-            name='taker_buy_quote_volume',
-            field=models.DecimalField(blank=True, decimal_places=8, max_digits=24, null=True),
+            model_name="kline1m",
+            name="taker_buy_quote_volume",
+            field=models.DecimalField(
+                blank=True, decimal_places=8, max_digits=24, null=True
+            ),
         ),
     ]

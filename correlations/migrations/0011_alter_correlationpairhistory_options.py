@@ -6,12 +6,12 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('correlations', '0010_partition_correlation_history'),
+        ("correlations", "0010_partition_correlation_history"),
     ]
 
     operations = [
         migrations.AlterModelOptions(
-            name='correlationpairhistory',
-            options={'managed': False, 'ordering': ['-calculated_at']},
+            name="correlationpairhistory",
+            options={"managed": False, "ordering": ["-calculated_at"]},
         ),
     ]

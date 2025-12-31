@@ -10,7 +10,8 @@ def format_z_score_matrix_response(
             "data": [
                 round(data[symbol][x_axis], 3),
                 round(data[symbol][y_axis], 3),
-            ] + ([round(data[symbol][z_axis], 3)] if z_axis else []),
+            ]
+            + ([round(data[symbol][z_axis], 3)] if z_axis else []),
         }
         for symbol in list(data.keys())
     ]

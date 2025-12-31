@@ -6,12 +6,15 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('correlations', '0002_correlationpairhistory_delete_correlationhistory_and_more'),
+        (
+            "correlations",
+            "0002_correlationpairhistory_delete_correlationhistory_and_more",
+        ),
     ]
 
     operations = [
         migrations.AlterModelTable(
-            name='correlationpairhistory',
-            table='cs_correlation_pair_history',
+            name="correlationpairhistory",
+            table="cs_correlation_pair_history",
         ),
     ]

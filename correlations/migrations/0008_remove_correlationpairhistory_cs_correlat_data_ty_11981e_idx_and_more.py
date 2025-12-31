@@ -6,16 +6,16 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('correlations', '0007_optimize_correlation_inserts'),
+        ("correlations", "0007_optimize_correlation_inserts"),
     ]
 
     operations = [
         migrations.RemoveIndex(
-            model_name='correlationpairhistory',
-            name='cs_correlat_data_ty_11981e_idx',
+            model_name="correlationpairhistory",
+            name="cs_correlat_data_ty_11981e_idx",
         ),
         migrations.RemoveIndex(
-            model_name='correlationpairhistory',
-            name='cs_correlat_calcula_4f6504_idx',
+            model_name="correlationpairhistory",
+            name="cs_correlat_calcula_4f6504_idx",
         ),
     ]

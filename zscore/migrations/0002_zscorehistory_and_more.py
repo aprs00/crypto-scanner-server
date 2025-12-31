@@ -7,29 +7,62 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('exchange_connections', '0001_initial'),
-        ('zscore', '0001_initial'),
+        ("exchange_connections", "0001_initial"),
+        ("zscore", "0001_initial"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='ZScoreHistory',
+            name="ZScoreHistory",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('volume', models.FloatField()),
-                ('price', models.FloatField()),
-                ('trades', models.FloatField()),
-                ('calculated_at', models.DateTimeField(auto_now_add=True, db_index=True)),
-                ('symbol', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='exchange_connections.symbol')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("volume", models.FloatField()),
+                ("price", models.FloatField()),
+                ("trades", models.FloatField()),
+                (
+                    "calculated_at",
+                    models.DateTimeField(auto_now_add=True, db_index=True),
+                ),
+                (
+                    "symbol",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        to="exchange_connections.symbol",
+                    ),
+                ),
             ],
             options={
-                'db_table': 'cs_zscore_history',
-                'ordering': ['calculated_at'],
-                'indexes': [models.Index(fields=['symbol', 'price'], name='cs_zscore_h_symbol__9b2dd5_idx'), models.Index(fields=['symbol', 'volume'], name='cs_zscore_h_symbol__646d61_idx'), models.Index(fields=['symbol', 'trades'], name='cs_zscore_h_symbol__a4e682_idx')],
+                "db_table": "cs_zscore_history",
+                "ordering": ["calculated_at"],
+                "indexes": [
+                    models.Index(
+                        fields=["symbol", "price"],
+                        name="cs_zscore_h_symbol__9b2dd5_idx",
+                    ),
+                    models.Index(
+                        fields=["symbol", "volume"],
+                        name="cs_zscore_h_symbol__646d61_idx",
+                    ),
+                    models.Index(
+                        fields=["symbol", "trades"],
+                        name="cs_zscore_h_symbol__a4e682_idx",
+                    ),
+                ],
             },
         ),
         migrations.AddConstraint(
-            model_name='zscorehistory',
-            constraint=models.UniqueConstraint(fields=('symbol', 'calculated_at'), name='unique_zscore_symbol_start_time'),
+            model_name="zscorehistory",
+            constraint=models.UniqueConstraint(
+                fields=("symbol", "calculated_at"),
+                name="unique_zscore_symbol_start_time",
+            ),
         ),
     ]

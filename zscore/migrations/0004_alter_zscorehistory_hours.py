@@ -6,13 +6,13 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('zscore', '0003_zscorehistory_hours'),
+        ("zscore", "0003_zscorehistory_hours"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='zscorehistory',
-            name='hours',
+            model_name="zscorehistory",
+            name="hours",
             field=models.IntegerField(),
         ),
     ]

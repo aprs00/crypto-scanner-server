@@ -9,28 +9,57 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('exchange_connections', '0001_initial'),
+        ("exchange_connections", "0001_initial"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='ZScoreHistorical',
+            name="ZScoreHistorical",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('volume_z_score', models.FloatField()),
-                ('price_z_score', models.FloatField()),
-                ('trades_z_score', models.FloatField()),
-                ('calculated_at', models.DateTimeField(auto_now_add=True, db_index=True)),
-                ('ticker_name', models.ForeignKey(default=1, on_delete=django.db.models.deletion.CASCADE, to='exchange_connections.ticker')),
-                ('ticker_quote', models.ForeignKey(default=1, on_delete=django.db.models.deletion.CASCADE, related_name='zscore_quote_ticker', to='exchange_connections.ticker')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("volume_z_score", models.FloatField()),
+                ("price_z_score", models.FloatField()),
+                ("trades_z_score", models.FloatField()),
+                (
+                    "calculated_at",
+                    models.DateTimeField(auto_now_add=True, db_index=True),
+                ),
+                (
+                    "ticker_name",
+                    models.ForeignKey(
+                        default=1,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        to="exchange_connections.ticker",
+                    ),
+                ),
+                (
+                    "ticker_quote",
+                    models.ForeignKey(
+                        default=1,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="zscore_quote_ticker",
+                        to="exchange_connections.ticker",
+                    ),
+                ),
             ],
             options={
-                'db_table': 'crypto_scanner_z_score_historical',
-                'ordering': ['calculated_at'],
+                "db_table": "crypto_scanner_z_score_historical",
+                "ordering": ["calculated_at"],
             },
         ),
         migrations.AddConstraint(
-            model_name='zscorehistorical',
-            constraint=models.UniqueConstraint(fields=('ticker_name', 'ticker_quote', 'calculated_at'), name='unique_zscore_ticker_start_time'),
+            model_name="zscorehistorical",
+            constraint=models.UniqueConstraint(
+                fields=("ticker_name", "ticker_quote", "calculated_at"),
+                name="unique_zscore_ticker_start_time",
+            ),
         ),
     ]

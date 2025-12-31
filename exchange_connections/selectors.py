@@ -44,10 +44,14 @@ def get_historical_kline_data(hours, symbols, exchange="binance"):
     klines_data = defaultdict(lambda: {field: [] for field in KLINE_FIELD_MAP.keys()})
 
     with connection.cursor() as cursor:
-        params = [exchange] + symbols + [
-            start_time.astimezone(dt_timezone.utc),
-            end_time.astimezone(dt_timezone.utc),
-        ]
+        params = (
+            [exchange]
+            + symbols
+            + [
+                start_time.astimezone(dt_timezone.utc),
+                end_time.astimezone(dt_timezone.utc),
+            ]
+        )
         cursor.execute(query, params)
 
         for row in cursor.fetchall():
@@ -142,7 +146,9 @@ def get_symbol_kline_data_multi_hours(
     symbol_placeholders = ",".join(["%s"] * len(symbols))
 
     if kline_timestamp_ms is not None:
-        base_time = datetime.fromtimestamp(kline_timestamp_ms / 1000, tz=dt_timezone.utc)
+        base_time = datetime.fromtimestamp(
+            kline_timestamp_ms / 1000, tz=dt_timezone.utc
+        )
     else:
         base_time = timezone.now().replace(second=0, microsecond=0)
 

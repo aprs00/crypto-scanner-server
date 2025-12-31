@@ -8,118 +8,233 @@ class Migration(migrations.Migration):
 
     initial = True
 
-    dependencies = [
-    ]
+    dependencies = []
 
     operations = [
         migrations.CreateModel(
-            name='ContractType',
+            name="ContractType",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=20)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("name", models.CharField(max_length=20)),
             ],
             options={
-                'db_table': 'cs_contract_types',
+                "db_table": "cs_contract_types",
             },
         ),
         migrations.CreateModel(
-            name='Exchange',
+            name="Exchange",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=20)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("name", models.CharField(max_length=20)),
             ],
             options={
-                'db_table': 'cs_exchanges',
+                "db_table": "cs_exchanges",
             },
         ),
         migrations.CreateModel(
-            name='Ticker',
+            name="Ticker",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=20, null=True)),
-                ('color', models.CharField(default='#000000', max_length=20)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("name", models.CharField(max_length=20, null=True)),
+                ("color", models.CharField(default="#000000", max_length=20)),
             ],
             options={
-                'db_table': 'crypto_scanner_binance_spot_tickers',
+                "db_table": "crypto_scanner_binance_spot_tickers",
             },
         ),
         migrations.CreateModel(
-            name='Symbol',
+            name="Symbol",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=20)),
-                ('contract_type', models.ForeignKey(null=True, on_delete=django.db.models.deletion.CASCADE, to='exchange_connections.contracttype')),
-                ('exchange', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='exchange_connections.exchange')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("name", models.CharField(max_length=20)),
+                (
+                    "contract_type",
+                    models.ForeignKey(
+                        null=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        to="exchange_connections.contracttype",
+                    ),
+                ),
+                (
+                    "exchange",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        to="exchange_connections.exchange",
+                    ),
+                ),
             ],
             options={
-                'db_table': 'cs_symbols',
+                "db_table": "cs_symbols",
             },
         ),
         migrations.CreateModel(
-            name='Kline1m',
+            name="Kline1m",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('start_time', models.DateTimeField(db_index=True)),
-                ('close_time', models.DateTimeField()),
-                ('open', models.DecimalField(decimal_places=8, max_digits=18)),
-                ('close', models.DecimalField(decimal_places=8, max_digits=18)),
-                ('high', models.DecimalField(decimal_places=8, max_digits=18)),
-                ('low', models.DecimalField(decimal_places=8, max_digits=18)),
-                ('base_volume', models.DecimalField(decimal_places=8, max_digits=24)),
-                ('quote_volume', models.DecimalField(decimal_places=8, max_digits=24)),
-                ('taker_buy_base_volume', models.DecimalField(decimal_places=8, max_digits=24)),
-                ('taker_buy_quote_volume', models.DecimalField(decimal_places=8, max_digits=24)),
-                ('number_of_trades', models.IntegerField()),
-                ('exchange', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='exchange_connections.exchange')),
-                ('symbol', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='exchange_connections.symbol')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("start_time", models.DateTimeField(db_index=True)),
+                ("close_time", models.DateTimeField()),
+                ("open", models.DecimalField(decimal_places=8, max_digits=18)),
+                ("close", models.DecimalField(decimal_places=8, max_digits=18)),
+                ("high", models.DecimalField(decimal_places=8, max_digits=18)),
+                ("low", models.DecimalField(decimal_places=8, max_digits=18)),
+                ("base_volume", models.DecimalField(decimal_places=8, max_digits=24)),
+                ("quote_volume", models.DecimalField(decimal_places=8, max_digits=24)),
+                (
+                    "taker_buy_base_volume",
+                    models.DecimalField(decimal_places=8, max_digits=24),
+                ),
+                (
+                    "taker_buy_quote_volume",
+                    models.DecimalField(decimal_places=8, max_digits=24),
+                ),
+                ("number_of_trades", models.IntegerField()),
+                (
+                    "exchange",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        to="exchange_connections.exchange",
+                    ),
+                ),
+                (
+                    "symbol",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        to="exchange_connections.symbol",
+                    ),
+                ),
             ],
             options={
-                'db_table': 'cs_klines_1m',
-                'ordering': ['-start_time', 'symbol'],
+                "db_table": "cs_klines_1m",
+                "ordering": ["-start_time", "symbol"],
             },
         ),
         migrations.CreateModel(
-            name='BinanceSpotKline5m',
+            name="BinanceSpotKline5m",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('ticker', models.CharField(max_length=10)),
-                ('start_time', models.DateTimeField()),
-                ('end_time', models.DateTimeField()),
-                ('open', models.DecimalField(decimal_places=10, max_digits=24)),
-                ('close', models.DecimalField(decimal_places=10, max_digits=24)),
-                ('high', models.DecimalField(decimal_places=10, max_digits=24)),
-                ('low', models.DecimalField(decimal_places=10, max_digits=24)),
-                ('base_volume', models.DecimalField(decimal_places=10, max_digits=24)),
-                ('number_of_trades', models.IntegerField()),
-                ('quote_asset_volume', models.DecimalField(decimal_places=10, max_digits=24)),
-                ('taker_buy_base_asset_volume', models.DecimalField(decimal_places=10, max_digits=24)),
-                ('taker_buy_quote_asset_volume', models.DecimalField(decimal_places=10, max_digits=24)),
-                ('ticker_name', models.ForeignKey(default=1, on_delete=django.db.models.deletion.CASCADE, to='exchange_connections.ticker')),
-                ('ticker_quote', models.ForeignKey(default=1, on_delete=django.db.models.deletion.CASCADE, related_name='quote_ticker', to='exchange_connections.ticker')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("ticker", models.CharField(max_length=10)),
+                ("start_time", models.DateTimeField()),
+                ("end_time", models.DateTimeField()),
+                ("open", models.DecimalField(decimal_places=10, max_digits=24)),
+                ("close", models.DecimalField(decimal_places=10, max_digits=24)),
+                ("high", models.DecimalField(decimal_places=10, max_digits=24)),
+                ("low", models.DecimalField(decimal_places=10, max_digits=24)),
+                ("base_volume", models.DecimalField(decimal_places=10, max_digits=24)),
+                ("number_of_trades", models.IntegerField()),
+                (
+                    "quote_asset_volume",
+                    models.DecimalField(decimal_places=10, max_digits=24),
+                ),
+                (
+                    "taker_buy_base_asset_volume",
+                    models.DecimalField(decimal_places=10, max_digits=24),
+                ),
+                (
+                    "taker_buy_quote_asset_volume",
+                    models.DecimalField(decimal_places=10, max_digits=24),
+                ),
+                (
+                    "ticker_name",
+                    models.ForeignKey(
+                        default=1,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        to="exchange_connections.ticker",
+                    ),
+                ),
+                (
+                    "ticker_quote",
+                    models.ForeignKey(
+                        default=1,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="quote_ticker",
+                        to="exchange_connections.ticker",
+                    ),
+                ),
             ],
             options={
-                'db_table': 'crypto_scanner_binance_spot_kline_5m',
-                'ordering': ['start_time'],
+                "db_table": "crypto_scanner_binance_spot_kline_5m",
+                "ordering": ["start_time"],
             },
         ),
         migrations.AddConstraint(
-            model_name='symbol',
-            constraint=models.UniqueConstraint(fields=('name', 'exchange', 'contract_type'), name='unique_symbol_fields'),
+            model_name="symbol",
+            constraint=models.UniqueConstraint(
+                fields=("name", "exchange", "contract_type"),
+                name="unique_symbol_fields",
+            ),
         ),
         migrations.AddIndex(
-            model_name='kline1m',
-            index=models.Index(fields=['symbol', 'exchange', '-start_time'], name='klines_main_query_idx'),
+            model_name="kline1m",
+            index=models.Index(
+                fields=["symbol", "exchange", "-start_time"],
+                name="klines_main_query_idx",
+            ),
         ),
         migrations.AddConstraint(
-            model_name='kline1m',
-            constraint=models.UniqueConstraint(fields=('start_time', 'symbol', 'exchange'), name='unique_klines_1m_fields'),
+            model_name="kline1m",
+            constraint=models.UniqueConstraint(
+                fields=("start_time", "symbol", "exchange"),
+                name="unique_klines_1m_fields",
+            ),
         ),
         migrations.AddIndex(
-            model_name='binancespotkline5m',
-            index=models.Index(fields=['ticker', '-end_time'], name='crypto_scan_ticker_3699c7_idx'),
+            model_name="binancespotkline5m",
+            index=models.Index(
+                fields=["ticker", "-end_time"], name="crypto_scan_ticker_3699c7_idx"
+            ),
         ),
         migrations.AddConstraint(
-            model_name='binancespotkline5m',
-            constraint=models.UniqueConstraint(fields=('ticker', 'start_time'), name='unique_ticker_start_time'),
+            model_name="binancespotkline5m",
+            constraint=models.UniqueConstraint(
+                fields=("ticker", "start_time"), name="unique_ticker_start_time"
+            ),
         ),
     ]

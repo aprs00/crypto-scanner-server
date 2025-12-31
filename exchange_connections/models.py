@@ -11,9 +11,15 @@ class Kline1m(models.Model):
     high = models.DecimalField(max_digits=18, decimal_places=8)
     low = models.DecimalField(max_digits=18, decimal_places=8)
     base_volume = models.DecimalField(max_digits=24, decimal_places=8)
-    quote_volume = models.DecimalField(max_digits=24, decimal_places=8, null=True, blank=True)
-    taker_buy_base_volume = models.DecimalField(max_digits=24, decimal_places=8, null=True, blank=True)
-    taker_buy_quote_volume = models.DecimalField(max_digits=24, decimal_places=8, null=True, blank=True)
+    quote_volume = models.DecimalField(
+        max_digits=24, decimal_places=8, null=True, blank=True
+    )
+    taker_buy_base_volume = models.DecimalField(
+        max_digits=24, decimal_places=8, null=True, blank=True
+    )
+    taker_buy_quote_volume = models.DecimalField(
+        max_digits=24, decimal_places=8, null=True, blank=True
+    )
     number_of_trades = models.IntegerField()
     exchange = models.ForeignKey("Exchange", on_delete=models.CASCADE, db_index=True)
 

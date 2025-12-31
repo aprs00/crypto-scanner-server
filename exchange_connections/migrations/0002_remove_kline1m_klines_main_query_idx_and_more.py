@@ -6,30 +6,35 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('exchange_connections', '0001_initial'),
+        ("exchange_connections", "0001_initial"),
     ]
 
     operations = [
         migrations.RemoveIndex(
-            model_name='kline1m',
-            name='klines_main_query_idx',
+            model_name="kline1m",
+            name="klines_main_query_idx",
         ),
         migrations.AlterField(
-            model_name='contracttype',
-            name='name',
+            model_name="contracttype",
+            name="name",
             field=models.CharField(db_index=True, max_length=20),
         ),
         migrations.AlterField(
-            model_name='exchange',
-            name='name',
+            model_name="exchange",
+            name="name",
             field=models.CharField(db_index=True, max_length=20),
         ),
         migrations.AddIndex(
-            model_name='kline1m',
-            index=models.Index(fields=['exchange', 'symbol', '-start_time'], name='klines_main_query_idx'),
+            model_name="kline1m",
+            index=models.Index(
+                fields=["exchange", "symbol", "-start_time"],
+                name="klines_main_query_idx",
+            ),
         ),
         migrations.AddIndex(
-            model_name='symbol',
-            index=models.Index(fields=['exchange', 'contract_type', 'name'], name='symbol_lookup_idx'),
+            model_name="symbol",
+            index=models.Index(
+                fields=["exchange", "contract_type", "name"], name="symbol_lookup_idx"
+            ),
         ),
     ]

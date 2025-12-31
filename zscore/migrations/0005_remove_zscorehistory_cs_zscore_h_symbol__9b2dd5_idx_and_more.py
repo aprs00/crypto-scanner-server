@@ -6,24 +6,27 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('zscore', '0004_alter_zscorehistory_hours'),
+        ("zscore", "0004_alter_zscorehistory_hours"),
     ]
 
     operations = [
         migrations.RemoveIndex(
-            model_name='zscorehistory',
-            name='cs_zscore_h_symbol__9b2dd5_idx',
+            model_name="zscorehistory",
+            name="cs_zscore_h_symbol__9b2dd5_idx",
         ),
         migrations.RemoveIndex(
-            model_name='zscorehistory',
-            name='cs_zscore_h_symbol__646d61_idx',
+            model_name="zscorehistory",
+            name="cs_zscore_h_symbol__646d61_idx",
         ),
         migrations.RemoveIndex(
-            model_name='zscorehistory',
-            name='cs_zscore_h_symbol__a4e682_idx',
+            model_name="zscorehistory",
+            name="cs_zscore_h_symbol__a4e682_idx",
         ),
         migrations.AddIndex(
-            model_name='zscorehistory',
-            index=models.Index(fields=['symbol', 'calculated_at'], name='cs_zscore_h_symbol__819d5d_idx'),
+            model_name="zscorehistory",
+            index=models.Index(
+                fields=["symbol", "calculated_at"],
+                name="cs_zscore_h_symbol__819d5d_idx",
+            ),
         ),
     ]

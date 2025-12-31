@@ -2,5 +2,5 @@ from django.apps import AppConfig
 
 
 class ZscoreConfig(AppConfig):
-    default_auto_field = 'django.db.models.BigAutoField'
-    name = 'zscore'
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "zscore"

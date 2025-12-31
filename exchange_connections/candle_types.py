@@ -33,6 +33,14 @@ class NormalizedCandle:
             "v": str(self.base_volume),
             "n": self.number_of_trades,
             "q": str(self.quote_volume) if self.quote_volume is not None else None,
-            "V": str(self.taker_buy_base_volume) if self.taker_buy_base_volume is not None else None,
-            "Q": str(self.taker_buy_quote_volume) if self.taker_buy_quote_volume is not None else None,
+            "V": (
+                str(self.taker_buy_base_volume)
+                if self.taker_buy_base_volume is not None
+                else None
+            ),
+            "Q": (
+                str(self.taker_buy_quote_volume)
+                if self.taker_buy_quote_volume is not None
+                else None
+            ),
         }
