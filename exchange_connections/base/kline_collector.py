@@ -234,32 +234,40 @@ class BaseKlineCollector(ABC):
 
             self.last_prices[symbol] = candle.close
 
+            batches_to_process = []
+
             with self.batch_lock:
+                existing_timestamps = set(self.kline_batch.keys())
+
+                if existing_timestamps:
+                    current_latest = max(existing_timestamps)
+
+                    if timestamp_ms < current_latest:
+                        if timestamp_ms not in self.kline_batch:
+                            print(
+                                f"[{self.exchange}] Discarding stale kline for {symbol} "
+                                f"ts={timestamp_ms} (latest={current_latest})"
+                            )
+                            return
+                        # Late arrival for existing batch - continue to add it
+
+                    elif timestamp_ms > current_latest:
+                        # New minute arrived - process all older batches
+                        for ts in list(existing_timestamps):
+                            batch = self.kline_batch.pop(ts)
+                            batches_to_process.append((ts, batch))
+
                 if timestamp_ms not in self.kline_batch:
                     self.kline_batch[timestamp_ms] = {}
-
-                if self.kline_batch:
-                    latest_ts = max(self.kline_batch.keys())
-                    if timestamp_ms < latest_ts:
-                        print(
-                            f"[{self.exchange}] Discarding stale kline for {symbol} "
-                            f"ts={timestamp_ms} (latest={latest_ts})"
-                        )
-                        return
-                    elif timestamp_ms > latest_ts:
-                        old_batches = [
-                            ts for ts in self.kline_batch.keys() if ts < timestamp_ms
-                        ]
-                        for old_ts in old_batches:
-                            self._process_batch(old_ts)
-
                 self.kline_batch[timestamp_ms][symbol] = candle
 
-                received = set(self.kline_batch[timestamp_ms].keys())
-                expected = self.expected_symbols
+                if len(self.kline_batch[timestamp_ms]) == len(self.expected_symbols):
+                    batch = self.kline_batch.pop(timestamp_ms)
+                    batches_to_process.append((timestamp_ms, batch))
 
-                if len(received) == len(expected):
-                    self._process_batch(timestamp_ms)
+            # Process batches OUTSIDE the lock
+            for ts, batch in batches_to_process:
+                self._do_batch_processing(ts, batch)
 
         except Exception as e:
             self.log_error(f"Error processing kline: {e}")
@@ -284,13 +292,13 @@ class BaseKlineCollector(ABC):
             taker_buy_quote_volume=None,
         )
 
-    def _process_batch(self, timestamp_ms: int):
-        """Process a complete batch of klines for a timestamp."""
-        with self.batch_lock:
-            if timestamp_ms not in self.kline_batch:
-                return
-            batch = self.kline_batch.pop(timestamp_ms)
+    def _do_batch_processing(
+        self, timestamp_ms: int, batch: Dict[str, NormalizedCandle]
+    ):
+        """Process a batch - add synthetics if needed, save to DB, publish to Redis.
 
+        This method does the heavy work and should be called OUTSIDE any locks.
+        """
         if self.generate_synthetic_candles:
             missing_symbols = self.expected_symbols - set(batch.keys())
             synthetic_count = 0
@@ -353,6 +361,18 @@ class BaseKlineCollector(ABC):
 
         except Exception as e:
             self.log_error(f"Error processing batch: {e}")
+
+    def _process_batch(self, timestamp_ms: int):
+        """Pop batch from kline_batch and process it.
+
+        Used by check_pending_batches() and subclasses (e.g., Hyperliquid).
+        """
+        with self.batch_lock:
+            if timestamp_ms not in self.kline_batch:
+                return
+            batch = self.kline_batch.pop(timestamp_ms)
+
+        self._do_batch_processing(timestamp_ms, batch)
 
     def check_pending_batches(self):
         """Check for stale batches that should be processed."""

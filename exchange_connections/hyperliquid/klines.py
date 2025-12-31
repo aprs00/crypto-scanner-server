@@ -128,8 +128,8 @@ class HyperliquidKlineCollector(BaseKlineCollector):
 
     def _setup(self):
         """Subscribe to symbols and start background checker."""
-        # Subscribe
         print(f"[hyperliquid] Subscribing to {len(self.symbols)} symbols...")
+
         for symbol in self.symbols:
             if not self.ws_connected or not self.ws:
                 break

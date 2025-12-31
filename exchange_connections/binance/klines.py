@@ -67,15 +67,15 @@ class BinanceKlineCollector(BaseKlineCollector):
                 open_time_ms=int(raw_data["t"]),
                 close_time_ms=int(raw_data["T"]),
                 symbol=raw_data["s"],
-                open=Decimal(str(raw_data["o"])),
-                high=Decimal(str(raw_data["h"])),
-                low=Decimal(str(raw_data["l"])),
-                close=Decimal(str(raw_data["c"])),
-                base_volume=Decimal(str(raw_data["v"])),
+                open=Decimal(raw_data["o"]),
+                high=Decimal(raw_data["h"]),
+                low=Decimal(raw_data["l"]),
+                close=Decimal(raw_data["c"]),
+                base_volume=Decimal(raw_data["v"]),
                 number_of_trades=int(raw_data["n"]),
-                quote_volume=Decimal(str(raw_data["q"])),
-                taker_buy_base_volume=Decimal(str(raw_data["V"])),
-                taker_buy_quote_volume=Decimal(str(raw_data["Q"])),
+                quote_volume=Decimal(raw_data["q"]),
+                taker_buy_base_volume=Decimal(raw_data["V"]),
+                taker_buy_quote_volume=Decimal(raw_data["Q"]),
             )
         except (KeyError, ValueError, TypeError) as e:
             self.log_error(f"Failed to normalize candle: {e}, data: {raw_data}")

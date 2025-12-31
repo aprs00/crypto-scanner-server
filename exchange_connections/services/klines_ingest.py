@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 from decimal import Decimal
-from typing import Iterable, List, Sequence, Dict, Union, Optional
+from typing import Iterable, List, Sequence, Dict
 from django.db import transaction
 from utils.convert import ms_to_aware_datetime
 
@@ -95,46 +95,14 @@ class RawRestKline:
 
 
 @dataclass(slots=True)
-class RawWsKline:
-    k: dict
-
-    def to_model(
-        self,
-        exchange: str = "binance",
-        contract_type: str = "perpetual",
-    ) -> Kline1m:
-        kd = self.k
-
-        exchange_obj = get_or_create_exchange(exchange)
-        contract_type_obj = get_or_create_contract_type(contract_type)
-        symbol_obj = get_or_create_symbol(kd["s"], exchange_obj, contract_type_obj)
-
-        return Kline1m(
-            start_time=ms_to_aware_datetime(kd["t"]),
-            close_time=ms_to_aware_datetime(kd["T"]),
-            symbol=symbol_obj,
-            open=Decimal(kd["o"]),
-            high=Decimal(kd["h"]),
-            low=Decimal(kd["l"]),
-            close=Decimal(kd["c"]),
-            base_volume=Decimal(kd["v"]),
-            quote_volume=Decimal(kd["q"]),
-            taker_buy_base_volume=Decimal(kd["V"]),
-            taker_buy_quote_volume=Decimal(kd["Q"]),
-            number_of_trades=int(kd["n"]),
-            exchange=exchange_obj,
-        )
-
-
-@dataclass(slots=True)
-class NormalizedWsKline:
-    """Handles normalized candle format from NormalizedCandle.to_dict()."""
+class WsKline:
+    """Handles WebSocket candle data from NormalizedCandle.to_dict()."""
 
     data: dict
 
     def to_model(
         self,
-        exchange: str = "hyperliquid",
+        exchange: str = "binance",
         contract_type: str = "perpetual",
     ) -> Kline1m:
         d = self.data
@@ -173,14 +141,7 @@ def build_models_from_rest(
 def build_model_from_ws(
     kline_dict: dict, exchange: str = "binance", contract_type: str = "perpetual"
 ) -> Kline1m:
-    if exchange == "binance":
-        return RawWsKline(kline_dict).to_model(
-            exchange=exchange, contract_type=contract_type
-        )
-    else:
-        return NormalizedWsKline(kline_dict).to_model(
-            exchange=exchange, contract_type=contract_type
-        )
+    return WsKline(kline_dict).to_model(exchange=exchange, contract_type=contract_type)
 
 
 def bulk_insert_klines(objs: List[Kline1m], chunk_size: int = 10000) -> int:
