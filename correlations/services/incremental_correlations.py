@@ -49,27 +49,27 @@ class CorrelationTracker:
         if not symbol_data:
             return
 
-        length = min(len(d) for d in symbol_data.values())
+        length = len(next(iter(symbol_data.values())))
         if length == 0:
             return
 
         effective_length = min(length, self.window_size)
 
-        # Build data matrix and compute sums
-        for idx, data in symbol_data.items():
-            segment = data[-effective_length:].astype(np.float64)
-            self.sum_x[idx] = segment.sum()
-            self.sum_xx[idx] = (segment * segment).sum()
-
-        # Compute sum_xy via matrix multiplication
         arr = np.vstack(
             [
                 symbol_data[i][-effective_length:].astype(np.float64)
                 for i in range(self.n_symbols)
             ]
         )
-        self.sum_xy = arr @ arr.T
-        self.count = effective_length
+
+        self.sum_x = np.nansum(arr, axis=1)
+        self.sum_xx = np.nansum(arr * arr, axis=1)
+
+        arr_zeroed = np.nan_to_num(arr, nan=0.0)
+        self.sum_xy = arr_zeroed @ arr_zeroed.T
+
+        valid_counts = np.sum(~np.isnan(arr), axis=1)
+        self.count = int(np.max(valid_counts))
 
     def update(self, new_vals: np.ndarray, old_vals: Optional[np.ndarray] = None):
         """Update running sums with new values, removing old if window full."""
@@ -175,7 +175,12 @@ class CorrelationCalculator:
                     if sym in all_data and data_type in all_data[sym]:
                         idx = self.symbol_to_idx[sym]
                         data = np.asarray(all_data[sym][data_type], dtype=np.float64)
-                        indexed[idx] = data[-window:] if len(data) > window else data
+                        if len(data) >= window:
+                            indexed[idx] = data[-window:]
+                        else:
+                            padded = np.full(window, np.nan, dtype=np.float64)
+                            padded[-len(data) :] = data
+                            indexed[idx] = padded
 
                 if indexed:
                     tracker.initialize(indexed)
@@ -371,10 +376,12 @@ class CorrelationCalculator:
             for data_type in KLINE_FIELD_MAP:
                 tracker = self.trackers.get((hours, data_type))
                 if not tracker:
+                    print(f"NOT TRACKER FOR {hours} {data_type}")
                     continue
 
                 matrix = tracker.get_correlations()
                 key = f"correlations:{data_type}:{hours}:{self.exchange}:{self.contract_type}"
+                print("STORING KEY:", key, "MATRIX LEN:", len(matrix))
                 packed_data = msgpack.packb(matrix)
                 if packed_data is not None:
                     pipe.set(key, packed_data)
