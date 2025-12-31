@@ -187,6 +187,26 @@ class CorrelationCalculator:
         del all_data
         gc.collect()
 
+    def _drain_pending_updates(self):
+        """Drain all pending updates before setting initialized=True.
+
+        Lock and while loop prevent race condition where pubsub thread processes updates out of order.
+        """
+        while True:
+            with self.lock:
+                if not self.pending_updates:
+                    self.initialized = True
+                    break
+
+                updates_to_process = list(self.pending_updates)
+                self.pending_updates.clear()
+
+            print(
+                f"[{self.exchange}] Processing {len(updates_to_process)} pending updates..."
+            )
+            for newest, ts in updates_to_process:
+                self.update_correlations(newest, ts, save_to_db=False)
+
     def _update_trackers(self, newest: Dict, oldest_by_hours: Dict[int, Dict]):
         """Update all trackers with new/old values."""
         n = len(self.symbols)
@@ -766,7 +786,8 @@ class CorrelationCalculator:
             self._validate_newest_values(newest, timestamp)
 
         if not self.initialized:
-            self.pending_updates.append((newest, timestamp))
+            with self.lock:
+                self.pending_updates.append((newest, timestamp))
             print(
                 f"[{self.exchange}] Queued update (pending: {len(self.pending_updates)})"
             )
@@ -805,15 +826,7 @@ class CorrelationCalculator:
             f"[{self.exchange}] Initialization completed in {time.time() - start:.2f}s"
         )
 
-        self.initialized = True
-
-        if self.pending_updates:
-            print(
-                f"[{self.exchange}] Processing {len(self.pending_updates)} pending updates..."
-            )
-            for newest, ts in self.pending_updates:
-                self.update_correlations(newest, ts, save_to_db=False)
-            self.pending_updates.clear()
+        self._drain_pending_updates()
 
         print(f"[{self.exchange}] Ready for real-time updates")
 
