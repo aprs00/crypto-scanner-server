@@ -19,7 +19,6 @@ from zscore.models import ZScoreHistory
 from exchange_connections.models import Symbol, Exchange, ContractType
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
-from zscore.services.db_utils import cleanup_old_zscore_data
 
 r = get_redis_connection()
 
@@ -212,8 +211,6 @@ class ZScoreProcessor:
 
         if db_entries and settings.STORE_TO_DB:
             ZScoreHistory.objects.bulk_create(db_entries, ignore_conflicts=True)
-
-            cleanup_old_zscore_data(retention_hours=25)
 
     def add_new_symbol(self, symbol_name):
         """Add a new symbol to zscore tracking"""

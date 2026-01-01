@@ -18,7 +18,6 @@ from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
 from correlations.services.save_correlations import save_correlation_matrix_to_db
-from correlations.db_utils import cleanup_old_correlation_data
 
 
 class CorrelationTracker:
@@ -132,7 +131,6 @@ class CorrelationCalculator:
         self.trackers: Dict[tuple, CorrelationTracker] = {}
         self.initialized = False
         self.pending_updates: List[tuple] = []
-        self.cleanup_stop = threading.Event()
         self.last_update_time: float = 0
         self.update_count: int = 0
 
@@ -633,14 +631,6 @@ class CorrelationCalculator:
 
         print(f"[{self.exchange}][DEBUG] === END STATE SUMMARY ===")
 
-    def _cleanup_loop(self):
-        """Background cleanup of old correlation data."""
-        while not self.cleanup_stop.wait(timeout=900):
-            try:
-                cleanup_old_correlation_data(retention_hours=4)
-            except Exception as e:
-                print(f"Cleanup failed: {e}")
-
     def _pubsub_loop(self):
         """Listen for Redis pubsub messages."""
         channels = [
@@ -820,9 +810,6 @@ class CorrelationCalculator:
         pubsub_thread = threading.Thread(target=self._pubsub_loop, daemon=True)
         pubsub_thread.start()
 
-        cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
-        cleanup_thread.start()
-
         time.sleep(2)
 
         print(f"[{self.exchange}] Initializing correlation trackers...")
@@ -840,4 +827,3 @@ class CorrelationCalculator:
             pubsub_thread.join()
         except KeyboardInterrupt:
             print(f"[{self.exchange}] Shutting down...")
-            self.cleanup_stop.set()

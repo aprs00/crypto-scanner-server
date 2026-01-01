@@ -150,5 +150,17 @@ services:
       timeout: 10s
       retries: 3
 
+  db-maintenance:
+    <<: *app-common
+    container_name: cs-db-maintenance
+    command: python manage.py db_maintenance
+    depends_on:
+      - db
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f db_maintenance || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 volumes:
   pgdata:
