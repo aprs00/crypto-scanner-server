@@ -30,6 +30,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         self.ws_connected = False
         self.generate_synthetic_candles = True
         self.pending_candles: dict[str, dict] = {}
+        self.pending_lock = threading.Lock()
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         try:
@@ -90,15 +91,21 @@ class HyperliquidKlineCollector(BaseKlineCollector):
 
         candle_minute = int(candle_data.get("t", 0))
 
-        if self.pending_candles:
-            prev_minute = int(next(iter(self.pending_candles.values()))["t"])
-            if candle_minute > prev_minute:
-                self._save_candles(prev_minute)
+        with self.pending_lock:
+            if self.pending_candles:
+                prev_minute = int(next(iter(self.pending_candles.values()))["t"])
+                if candle_minute > prev_minute:
+                    self._save_candles_locked(prev_minute)
 
-        self.pending_candles[symbol] = candle_data
+            self.pending_candles[symbol] = candle_data
 
     def _save_candles(self, minute_ts: int):
-        """Send candles to base class and force immediate DB save."""
+        """Send candles to base class and force immediate DB save (acquires lock)."""
+        with self.pending_lock:
+            self._save_candles_locked(minute_ts)
+
+    def _save_candles_locked(self, minute_ts: int):
+        """Send candles to base class. Must be called while holding pending_lock."""
         if not self.pending_candles:
             return
 
@@ -118,7 +125,8 @@ class HyperliquidKlineCollector(BaseKlineCollector):
 
     def _on_close(self, ws, code, msg):
         self.ws_connected = False
-        self.pending_candles.clear()
+        with self.pending_lock:
+            self.pending_candles.clear()
         print(f"[hyperliquid] WebSocket closed: code={code}, msg={msg}")
 
     def _on_open(self, ws):
@@ -191,11 +199,12 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         """Flush pending candles if their minute has passed."""
         while self.ws_connected:
             time.sleep(5)
-            if self.pending_candles:
-                current_min = int(time.time() * 1000) // 60000 * 60000
-                pending_min = int(next(iter(self.pending_candles.values()))["t"])
-                if pending_min < current_min:
-                    self._save_candles(pending_min)
+            with self.pending_lock:
+                if self.pending_candles:
+                    current_min = int(time.time() * 1000) // 60000 * 60000
+                    pending_min = int(next(iter(self.pending_candles.values()))["t"])
+                    if pending_min < current_min:
+                        self._save_candles_locked(pending_min)
 
     def connect_websocket(self) -> Optional[threading.Thread]:
         if not self.symbols:
