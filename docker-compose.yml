@@ -67,11 +67,11 @@ services:
   binance-klines:
     <<: *app-common
     container_name: cs-binance-klines
-    command: python manage.py binance_klines
+    command: python manage.py klines --exchange binance
     environment:
       <<: *env-common
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f klines || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f 'klines.*binance' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -109,11 +109,11 @@ services:
   hyperliquid-klines:
     <<: *app-common
     container_name: cs-hyperliquid-klines
-    command: python manage.py hyperliquid_klines
+    command: python manage.py klines --exchange hyperliquid
     environment:
       <<: *env-common
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f hyperliquid_klines || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f 'klines.*hyperliquid' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

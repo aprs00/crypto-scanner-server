@@ -3,27 +3,17 @@
 A Django-based server for scanning and analyzing cryptocurrency market data.
 
 
-# Kline Population Command
+# Populate Klines
 
-This module provides a Django management command to populate 1-minute kline data from the Binance API into your database.
-
-## Usage
-
-### Arguments
-- `--ticker`: Specific ticker to populate (defaults to all symbols)
-- `--start-date`: Start date in format `DD MMM YYYY` (defaults to 1 month ago)
-- `--end-date`: End date in format `DD MMM YYYY` (defaults to now)
-- `--batch-size`: Batch size for bulk insert (default: 40000)
-
-## Example
-Populate klines for all symbols from 1 month ago to now:
+Populate historical 1-minute kline data from exchange APIs.
 
 ```sh
-docker exec -it cs-exchange-connections python manage.py populate_klines
+# Binance
+docker exec -it cs-binance-klines python manage.py populate_klines_binance --ticker BTCUSDT --start-date "01 Dec 2025"
+
+# Hyperliquid
+# Onla last 5000 candles available
+docker exec -it cs-hyperliquid-klines python manage.py populate_klines_hyperliquid --ticker BTC --start-date "01 Dec 2025"
 ```
 
-Populate klines for a specific ticker:
-
-```sh
-docker exec -it cs-binance-klines python manage.py populate_klines --start-date "10 Aug 2025"
-```
+Options: `--ticker`, `--start-date`, `--end-date`, `--batch-size`

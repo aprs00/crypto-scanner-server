@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 from decimal import Decimal
-from typing import Iterable, List, Sequence, Dict
+from typing import Iterable, List, Optional, Sequence, Dict
 from django.db import transaction
 from utils.convert import ms_to_aware_datetime
 
@@ -133,9 +133,26 @@ class WsKline:
 
 
 def build_models_from_rest(
-    symbol: str, raw_klines: Iterable[Sequence]
+    raw_klines: Iterable,
+    exchange: str = "binance",
+    contract_type: str = "perpetual",
+    symbol: Optional[str] = None,
 ) -> List[Kline1m]:
-    return [RawRestKline(k).to_model(symbol) for k in raw_klines]
+    """Build Kline1m models from REST API response.
+
+    Args:
+        raw_klines: Raw kline data from API
+        exchange: Exchange name ("binance" or "hyperliquid")
+        contract_type: Contract type (default "perpetual")
+        symbol: Symbol name (required for Binance as it's not in the array data)
+    """
+    if exchange == "binance":
+        if symbol is None:
+            raise ValueError("symbol is required for Binance klines")
+        return [RawRestKline(k).to_model(symbol, exchange, contract_type) for k in raw_klines]
+    else:
+        # Dict-based format (Hyperliquid and similar) - symbol is embedded in data
+        return [WsKline(k).to_model(exchange=exchange, contract_type=contract_type) for k in raw_klines]
 
 
 def build_model_from_ws(
