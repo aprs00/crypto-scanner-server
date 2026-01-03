@@ -52,6 +52,7 @@ class BaseKlineCollector(ABC):
 
         self.last_prices: Dict[str, Decimal] = {}
         self.generate_synthetic_candles = False
+        self.last_processed_timestamp: int = 0
 
         self.last_symbol_refresh = 0
         self.symbol_refresh_interval = 1800
@@ -237,6 +238,9 @@ class BaseKlineCollector(ABC):
             batches_to_process = []
 
             with self.batch_lock:
+                if timestamp_ms <= self.last_processed_timestamp:
+                    return
+
                 existing_timestamps = set(self.kline_batch.keys())
 
                 if existing_timestamps:
@@ -299,6 +303,10 @@ class BaseKlineCollector(ABC):
 
         This method does the heavy work and should be called OUTSIDE any locks.
         """
+        with self.batch_lock:
+            if timestamp_ms > self.last_processed_timestamp:
+                self.last_processed_timestamp = timestamp_ms
+
         if self.generate_synthetic_candles:
             missing_symbols = self.expected_symbols - set(batch.keys())
             synthetic_count = 0

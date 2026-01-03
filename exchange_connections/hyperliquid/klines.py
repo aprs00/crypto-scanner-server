@@ -91,11 +91,16 @@ class HyperliquidKlineCollector(BaseKlineCollector):
 
         candle_minute = int(candle_data.get("t", 0))
 
+        if candle_minute <= self.last_processed_timestamp:
+            return
+
         with self.pending_lock:
             if self.pending_candles:
                 prev_minute = int(next(iter(self.pending_candles.values()))["t"])
                 if candle_minute > prev_minute:
                     self._save_candles_locked(prev_minute)
+                elif candle_minute < prev_minute:
+                    return
 
             self.pending_candles[symbol] = candle_data
 
