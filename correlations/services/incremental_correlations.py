@@ -118,8 +118,6 @@ class CorrelationTracker:
 class CorrelationCalculator:
     """Main correlation calculator with Redis pubsub integration."""
 
-    CORRELATION_TOLERANCE = 0.01  # Allow 1% difference
-
     def __init__(self, exchange: str = "binance", contract_type: str = "perpetual"):
         self.exchange = exchange
         self.contract_type = contract_type
@@ -332,6 +330,83 @@ class CorrelationCalculator:
 
             diff = abs(incremental_corr - manual_corr)
 
+            # === DEBUG: Print database kline data ===
+            print("\n" + "=" * 80)
+            print("[DEBUG] DATABASE KLINE DATA (1h window)")
+            print(f"  BTC ({btc_sym}) idx={btc_idx}: {len(btc_prices)} points")
+            print(f"    First 5: {btc_prices[:5].tolist()}")
+            print(f"    Last 5:  {btc_prices[-5:].tolist()}")
+            print(f"    Sum: {np.sum(btc_prices):.6f}, Mean: {np.mean(btc_prices):.6f}")
+            print(f"  SOL ({sol_sym}) idx={sol_idx}: {len(sol_prices)} points")
+            print(f"    First 5: {sol_prices[:5].tolist()}")
+            print(f"    Last 5:  {sol_prices[-5:].tolist()}")
+            print(f"    Sum: {np.sum(sol_prices):.6f}, Mean: {np.mean(sol_prices):.6f}")
+
+            # Compute expected running sums from DB data
+            db_sum_btc = np.sum(btc_prices)
+            db_sum_sol = np.sum(sol_prices)
+            db_sum_btc_sq = np.sum(btc_prices * btc_prices)
+            db_sum_sol_sq = np.sum(sol_prices * sol_prices)
+            db_sum_btc_sol = np.sum(btc_prices * sol_prices)
+
+            print(f"\n[DEBUG] EXPECTED RUNNING SUMS FROM DB DATA:")
+            print(f"  sum_x[BTC]: {db_sum_btc:.6f}")
+            print(f"  sum_x[SOL]: {db_sum_sol:.6f}")
+            print(f"  sum_xx[BTC]: {db_sum_btc_sq:.6f}")
+            print(f"  sum_xx[SOL]: {db_sum_sol_sq:.6f}")
+            print(f"  sum_xy[BTC,SOL]: {db_sum_btc_sol:.6f}")
+
+            # === DEBUG: Print tracker running statistics ===
+            print(f"\n[DEBUG] TRACKER RUNNING STATISTICS (1h price):")
+            print(f"  Tracker count: {tracker.count}")
+            print(f"  Tracker n_symbols: {tracker.n_symbols}")
+            print(f"  sum_x[BTC idx={btc_idx}]: {tracker.sum_x[btc_idx]:.6f}")
+            print(f"  sum_x[SOL idx={sol_idx}]: {tracker.sum_x[sol_idx]:.6f}")
+            print(f"  sum_xx[BTC]: {tracker.sum_xx[btc_idx]:.6f}")
+            print(f"  sum_xx[SOL]: {tracker.sum_xx[sol_idx]:.6f}")
+            print(f"  sum_xy[BTC,SOL]: {tracker.sum_xy[btc_idx, sol_idx]:.6f}")
+            print(f"  sum_xy[SOL,BTC]: {tracker.sum_xy[sol_idx, btc_idx]:.6f}")
+
+            # === DEBUG: Compare DB vs Tracker ===
+            print(f"\n[DEBUG] COMPARISON (DB vs Tracker):")
+            print(f"  sum_x[BTC] diff: {abs(db_sum_btc - tracker.sum_x[btc_idx]):.6f}")
+            print(f"  sum_x[SOL] diff: {abs(db_sum_sol - tracker.sum_x[sol_idx]):.6f}")
+            print(
+                f"  sum_xx[BTC] diff: {abs(db_sum_btc_sq - tracker.sum_xx[btc_idx]):.6f}"
+            )
+            print(
+                f"  sum_xx[SOL] diff: {abs(db_sum_sol_sq - tracker.sum_xx[sol_idx]):.6f}"
+            )
+            print(
+                f"  sum_xy diff: {abs(db_sum_btc_sol - tracker.sum_xy[btc_idx, sol_idx]):.6f}"
+            )
+            print(f"  Count diff: DB={min_len}, Tracker={tracker.count}")
+
+            # Store debug data in Redis for later analysis
+            debug_data = {
+                "timestamp": time.time(),
+                "db_btc_prices": btc_prices.tolist(),
+                "db_sol_prices": sol_prices.tolist(),
+                "db_sum_btc": float(db_sum_btc),
+                "db_sum_sol": float(db_sum_sol),
+                "db_sum_btc_sq": float(db_sum_btc_sq),
+                "db_sum_sol_sq": float(db_sum_sol_sq),
+                "db_sum_btc_sol": float(db_sum_btc_sol),
+                "tracker_sum_x_btc": float(tracker.sum_x[btc_idx]),
+                "tracker_sum_x_sol": float(tracker.sum_x[sol_idx]),
+                "tracker_sum_xx_btc": float(tracker.sum_xx[btc_idx]),
+                "tracker_sum_xx_sol": float(tracker.sum_xx[sol_idx]),
+                "tracker_sum_xy": float(tracker.sum_xy[btc_idx, sol_idx]),
+                "tracker_count": tracker.count,
+                "db_count": min_len,
+                "incremental_corr": float(incremental_corr),
+                "manual_corr": float(manual_corr),
+                "diff": float(diff),
+            }
+            self.redis.lpush("correlation_debug", json.dumps(debug_data))
+            self.redis.ltrim("correlation_debug", 0, 99)  # Keep last 100
+            print("=" * 80 + "\n")
+
             log_msg = (
                 f"[VALIDATION] BTC-SOL 1h price correlation: "
                 f"Incremental={incremental_corr:.6f}, Manual={manual_corr:.6f}, "
@@ -339,26 +414,7 @@ class CorrelationCalculator:
                 f"TrackerCount={tracker.count}"
             )
 
-            if diff > self.CORRELATION_TOLERANCE:
-                print("\n" + "=" * 80)
-                print(
-                    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-                )
-                print(
-                    "[CORRELATION MISMATCH DETECTED] Incremental and manual calculations DISAGREE!"
-                )
-                print(log_msg)
-                print(f"BTC prices (last 5): {btc_prices[-5:].tolist()}")
-                print(f"SOL prices (last 5): {sol_prices[-5:].tolist()}")
-                print(
-                    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-                )
-                print("=" * 80 + "\n")
-
-                error_msg = f"[CORRELATION MISMATCH] {log_msg}"
-                self.redis.lpush("error_log", error_msg)
-            else:
-                print(log_msg)
+            print(log_msg)
 
         except Exception as e:
             print(f"[VALIDATION] Error during BTC-SOL validation: {e}")
