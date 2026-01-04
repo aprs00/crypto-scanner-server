@@ -2,6 +2,7 @@ import json
 import time
 import threading
 import gc
+from collections import deque
 import numpy as np
 import redis
 import msgpack
@@ -134,11 +135,32 @@ class CorrelationCalculator:
 
         self._validation_symbols = self._get_validation_symbols()
 
+        # Buffer to store last 60 pubsub price points for validation
+        self._pubsub_prices: Dict[str, deque] = {}
+        self._pubsub_timestamps: deque = deque(maxlen=60)
+
     def _get_validation_symbols(self) -> List[str]:
         """Get validation symbol pair for the exchange."""
         btc = get_btc_symbol(self.exchange)
         sol = "SOLUSDT" if self.exchange == "binance" else "SOL"
         return [btc, sol]
+
+    def _store_pubsub_prices(self, newest: Dict, timestamp: int):
+        """Store latest pubsub prices for validation symbols."""
+        for sym in self._validation_symbols:
+            if sym not in self._pubsub_prices:
+                self._pubsub_prices[sym] = deque(maxlen=60)
+
+            if sym in newest and "price" in newest[sym]:
+                price = newest[sym]["price"]
+                self._pubsub_prices[sym].append(
+                    {
+                        "price": price,
+                        "timestamp": timestamp,
+                    }
+                )
+
+        self._pubsub_timestamps.append(timestamp)
 
     def _rebuild_indices(self):
         """Rebuild symbol index mapping."""
@@ -206,6 +228,7 @@ class CorrelationCalculator:
                 f"[{self.exchange}] Processing {len(updates_to_process)} pending updates..."
             )
             for newest, ts in updates_to_process:
+                self._store_pubsub_prices(newest, ts)
                 self.update_correlations(newest, ts, save_to_db=False)
 
     def _update_trackers(self, newest: Dict, oldest_by_hours: Dict[int, Dict]):
@@ -330,91 +353,23 @@ class CorrelationCalculator:
 
             diff = abs(incremental_corr - manual_corr)
 
-            # === DEBUG: Print database kline data ===
+            pubsub_btc_prices = [
+                p["price"] for p in self._pubsub_prices.get(btc_sym, [])
+            ]
+            pubsub_sol_prices = [
+                p["price"] for p in self._pubsub_prices.get(sol_sym, [])
+            ]
+
+            # Print comparison
             print("\n" + "=" * 80)
-            print("[DEBUG] DATABASE KLINE DATA (1h window)")
-            print(f"  BTC ({btc_sym}) idx={btc_idx}: {len(btc_prices)} points")
-            print(f"    First 5: {btc_prices[:5].tolist()}")
-            print(f"    Last 5:  {btc_prices[-5:].tolist()}")
-            print(f"    Sum: {np.sum(btc_prices):.6f}, Mean: {np.mean(btc_prices):.6f}")
-            print(f"  SOL ({sol_sym}) idx={sol_idx}: {len(sol_prices)} points")
-            print(f"    First 5: {sol_prices[:5].tolist()}")
-            print(f"    Last 5:  {sol_prices[-5:].tolist()}")
-            print(f"    Sum: {np.sum(sol_prices):.6f}, Mean: {np.mean(sol_prices):.6f}")
-
-            # Compute expected running sums from DB data
-            db_sum_btc = np.sum(btc_prices)
-            db_sum_sol = np.sum(sol_prices)
-            db_sum_btc_sq = np.sum(btc_prices * btc_prices)
-            db_sum_sol_sq = np.sum(sol_prices * sol_prices)
-            db_sum_btc_sol = np.sum(btc_prices * sol_prices)
-
-            print(f"\n[DEBUG] EXPECTED RUNNING SUMS FROM DB DATA:")
-            print(f"  sum_x[BTC]: {db_sum_btc:.6f}")
-            print(f"  sum_x[SOL]: {db_sum_sol:.6f}")
-            print(f"  sum_xx[BTC]: {db_sum_btc_sq:.6f}")
-            print(f"  sum_xx[SOL]: {db_sum_sol_sq:.6f}")
-            print(f"  sum_xy[BTC,SOL]: {db_sum_btc_sol:.6f}")
-
-            # === DEBUG: Print tracker running statistics ===
-            print(f"\n[DEBUG] TRACKER RUNNING STATISTICS (1h price):")
-            print(f"  Tracker count: {tracker.count}")
-            print(f"  Tracker n_symbols: {tracker.n_symbols}")
-            print(f"  sum_x[BTC idx={btc_idx}]: {tracker.sum_x[btc_idx]:.6f}")
-            print(f"  sum_x[SOL idx={sol_idx}]: {tracker.sum_x[sol_idx]:.6f}")
-            print(f"  sum_xx[BTC]: {tracker.sum_xx[btc_idx]:.6f}")
-            print(f"  sum_xx[SOL]: {tracker.sum_xx[sol_idx]:.6f}")
-            print(f"  sum_xy[BTC,SOL]: {tracker.sum_xy[btc_idx, sol_idx]:.6f}")
-            print(f"  sum_xy[SOL,BTC]: {tracker.sum_xy[sol_idx, btc_idx]:.6f}")
-
-            # === DEBUG: Compare DB vs Tracker ===
-            print(f"\n[DEBUG] COMPARISON (DB vs Tracker):")
-            print(f"  sum_x[BTC] diff: {abs(db_sum_btc - tracker.sum_x[btc_idx]):.6f}")
-            print(f"  sum_x[SOL] diff: {abs(db_sum_sol - tracker.sum_x[sol_idx]):.6f}")
             print(
-                f"  sum_xx[BTC] diff: {abs(db_sum_btc_sq - tracker.sum_xx[btc_idx]):.6f}"
+                f"[VALIDATION] BTC-SOL 1h price - Incremental={incremental_corr:.6f}, Numpy={manual_corr:.6f}, Diff={diff:.6f}"
             )
-            print(
-                f"  sum_xx[SOL] diff: {abs(db_sum_sol_sq - tracker.sum_xx[sol_idx]):.6f}"
-            )
-            print(
-                f"  sum_xy diff: {abs(db_sum_btc_sol - tracker.sum_xy[btc_idx, sol_idx]):.6f}"
-            )
-            print(f"  Count diff: DB={min_len}, Tracker={tracker.count}")
-
-            # Store debug data in Redis for later analysis
-            debug_data = {
-                "timestamp": time.time(),
-                "db_btc_prices": btc_prices.tolist(),
-                "db_sol_prices": sol_prices.tolist(),
-                "db_sum_btc": float(db_sum_btc),
-                "db_sum_sol": float(db_sum_sol),
-                "db_sum_btc_sq": float(db_sum_btc_sq),
-                "db_sum_sol_sq": float(db_sum_sol_sq),
-                "db_sum_btc_sol": float(db_sum_btc_sol),
-                "tracker_sum_x_btc": float(tracker.sum_x[btc_idx]),
-                "tracker_sum_x_sol": float(tracker.sum_x[sol_idx]),
-                "tracker_sum_xx_btc": float(tracker.sum_xx[btc_idx]),
-                "tracker_sum_xx_sol": float(tracker.sum_xx[sol_idx]),
-                "tracker_sum_xy": float(tracker.sum_xy[btc_idx, sol_idx]),
-                "tracker_count": tracker.count,
-                "db_count": min_len,
-                "incremental_corr": float(incremental_corr),
-                "manual_corr": float(manual_corr),
-                "diff": float(diff),
-            }
-            self.redis.lpush("correlation_debug", json.dumps(debug_data))
-            self.redis.ltrim("correlation_debug", 0, 99)  # Keep last 100
-            print("=" * 80 + "\n")
-
-            log_msg = (
-                f"[VALIDATION] BTC-SOL 1h price correlation: "
-                f"Incremental={incremental_corr:.6f}, Manual={manual_corr:.6f}, "
-                f"Diff={diff:.6f}, DataPoints={min_len}, "
-                f"TrackerCount={tracker.count}"
-            )
-
-            print(log_msg)
+            print(f"  PS BTC ({len(pubsub_btc_prices)}): {pubsub_btc_prices}")
+            print(f"  DB BTC ({len(btc_prices)}): {btc_prices.tolist()}")
+            print(f"  PS SOL ({len(pubsub_sol_prices)}): {pubsub_sol_prices}")
+            print(f"  DB SOL ({len(sol_prices)}): {sol_prices.tolist()}")
+            print("=" * 80)
 
         except Exception as e:
             print(f"[VALIDATION] Error during BTC-SOL validation: {e}")
@@ -817,6 +772,9 @@ class CorrelationCalculator:
                 f"[{self.exchange}][DEBUG] newest_values is not a dict: {type(newest)}"
             )
             return
+
+        # Store pubsub prices for validation comparison
+        self._store_pubsub_prices(newest, timestamp)
 
         current_time = time.time()
         time_since_last = (
