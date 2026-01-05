@@ -9,7 +9,6 @@ from django.conf import settings
 from exchange_connections.selectors import (
     get_exchange_symbols,
     get_symbol_kline_data,
-    get_symbol_kline_data_multi_hours,
     get_historical_kline_data,
 )
 from zscore.selectors.zscore import get_zscore_history_data
@@ -125,8 +124,8 @@ class ZScoreProcessor:
 
     def update_zscores(
         self,
-        newest_values: Optional[Dict[str, Dict[str, float]]] = None,
-        kline_timestamp_ms: Optional[int] = None,
+        newest_values: Dict[str, Dict[str, float]],
+        oldest_values: Dict[int, Dict[str, Dict[str, float]]],
     ):
         """Update incremental Z-scores with new data"""
         if newest_values is None:
@@ -136,16 +135,10 @@ class ZScoreProcessor:
                 contract_type=self.contract_type,
             )
 
-        oldest_by_hours = get_symbol_kline_data_multi_hours(
-            symbols=self.symbols,
-            exchange=self.exchange,
-            contract_type=self.contract_type,
-            hours_list=self.hours_options,
-            kline_timestamp_ms=kline_timestamp_ms,
-        )
+        oldest_by_hours = oldest_values or {}
 
         for hours in self.hours_options:
-            oldest_values = oldest_by_hours.get(hours, {})
+            oldest_for_hours = oldest_by_hours.get(hours, {})
 
             for symbol in self.symbols:
                 for data_type in KLINE_FIELD_MAP.keys():
@@ -154,7 +147,7 @@ class ZScoreProcessor:
                     if not symbol_new_values or data_type not in symbol_new_values:
                         continue
                     new_val = symbol_new_values[data_type]
-                    old_val = oldest_values.get(symbol, {}).get(data_type)
+                    old_val = oldest_for_hours.get(symbol, {}).get(data_type)
 
                     if old_val is not None:
                         zscore_obj.update_data_point(old_val, new_val)
@@ -341,10 +334,14 @@ class ZScoreProcessor:
                                 )
                                 continue
 
-                            kline_timestamp_ms = payload.get("timestamp")
+                            oldest_values = {
+                                int(k): v
+                                for k, v in payload.get("oldest_values", {}).items()
+                            }
+
                             self.update_zscores(
                                 newest_values=newest_values,
-                                kline_timestamp_ms=kline_timestamp_ms,
+                                oldest_values=oldest_values,
                             )
                             results = self.create_z_score_results()
 

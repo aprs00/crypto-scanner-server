@@ -13,7 +13,6 @@ from exchange_connections.selectors import (
     get_exchange_symbols,
     get_historical_kline_data,
     get_symbol_kline_data,
-    get_symbol_kline_data_multi_hours,
 )
 from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
@@ -227,9 +226,9 @@ class CorrelationCalculator:
             print(
                 f"[{self.exchange}] Processing {len(updates_to_process)} pending updates..."
             )
-            for newest, ts in updates_to_process:
+            for newest, ts, oldest in updates_to_process:
                 self._store_pubsub_prices(newest, ts)
-                self.update_correlations(newest, ts, save_to_db=False)
+                self.update_correlations(newest, oldest, save_to_db=False)
 
     def _update_trackers(self, newest: Dict, oldest_by_hours: Dict[int, Dict]):
         """Update all trackers with new/old values."""
@@ -418,7 +417,7 @@ class CorrelationCalculator:
     def update_correlations(
         self,
         newest: Optional[Dict] = None,
-        kline_timestamp_ms: Optional[int] = None,
+        oldest_values: Optional[Dict[int, Dict]] = None,
         save_to_db: bool = True,
     ):
         """Main update method - fetch data, update trackers, cache results."""
@@ -460,13 +459,8 @@ class CorrelationCalculator:
                     f"[{self.exchange}][DEBUG] Before update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}"
                 )
 
-            oldest_by_hours = get_symbol_kline_data_multi_hours(
-                symbols=self.symbols,
-                exchange=self.exchange,
-                contract_type=self.contract_type,
-                hours_list=self.hours_options,
-                kline_timestamp_ms=kline_timestamp_ms,
-            )
+            # Use passed oldest_values from Redis message or empty dict as fallback
+            oldest_by_hours = oldest_values or {}
 
             self._update_trackers(newest, oldest_by_hours)
 
@@ -609,39 +603,6 @@ class CorrelationCalculator:
             self._cache_correlations(save_to_db=False)
             print(f"[{self.exchange}][DEBUG] remove_symbol completed for {symbol}")
 
-    def _log_state_summary(self):
-        """Log periodic state summary for debugging."""
-        print(
-            f"[{self.exchange}][DEBUG] === STATE SUMMARY (update #{self.update_count}) ==="
-        )
-        print(f"[{self.exchange}][DEBUG] Symbols tracked: {len(self.symbols)}")
-        print(
-            f"[{self.exchange}][DEBUG] Symbol-to-index mapping size: {len(self.symbol_to_idx)}"
-        )
-        print(f"[{self.exchange}][DEBUG] Trackers: {len(self.trackers)}")
-
-        for hours in self.hours_options:
-            tracker = self.trackers.get((hours, "close"))
-            if tracker:
-                print(
-                    f"[{self.exchange}][DEBUG] Tracker({hours}h,close): n_symbols={tracker.n_symbols}, count={tracker.count}, sum_x_shape={tracker.sum_x.shape}, sum_xy_shape={tracker.sum_xy.shape}"
-                )
-
-                if tracker.n_symbols != len(self.symbols):
-                    print(
-                        f"[{self.exchange}][DEBUG] CONSISTENCY ERROR: tracker n_symbols ({tracker.n_symbols}) != len(symbols) ({len(self.symbols)})"
-                    )
-                if tracker.sum_x.shape[0] != tracker.n_symbols:
-                    print(
-                        f"[{self.exchange}][DEBUG] CONSISTENCY ERROR: sum_x shape ({tracker.sum_x.shape[0]}) != n_symbols ({tracker.n_symbols})"
-                    )
-                if tracker.sum_xy.shape[0] != tracker.n_symbols:
-                    print(
-                        f"[{self.exchange}][DEBUG] CONSISTENCY ERROR: sum_xy shape ({tracker.sum_xy.shape[0]}) != n_symbols ({tracker.n_symbols})"
-                    )
-
-        print(f"[{self.exchange}][DEBUG] === END STATE SUMMARY ===")
-
     def _pubsub_loop(self):
         """Listen for Redis pubsub messages."""
         channels = [
@@ -767,13 +728,14 @@ class CorrelationCalculator:
         newest = payload.get("newest_values")
         timestamp = payload.get("timestamp")
 
+        oldest_values = {int(k): v for k, v in payload.get("oldest_values", {}).items()}
+
         if not isinstance(newest, dict):
             print(
                 f"[{self.exchange}][DEBUG] newest_values is not a dict: {type(newest)}"
             )
             return
 
-        # Store pubsub prices for validation comparison
         self._store_pubsub_prices(newest, timestamp)
 
         current_time = time.time()
@@ -791,13 +753,12 @@ class CorrelationCalculator:
                 f"[{self.exchange}][DEBUG] WARNING: Gap of {time_since_last:.1f}s since last update (expected ~60s)"
             )
 
-        # Validate payload
         if self.initialized:
             self._validate_newest_values(newest, timestamp)
 
         if not self.initialized:
             with self.lock:
-                self.pending_updates.append((newest, timestamp))
+                self.pending_updates.append((newest, timestamp, oldest_values))
             print(
                 f"[{self.exchange}] Queued update (pending: {len(self.pending_updates)})"
             )
@@ -805,12 +766,8 @@ class CorrelationCalculator:
 
         self.last_update_time = current_time
         start = time.time()
-        self.update_correlations(newest, timestamp)
+        self.update_correlations(newest, oldest_values)
         print(f"[{self.exchange}] Update completed in {time.time() - start:.2f}s")
-
-        # Periodic state dump every 10 updates
-        if self.update_count % 10 == 0:
-            self._log_state_summary()
 
     def run(self):
         """Main entry point."""

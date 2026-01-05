@@ -38,3 +38,7 @@ tf_options = {
         "6M": 180 * 24,
     },
 }
+
+TIMEFRAME_HOURS = sorted(
+    set(tf_options["zscore"].values()) | set(tf_options["correlation"].values())
+)

@@ -13,7 +13,8 @@ from exchange_connections.services.klines_ingest import (
     bulk_insert_klines,
     build_model_from_ws,
 )
-from core.constants import RedisPubMessages
+from exchange_connections.selectors import get_symbol_kline_data_multi_hours
+from core.constants import RedisPubMessages, TIMEFRAME_HOURS
 from core.redis_config import get_redis_connection
 
 
@@ -352,6 +353,14 @@ class BaseKlineCollector(ABC):
                 print(f"[{self.exchange}] Inserted {inserted} klines to database")
 
             if newest_values:
+                oldest_values = get_symbol_kline_data_multi_hours(
+                    symbols=list(batch.keys()),
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
+                    hours_list=TIMEFRAME_HOURS,
+                    kline_timestamp_ms=timestamp_ms,
+                )
+
                 self.redis.publish(
                     RedisPubMessages.KLINE_SAVED_TO_DB.value,
                     json.dumps(
@@ -359,6 +368,7 @@ class BaseKlineCollector(ABC):
                             "exchange": self.exchange,
                             "contract_type": self.contract_type,
                             "newest_values": newest_values,
+                            "oldest_values": oldest_values,
                             "timestamp": timestamp_ms,
                         }
                     ),
