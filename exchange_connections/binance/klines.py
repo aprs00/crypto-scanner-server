@@ -14,8 +14,8 @@ from exchange_connections.constants import BinanceContractStatus
 BINANCE_FUTURES_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/stream"
 
-WS_PING_INTERVAL = 60
-WS_PING_TIMEOUT = 30
+WS_PING_INTERVAL = 0
+WS_PING_TIMEOUT = None
 MAX_STREAMS_PER_CONNECTION = 1024
 
 

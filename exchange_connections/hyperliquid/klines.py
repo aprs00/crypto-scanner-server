@@ -11,8 +11,8 @@ from exchange_connections.candle_types import NormalizedCandle
 
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
-WS_PING_INTERVAL = 30
-WS_PING_TIMEOUT = 10
+WS_PING_INTERVAL = 0
+WS_PING_TIMEOUT = None
 
 
 class HyperliquidKlineCollector(BaseKlineCollector):
@@ -138,6 +138,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         self.ws_connected = True
         print("[hyperliquid] WebSocket connected")
         threading.Thread(target=self._setup, daemon=True).start()
+        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
 
     def _setup(self):
         """Subscribe to symbols and start background checker."""
@@ -166,6 +167,16 @@ class HyperliquidKlineCollector(BaseKlineCollector):
 
         self._fetch_initial_prices()
         self._run_stale_checker()
+
+    def _heartbeat_loop(self):
+        """Send JSON heartbeat every 30s to prevent 60s server timeout."""
+        while self.ws_connected:
+            time.sleep(30)
+            if self.ws_connected and self.ws:
+                try:
+                    self.ws.send(json.dumps({"method": "ping"}))
+                except Exception as e:
+                    self.log_error(f"Heartbeat failed: {e}")
 
     def _fetch_initial_prices(self):
         """Bootstrap last_prices for synthetic candle generation."""
