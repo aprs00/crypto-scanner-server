@@ -1,5 +1,6 @@
 import time
 from django.core.management.base import BaseCommand
+from django.db import connection
 from correlations.db_utils import cleanup_old_correlation_data
 from zscore.services.db_utils import cleanup_old_zscore_data
 
@@ -20,9 +21,12 @@ class Command(BaseCommand):
 
         while True:
             try:
-                cleanup_old_correlation_data(retention_hours=CORRELATION_RETENTION_HOURS)
+                cleanup_old_correlation_data(
+                    retention_hours=CORRELATION_RETENTION_HOURS
+                )
                 cleanup_old_zscore_data(retention_hours=ZSCORE_RETENTION_HOURS)
             except Exception as e:
                 self.stderr.write(self.style.ERROR(f"Cleanup failed: {e}"))
+                connection.close()
 
             time.sleep(INTERVAL_SECONDS)
