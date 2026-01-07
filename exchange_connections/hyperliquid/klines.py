@@ -31,6 +31,9 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         self.generate_synthetic_candles = True
         self.pending_candles: dict[str, dict] = {}
         self.pending_lock = threading.Lock()
+        self.connection_start_time = 0
+        self.last_heartbeat_time = 0
+        self.heartbeat_count = 0
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         try:
@@ -78,7 +81,13 @@ class HyperliquidKlineCollector(BaseKlineCollector):
     def _on_message(self, ws, message):
         try:
             data = json.loads(message)
-            if data.get("channel") == "candle" and data.get("data"):
+            if data.get("channel") == "pong":
+                if self.heartbeat_count % 10 == 0:
+                    elapsed = int(time.time() - self.connection_start_time)
+                    print(
+                        f"[hyperliquid] Pong received (uptime: {elapsed}s, heartbeats: {self.heartbeat_count})"
+                    )
+            elif data.get("channel") == "candle" and data.get("data"):
                 self._handle_candle(data["data"])
         except Exception as e:
             self.log_error(f"Message error: {e}")
@@ -130,12 +139,21 @@ class HyperliquidKlineCollector(BaseKlineCollector):
 
     def _on_close(self, ws, code, msg):
         self.ws_connected = False
+        duration = (
+            int(time.time() - self.connection_start_time)
+            if self.connection_start_time
+            else 0
+        )
         with self.pending_lock:
             self.pending_candles.clear()
-        print(f"[hyperliquid] WebSocket closed: code={code}, msg={msg}")
+        print(
+            f"[hyperliquid] WebSocket closed: code={code}, msg={msg}, duration={duration}s, heartbeats_sent={self.heartbeat_count}"
+        )
 
     def _on_open(self, ws):
         self.ws_connected = True
+        self.connection_start_time = time.time()
+        self.heartbeat_count = 0
         print("[hyperliquid] WebSocket connected")
         threading.Thread(target=self._setup, daemon=True).start()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
@@ -166,15 +184,23 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         print("[hyperliquid] Subscribed")
 
         self._fetch_initial_prices()
+        self._backfill_gaps()
         self._run_stale_checker()
 
     def _heartbeat_loop(self):
-        """Send JSON heartbeat every 30s to prevent 60s server timeout."""
+        """Send JSON heartbeat every 50s to prevent 60s server timeout (matches official SDK)."""
         while self.ws_connected:
-            time.sleep(30)
+            time.sleep(50)
             if self.ws_connected and self.ws:
                 try:
                     self.ws.send(json.dumps({"method": "ping"}))
+                    self.heartbeat_count += 1
+                    self.last_heartbeat_time = time.time()
+                    if self.heartbeat_count % 20 == 0:
+                        elapsed = int(time.time() - self.connection_start_time)
+                        print(
+                            f"[hyperliquid] Heartbeat #{self.heartbeat_count} sent (uptime: {elapsed}s / {elapsed//60}m)"
+                        )
                 except Exception as e:
                     self.log_error(f"Heartbeat failed: {e}")
 
@@ -210,6 +236,78 @@ class HyperliquidKlineCollector(BaseKlineCollector):
             except Exception:
                 pass
         print(f"[hyperliquid] Initialized {count} prices")
+
+    def _backfill_gaps(self):
+        """Detect and backfill any gaps in kline data after reconnection."""
+        if self.last_processed_timestamp == 0:
+            return
+
+        current_time_ms = int(time.time() * 1000)
+        current_minute_ms = (current_time_ms // 60000) * 60000
+        expected_next_minute = self.last_processed_timestamp + 60000
+
+        if expected_next_minute >= current_minute_ms:
+            return
+
+        gap_minutes = (current_minute_ms - expected_next_minute) // 60000
+        if gap_minutes == 0:
+            return
+
+        print(
+            f"[hyperliquid] Detected gap: {gap_minutes} missing minutes after ts={self.last_processed_timestamp}"
+        )
+
+        timestamps_to_fill = []
+        ts = expected_next_minute
+        while ts < current_minute_ms:
+            timestamps_to_fill.append(ts)
+            ts += 60000
+
+        for timestamp_ms in timestamps_to_fill:
+            print(f"[hyperliquid] Backfilling ts={timestamp_ms}...")
+            candles_by_symbol = {}
+
+            for symbol in self.symbols:
+                if not self.ws_connected:
+                    print("[hyperliquid] Backfill interrupted - WebSocket disconnected")
+                    return
+
+                try:
+                    resp = requests.post(
+                        HYPERLIQUID_INFO_URL,
+                        headers={"Content-Type": "application/json"},
+                        json={
+                            "type": "candleSnapshot",
+                            "req": {
+                                "coin": symbol,
+                                "interval": "1m",
+                                "startTime": timestamp_ms,
+                                "endTime": timestamp_ms + 60000,
+                            },
+                        },
+                        timeout=10,
+                    )
+                    resp.raise_for_status()
+                    candles = resp.json()
+                    if candles:
+                        raw_candle = candles[0]
+                        normalized = self.normalize_candle(raw_candle)
+                        if normalized:
+                            candles_by_symbol[symbol] = normalized
+                    time.sleep(0.02)
+                except Exception as e:
+                    self.log_error(
+                        f"Backfill failed for {symbol} at ts={timestamp_ms}: {e}"
+                    )
+
+            if candles_by_symbol:
+                print(
+                    f"[hyperliquid] Backfilled {len(candles_by_symbol)} candles for ts={timestamp_ms}"
+                )
+                for candle in candles_by_symbol.values():
+                    self.process_kline(candle)
+
+        print(f"[hyperliquid] Gap backfill completed")
 
     def _run_stale_checker(self):
         """Flush pending candles if their minute has passed."""

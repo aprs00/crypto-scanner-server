@@ -13,7 +13,7 @@ docker exec -it cs-binance-klines python manage.py populate_klines_binance --tic
 
 # Hyperliquid
 # Only last 5000 candles available
-docker exec -it cs-hyperliquid-klines python manage.py populate_klines_hyperliquid --ticker BTC --start-date "01 Dec 2025"
+docker exec -it cs-hyperliquid-klines python manage.py populate_klines_hyperliquid --start-date "06 Dec 2026"
 ```
 
 Options: `--ticker`, `--start-date`, `--end-date`, `--batch-size`
