@@ -17,7 +17,9 @@ from exchange_connections.selectors import (
 from core.constants import RedisPubMessages, tf_options
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
-from correlations.services.save_correlations import save_correlation_matrix_to_db
+from correlations.services.save_correlations import (
+    save_correlation_matrices_batch_to_db,
+)
 
 
 class CorrelationTracker:
@@ -379,6 +381,7 @@ class CorrelationCalculator:
     def _cache_correlations(self, save_to_db: bool = True):
         """Cache correlation matrices to Redis and optionally DB."""
         pipe = self.redis.pipeline()
+        matrices_for_db: Dict[str, List[float]] = {}
 
         for hours in self.hours_options:
             for data_type in KLINE_FIELD_MAP:
@@ -394,21 +397,23 @@ class CorrelationCalculator:
                     pipe.set(key, packed_data)
 
                 if save_to_db and hours == 1:
-                    start = time.time()
-                    try:
-                        save_correlation_matrix_to_db(
-                            symbols=self.symbols,
-                            correlation_matrix=matrix,
-                            data_type=data_type,
-                            hours=hours,
-                            exchange=self.exchange,
-                            contract_type=self.contract_type,
-                        )
-                        print(
-                            f"[{self.exchange}] Saved {data_type} correlations to DB in {time.time() - start:.2f}s"
-                        )
-                    except Exception as e:
-                        print(f"[{self.exchange}] DB save failed ({data_type}): {e}")
+                    matrices_for_db[data_type] = matrix
+
+        if matrices_for_db:
+            start = time.time()
+            try:
+                save_correlation_matrices_batch_to_db(
+                    symbols=self.symbols,
+                    correlation_matrices=matrices_for_db,
+                    hours=1,
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
+                )
+                print(
+                    f"[{self.exchange}] Saved {len(matrices_for_db)} correlation types to DB in {time.time() - start:.2f}s"
+                )
+            except Exception as e:
+                print(f"[{self.exchange}] DB batch save failed: {e}")
 
         pipe.execute()
         notification_service.send_correlation_update()
