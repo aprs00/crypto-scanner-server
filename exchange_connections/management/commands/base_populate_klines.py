@@ -32,12 +32,12 @@ class BasePopulateKlinesCommand(BaseCommand, ABC):
         parser.add_argument(
             "--start-date",
             type=str,
-            help='Start date in format "DD MMM YYYY" (defaults to 1 month ago)',
+            help='Start date in format "DD MMM YYYY" or "DD MMM YYYY HH:MM" (defaults to 1 month ago)',
         )
         parser.add_argument(
             "--end-date",
             type=str,
-            help='End date in format "DD MMM YYYY" (defaults to now)',
+            help='End date in format "DD MMM YYYY" or "DD MMM YYYY HH:MM" (defaults to now)',
         )
         parser.add_argument(
             "--batch-size",
@@ -148,7 +148,20 @@ class BasePopulateKlinesCommand(BaseCommand, ABC):
 
     @staticmethod
     def parse_date(date_input) -> datetime:
-        """Parse date from string or return as-is if already datetime."""
+        """Parse date from string or return as-is if already datetime.
+
+        Supports formats:
+        - "DD MMM YYYY" (e.g., "06 Dec 2026")
+        - "DD MMM YYYY HH:MM" (e.g., "06 Dec 2026 14:00")
+        """
         if isinstance(date_input, str):
-            return datetime.strptime(date_input, "%d %b %Y")
+            for fmt in ("%d %b %Y %H:%M", "%d %b %Y"):
+                try:
+                    return datetime.strptime(date_input, fmt)
+                except ValueError:
+                    continue
+            raise ValueError(
+                f"Date '{date_input}' does not match expected formats: "
+                "'DD MMM YYYY' or 'DD MMM YYYY HH:MM'"
+            )
         return date_input
