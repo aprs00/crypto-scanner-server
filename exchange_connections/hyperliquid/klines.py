@@ -183,7 +183,10 @@ class HyperliquidKlineCollector(BaseKlineCollector):
                 self.log_error(f"Subscribe failed for {symbol}: {e}")
         print("[hyperliquid] Subscribed")
 
-        self._fetch_initial_prices()
+        if not self.last_prices:
+            self._fetch_initial_prices()
+        else:
+            print(f"[hyperliquid] Skipping initial price fetch, already have {len(self.last_prices)} prices")
         self._backfill_gaps()
         self._run_stale_checker()
 
