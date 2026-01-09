@@ -13,6 +13,7 @@ HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 WS_PING_INTERVAL = 0
 WS_PING_TIMEOUT = None
+PONG_TIMEOUT_SECONDS = 90
 
 
 class HyperliquidKlineCollector(BaseKlineCollector):
@@ -33,6 +34,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         self.pending_lock = threading.Lock()
         self.connection_start_time = 0
         self.last_heartbeat_time = 0
+        self.last_pong_time = 0
         self.heartbeat_count = 0
 
     def fetch_perpetual_symbols(self) -> Set[str]:
@@ -82,6 +84,8 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         try:
             data = json.loads(message)
             if data.get("channel") == "pong":
+                print("PONG ")
+                self.last_pong_time = time.time()
                 if self.heartbeat_count % 10 == 0:
                     elapsed = int(time.time() - self.connection_start_time)
                     print(
@@ -153,6 +157,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
     def _on_open(self, ws):
         self.ws_connected = True
         self.connection_start_time = time.time()
+        self.last_pong_time = time.time()  # Initialize pong time on connect
         self.heartbeat_count = 0
         print("[hyperliquid] WebSocket connected")
         threading.Thread(target=self._setup, daemon=True).start()
@@ -186,7 +191,9 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         if not self.last_prices:
             self._fetch_initial_prices()
         else:
-            print(f"[hyperliquid] Skipping initial price fetch, already have {len(self.last_prices)} prices")
+            print(
+                f"[hyperliquid] Skipping initial price fetch, already have {len(self.last_prices)} prices"
+            )
         self._backfill_gaps()
         self._run_stale_checker()
 
@@ -195,6 +202,32 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         while self.ws_connected:
             time.sleep(50)
             if self.ws_connected and self.ws:
+                # Check for stale connection (no pong received recently)
+                time_since_pong = time.time() - self.last_pong_time
+                if time_since_pong > PONG_TIMEOUT_SECONDS:
+                    # Wait until first 20s of next minute to preserve candle data
+                    current_second = time.time() % 60
+                    if current_second > 20:
+                        wait_time = 60 - current_second + 1
+                        print(
+                            f"[hyperliquid] Delaying reconnect by {wait_time:.0f}s to preserve minute boundary"
+                        )
+                        time.sleep(wait_time)
+
+                    # Save pending candles before disconnect
+                    with self.pending_lock:
+                        if self.pending_candles:
+                            prev_minute = int(
+                                next(iter(self.pending_candles.values()))["t"]
+                            )
+                            self._save_candles_locked(prev_minute)
+
+                    self.log_error(
+                        f"No pong received in {time_since_pong:.0f}s, forcing reconnect"
+                    )
+                    self.ws.close()
+                    break
+
                 try:
                     self.ws.send(json.dumps({"method": "ping"}))
                     self.heartbeat_count += 1
@@ -235,13 +268,16 @@ class HyperliquidKlineCollector(BaseKlineCollector):
                 if candles:
                     self.last_prices[symbol] = Decimal(str(candles[-1]["c"]))
                     count += 1
-                time.sleep(0.05)
+                time.sleep(0.04)
             except Exception:
                 pass
         print(f"[hyperliquid] Initialized {count} prices")
 
     def _backfill_gaps(self):
         """Detect and backfill any gaps in kline data after reconnection."""
+        print("[hyperliquid] Checking for gaps to backfill...")
+        print("hyperliquid] last_processed_timestamp:", self.last_processed_timestamp)
+
         if self.last_processed_timestamp == 0:
             return
 
@@ -297,7 +333,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
                         normalized = self.normalize_candle(raw_candle)
                         if normalized:
                             candles_by_symbol[symbol] = normalized
-                    time.sleep(0.02)
+                    time.sleep(0.04)
                 except Exception as e:
                     self.log_error(
                         f"Backfill failed for {symbol} at ts={timestamp_ms}: {e}"
