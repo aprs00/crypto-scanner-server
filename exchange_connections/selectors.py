@@ -7,16 +7,17 @@ from datetime import datetime
 
 from exchange_connections.constants import KLINE_FIELD_MAP
 from core.redis_config import get_redis_connection
+from core.constants import Exchange
 
 r = get_redis_connection()
 
 
-def get_exchange_symbols(exchange="binance", contract_type="perpetual"):
+def get_exchange_symbols(exchange, contract_type="perpetual"):
     symbols_b = r.execute_command("SMEMBERS", f"symbols:{exchange}:{contract_type}")
     return sorted([symbol.decode("utf-8") for symbol in symbols_b])
 
 
-def get_historical_kline_data(hours, symbols, exchange="binance"):
+def get_historical_kline_data(hours, symbols, exchange):
     """Get historical ticker data from the database for all KLINE fields."""
 
     end_time = timezone.now().replace(second=0, microsecond=0)
@@ -198,7 +199,7 @@ def get_symbol_kline_data_multi_hours(
 
 
 def get_top_market_cap_symbols(
-    limit: int = 100, exchange: str = "binance", contract_type: str = "perpetual"
+    limit: int = 100, exchange: str = Exchange.BINANCE, contract_type: str = "perpetual"
 ) -> List[str]:
     """Return a simple list of symbols sorted by market cap descending."""
     if limit <= 0:

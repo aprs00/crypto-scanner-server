@@ -1,5 +1,7 @@
 from enum import Enum
 
+from core.constants import Exchange
+
 KLINE_FIELD_MAP = {
     "price": "close",
     "volume": "base_volume",
@@ -9,7 +11,7 @@ KLINE_FIELD_MAP = {
 
 def get_btc_symbol(exchange: str) -> str:
     """Get the BTC symbol for a given exchange."""
-    if exchange == "binance":
+    if exchange == Exchange.BINANCE:
         return "BTCUSDT"
     return "BTC"
 

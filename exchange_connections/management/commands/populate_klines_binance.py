@@ -7,6 +7,7 @@ from binance.client import Client
 from exchange_connections.management.commands.base_populate_klines import (
     BasePopulateKlinesCommand,
 )
+from core.constants import Exchange
 
 client = Client()
 
@@ -14,7 +15,7 @@ client = Client()
 class Command(BasePopulateKlinesCommand):
     help = "Populate kline data from Binance API"
 
-    exchange = "binance"
+    exchange = Exchange.BINANCE
     contract_type = "perpetual"
     request_delay = 0.5
 

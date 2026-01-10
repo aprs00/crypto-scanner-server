@@ -13,9 +13,9 @@ from exchange_connections.selectors import (
 )
 from zscore.selectors.zscore import get_zscore_history_data
 from exchange_connections.constants import KLINE_FIELD_MAP
-from core.constants import RedisPubMessages, tf_options
+from core.constants import RedisPubMessages, EXCHANGE_CONFIG, Exchange
 from zscore.models import ZScoreHistory
-from exchange_connections.models import Symbol, Exchange, ContractType
+from exchange_connections.models import Symbol, Exchange as ExchangeModel, ContractType
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
 
@@ -88,13 +88,15 @@ class IncrementalZScore:
 
 
 class ZScoreProcessor:
-    def __init__(self, exchange: str = "binance", contract_type: str = "perpetual"):
+    def __init__(self, exchange: Exchange, contract_type: str = "perpetual"):
         self.exchange = exchange
         self.contract_type = contract_type
         self.symbols = get_exchange_symbols(
             exchange=self.exchange, contract_type=self.contract_type
         )
-        self.hours_options = list(tf_options["zscore"].values())
+        self.hours_options = list(
+            EXCHANGE_CONFIG[self.exchange]["hours_options"]["zscore"].values()
+        )
         self.incremental_zscores = self.initialize_zscores()
 
     def initialize_zscores(self):
@@ -174,13 +176,13 @@ class ZScoreProcessor:
         print(f"[{self.exchange}] STORING ZSCORES")
 
         try:
-            exchange = Exchange.objects.get(name=self.exchange)
+            exchange = ExchangeModel.objects.get(name=self.exchange)
             contract_type = ContractType.objects.get(name=self.contract_type)
             symbols = Symbol.objects.filter(
                 exchange=exchange, contract_type=contract_type
             )
             symbol_map = {s.name: s for s in symbols}
-        except (Exchange.DoesNotExist, ContractType.DoesNotExist) as e:
+        except (ExchangeModel.DoesNotExist, ContractType.DoesNotExist) as e:
             print(f"[{self.exchange}] Exchange or ContractType not found:", e)
             return
 
@@ -271,7 +273,7 @@ class ZScoreProcessor:
         else:
             # Legacy format: "symbol:timestamp" - assume binance
             symbol = parts[0]
-            if self.exchange != "binance":
+            if self.exchange != Exchange.BINANCE:
                 return
         handler(symbol)
 
@@ -321,7 +323,7 @@ class ZScoreProcessor:
                                 )
                                 continue
 
-                            msg_exchange = payload.get("exchange", "binance")
+                            msg_exchange = payload.get("exchange", Exchange.BINANCE)
                             if msg_exchange != self.exchange:
                                 continue
 

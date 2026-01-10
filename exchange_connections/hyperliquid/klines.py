@@ -8,12 +8,14 @@ from typing import Set, Optional
 
 from exchange_connections.base import BaseKlineCollector
 from exchange_connections.candle_types import NormalizedCandle
+from core.constants import Exchange
 
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 WS_PING_INTERVAL = 0
 WS_PING_TIMEOUT = None
 PONG_TIMEOUT_SECONDS = 90
+MAX_CONNECTION_DURATION_SECONDS = 3600  # Reconnect every 1 hour to avoid HL disconnects
 
 
 class HyperliquidKlineCollector(BaseKlineCollector):
@@ -26,7 +28,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
     """
 
     def __init__(self):
-        super().__init__(exchange="hyperliquid", contract_type="perpetual")
+        super().__init__(exchange=Exchange.HYPERLIQUID, contract_type="perpetual")
         self.ws: Optional[websocket.WebSocketApp] = None
         self.ws_connected = False
         self.generate_synthetic_candles = True
@@ -202,10 +204,28 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         while self.ws_connected:
             time.sleep(50)
             if self.ws_connected and self.ws:
+                # Proactive reconnect every hour to avoid unexpected HL disconnects
+                connection_duration = time.time() - self.connection_start_time
+                if connection_duration >= MAX_CONNECTION_DURATION_SECONDS:
+                    current_second = time.time() % 60
+                    if current_second < 10:
+                        wait_time = 10 - current_second
+                    else:
+                        wait_time = 70 - current_second  # Wait until next minute + 10s
+                    print(
+                        f"[hyperliquid] Connection duration {connection_duration:.0f}s, "
+                        f"scheduling reconnect in {wait_time:.0f}s (at 10s mark)"
+                    )
+                    time.sleep(wait_time)
+                    print(
+                        f"[hyperliquid] Proactive reconnect after {int(time.time() - self.connection_start_time)}s"
+                    )
+                    self.ws.close()
+                    break
+
                 # Check for stale connection (no pong received recently)
                 time_since_pong = time.time() - self.last_pong_time
                 if time_since_pong > PONG_TIMEOUT_SECONDS:
-                    # Wait until first 20s of next minute to preserve candle data
                     current_second = time.time() % 60
                     if current_second > 20:
                         wait_time = 60 - current_second + 1

@@ -6,17 +6,23 @@ from typing import Iterable, List, Optional, Sequence, Dict
 from django.db import transaction
 from utils.convert import ms_to_aware_datetime
 
-from exchange_connections.models import Kline1m, Exchange, ContractType, Symbol
+from exchange_connections.models import (
+    Kline1m,
+    Exchange as ExchangeModel,
+    ContractType,
+    Symbol,
+)
+from core.constants import Exchange
 
 
-_exchange_cache: Dict[str, Exchange] = {}
+_exchange_cache: Dict[str, ExchangeModel] = {}
 _contract_type_cache: Dict[str, ContractType] = {}
 _symbol_cache: Dict[str, Symbol] = {}
 
 
-def get_or_create_exchange(name: str) -> Exchange:
+def get_or_create_exchange(name: str) -> ExchangeModel:
     if name not in _exchange_cache:
-        exchange, _ = Exchange.objects.get_or_create(name=name)
+        exchange, _ = ExchangeModel.objects.get_or_create(name=name)
         _exchange_cache[name] = exchange
 
     return _exchange_cache[name]
@@ -31,7 +37,7 @@ def get_or_create_contract_type(name: str) -> ContractType:
 
 
 def get_or_create_symbol(
-    name: str, exchange: Exchange, contract_type: ContractType
+    name: str, exchange: ExchangeModel, contract_type: ContractType
 ) -> Symbol:
     cache_key = f"{name}_{exchange.pk}_{contract_type.pk}"
 
@@ -68,7 +74,7 @@ class RawRestKline:
     def to_model(
         self,
         symbol: str,
-        exchange: str = "binance",
+        exchange: Exchange,
         contract_type: str = "perpetual",
     ) -> Kline1m:
         d = self.data
@@ -102,7 +108,7 @@ class WsKline:
 
     def to_model(
         self,
-        exchange: str = "binance",
+        exchange: Exchange,
         contract_type: str = "perpetual",
     ) -> Kline1m:
         d = self.data
@@ -134,7 +140,7 @@ class WsKline:
 
 def build_models_from_rest(
     raw_klines: Iterable,
-    exchange: str = "binance",
+    exchange: Exchange,
     contract_type: str = "perpetual",
     symbol: Optional[str] = None,
 ) -> List[Kline1m]:
@@ -142,21 +148,27 @@ def build_models_from_rest(
 
     Args:
         raw_klines: Raw kline data from API
-        exchange: Exchange name ("binance" or "hyperliquid")
+        exchange: Exchange name (Exchange.BINANCE, Exchange.HYPERLIQUID, etc.)
         contract_type: Contract type (default "perpetual")
         symbol: Symbol name (required for Binance as it's not in the array data)
     """
-    if exchange == "binance":
+    if exchange == Exchange.BINANCE:
         if symbol is None:
             raise ValueError("symbol is required for Binance klines")
-        return [RawRestKline(k).to_model(symbol, exchange, contract_type) for k in raw_klines]
+        return [
+            RawRestKline(k).to_model(symbol, exchange, contract_type)
+            for k in raw_klines
+        ]
     else:
         # Dict-based format (Hyperliquid and similar) - symbol is embedded in data
-        return [WsKline(k).to_model(exchange=exchange, contract_type=contract_type) for k in raw_klines]
+        return [
+            WsKline(k).to_model(exchange=exchange, contract_type=contract_type)
+            for k in raw_klines
+        ]
 
 
 def build_model_from_ws(
-    kline_dict: dict, exchange: str = "binance", contract_type: str = "perpetual"
+    kline_dict: dict, exchange: Exchange, contract_type: str = "perpetual"
 ) -> Kline1m:
     return WsKline(kline_dict).to_model(exchange=exchange, contract_type=contract_type)
 

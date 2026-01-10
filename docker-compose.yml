@@ -150,6 +150,50 @@ services:
       timeout: 10s
       retries: 3
 
+  bybit-klines:
+    <<: *app-common
+    container_name: cs-bybit-klines
+    command: python manage.py klines --exchange bybit
+    environment:
+      <<: *env-common
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'klines.*bybit' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  bybit-correlations:
+    <<: *app-common
+    container_name: cs-bybit-correlations
+    command: python manage.py incremental_correlations --exchange bybit
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - redis
+      - bybit-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'incremental_correlations.*bybit' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  bybit-zscore:
+    <<: *app-common
+    container_name: cs-bybit-zscore
+    command: python manage.py incremental_zscore --exchange bybit
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - redis
+      - bybit-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'incremental_zscore.*bybit' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   db-maintenance:
     <<: *app-common
     container_name: cs-db-maintenance

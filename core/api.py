@@ -1,8 +1,8 @@
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-from core.constants import tf_options
-from exchange_connections.constants import KLINE_FIELD_MAP, get_btc_symbol
+from core.constants import EXCHANGE_CONFIG, Exchange
+from exchange_connections.constants import get_btc_symbol
 from exchange_connections.selectors import (
     get_exchange_symbols,
     get_top_market_cap_symbols,
@@ -48,11 +48,17 @@ def bootstrap(request):
         exchange=exchange, contract_type=contract_type
     )
 
+    exchange_config = EXCHANGE_CONFIG.get(exchange, EXCHANGE_CONFIG[Exchange.BINANCE])
+
     data = {
+        "exchanges": [
+            {"id": k, "name": v["name"]} for k, v in EXCHANGE_CONFIG.items()
+        ],
         "hours_options": {
-            k: {tk: str(tv) for tk, tv in v.items()} for k, v in tf_options.items()
+            k: {tk: str(tv) for tk, tv in v.items()}
+            for k, v in exchange_config["hours_options"].items()
         },
-        "data_types": list(KLINE_FIELD_MAP.keys()),
+        "data_types": exchange_config["data_types"],
         "symbols": symbols,
         "exchange": exchange,
         "contract_type": contract_type,
