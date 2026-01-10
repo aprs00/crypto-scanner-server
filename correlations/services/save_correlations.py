@@ -10,13 +10,14 @@ import polars as pl
 from correlations.models import CorrelationPairHistory
 from correlations.db_utils import ensure_partition_exists
 from exchange_connections.models import Symbol
+from core.constants import Exchange as ExchangeEnum
 
 
 def save_correlation_matrices_batch_to_db(
     symbols: List[str],
     correlation_matrices: Dict[str, List[float]],
     hours: int,
-    exchange: str = "binance",
+    exchange: ExchangeEnum,
     contract_type: str = "perpetual",
 ) -> int:
     """

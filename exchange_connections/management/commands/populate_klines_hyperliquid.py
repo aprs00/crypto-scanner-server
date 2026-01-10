@@ -6,6 +6,7 @@ from typing import List
 from exchange_connections.management.commands.base_populate_klines import (
     BasePopulateKlinesCommand,
 )
+from core.constants import Exchange
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 CHUNK_SIZE_MS = 86400000  # 24 hours in milliseconds
@@ -14,9 +15,9 @@ CHUNK_SIZE_MS = 86400000  # 24 hours in milliseconds
 class Command(BasePopulateKlinesCommand):
     help = "Populate kline data from Hyperliquid API"
 
-    exchange = "hyperliquid"
+    exchange = Exchange.HYPERLIQUID
     contract_type = "perpetual"
-    request_delay = 3  # Increased to avoid rate limits
+    request_delay = 3
 
     def fetch_all_klines_paginated(self, symbol, start_date, end_date) -> List:
         """Fetch all klines using Hyperliquid API in 24-hour chunks."""

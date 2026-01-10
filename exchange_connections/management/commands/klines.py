@@ -1,8 +1,11 @@
 from django.core.management.base import BaseCommand
 
+from core.constants import Exchange
+
 EXCHANGE_KLINES_MAP = {
-    "binance": "exchange_connections.binance.klines",
-    "hyperliquid": "exchange_connections.hyperliquid.klines",
+    Exchange.BINANCE: "exchange_connections.binance.klines",
+    Exchange.HYPERLIQUID: "exchange_connections.hyperliquid.klines",
+    Exchange.BYBIT: "exchange_connections.bybit.klines",
 }
 
 
@@ -15,7 +18,7 @@ class Command(BaseCommand):
             type=str,
             required=True,
             choices=EXCHANGE_KLINES_MAP.keys(),
-            help="Exchange to connect to (binance, hyperliquid)",
+            help="Exchange to connect to (binance, hyperliquid, bybit)",
         )
 
     def handle(self, *args, **options):

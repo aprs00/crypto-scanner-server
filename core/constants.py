@@ -6,39 +6,83 @@ invalid_params_error = {
 }
 
 
+class Exchange(str, Enum):
+    BINANCE = "binance"
+    HYPERLIQUID = "hyperliquid"
+    BYBIT = "bybit"
+
+
 class RedisPubMessages(Enum):
     KLINE_SAVED_TO_DB = b"KLINE_SAVED_TO_DB"
     SYMBOL_DELISTED = b"SYMBOL_DELISTED"
     SYMBOL_ADDED = b"SYMBOL_ADDED"
 
 
-tf_options = {
-    "correlation": {
-        "1h": 1,
-        "4h": 4,
-        "12h": 12,
-        "1d": 24,
-        "3d": 72,
-        "7d": 168,
-        "14d": 336,
+# Per-exchange configuration
+EXCHANGE_CONFIG = {
+    Exchange.BINANCE: {
+        "name": "Binance",
+        "data_types": ["price", "volume", "trades"],
+        "hours_options": {
+            "correlation": {
+                "1h": 1,
+                "4h": 4,
+                "12h": 12,
+                "1d": 24,
+                "3d": 72,
+                "7d": 168,
+                "14d": 336,
+            },
+            "correlation_pair": {"1h": 1, "4h": 4},
+            "zscore": {"1h": 1, "4h": 4, "12h": 12},
+            "average_price": {"1w": 168, "1M": 720, "3M": 2160, "6M": 4320},
+        },
     },
-    "correlation_pair": {
-        "1h": 1,
-        "4h": 4,
+    Exchange.HYPERLIQUID: {
+        "name": "Hyperliquid",
+        "data_types": ["price", "volume", "trades"],
+        "hours_options": {
+            "correlation": {
+                "1h": 1,
+                "4h": 4,
+                "12h": 12,
+                "1d": 24,
+                "3d": 72,
+                "7d": 168,
+                "14d": 336,
+            },
+            "correlation_pair": {"1h": 1, "4h": 4},
+            "zscore": {"1h": 1, "4h": 4, "12h": 12},
+            "average_price": {"1w": 168, "1M": 720},
+        },
     },
-    "zscore": {
-        "1h": 1,
-        "4h": 4,
-        "12h": 12,
-    },
-    "average_price": {
-        "1w": 7 * 24,
-        "1M": 30 * 24,
-        "3M": 90 * 24,
-        "6M": 180 * 24,
+    Exchange.BYBIT: {
+        "name": "Bybit",
+        "data_types": ["price", "volume"],
+        "hours_options": {
+            "correlation": {
+                "1h": 1,
+                "4h": 4,
+                "12h": 12,
+                "1d": 24,
+                "3d": 72,
+                "7d": 168,
+                "14d": 336,
+            },
+            "correlation_pair": {"1h": 1, "4h": 4},
+            "zscore": {"1h": 1, "4h": 4, "12h": 12},
+            "average_price": {"1w": 168, "1M": 720, "3M": 2160, "6M": 4320},
+        },
     },
 }
 
+# Collect all unique timeframe hours across all exchanges
 TIMEFRAME_HOURS = sorted(
-    set(tf_options["zscore"].values()) | set(tf_options["correlation"].values())
+    set().union(
+        *[
+            set(config["hours_options"]["zscore"].values())
+            | set(config["hours_options"]["correlation"].values())
+            for config in EXCHANGE_CONFIG.values()
+        ]
+    )
 )

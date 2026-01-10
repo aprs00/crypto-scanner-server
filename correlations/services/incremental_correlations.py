@@ -14,7 +14,7 @@ from exchange_connections.selectors import (
     get_historical_kline_data,
     get_symbol_kline_data,
 )
-from core.constants import RedisPubMessages, tf_options
+from core.constants import RedisPubMessages, EXCHANGE_CONFIG, Exchange
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
 from correlations.services.save_correlations import (
@@ -120,7 +120,7 @@ class CorrelationTracker:
 class CorrelationCalculator:
     """Main correlation calculator with Redis pubsub integration."""
 
-    def __init__(self, exchange: str = "binance", contract_type: str = "perpetual"):
+    def __init__(self, exchange=Exchange.BINANCE, contract_type: str = "perpetual"):
         self.exchange = exchange
         self.contract_type = contract_type
         self.redis = get_redis_connection()
@@ -143,7 +143,7 @@ class CorrelationCalculator:
     def _get_validation_symbols(self) -> List[str]:
         """Get validation symbol pair for the exchange."""
         btc = get_btc_symbol(self.exchange)
-        sol = "SOLUSDT" if self.exchange == "binance" else "SOL"
+        sol = "SOLUSDT" if self.exchange == Exchange.BINANCE else "SOL"
         return [btc, sol]
 
     def _store_pubsub_prices(self, newest: Dict, timestamp: int):
@@ -655,7 +655,7 @@ class CorrelationCalculator:
                 return
         else:
             symbol = parts[0]
-            if self.exchange != "binance":
+            if self.exchange != Exchange.BINANCE:
                 return
         handler(symbol)
 
@@ -725,7 +725,7 @@ class CorrelationCalculator:
 
         # Filter by exchange - ignore messages from other exchanges
         msg_exchange = payload.get(
-            "exchange", "binance"
+            "exchange", Exchange.BINANCE
         )  # Default to binance for backward compatibility
         if msg_exchange != self.exchange:
             return
@@ -777,7 +777,9 @@ class CorrelationCalculator:
     def run(self):
         """Main entry point."""
         print(f"[{self.exchange}] Starting correlation calculator...")
-        self.hours_options = list(tf_options["correlation"].values())
+        self.hours_options = list(
+            EXCHANGE_CONFIG[self.exchange]["hours_options"]["correlation"].values()
+        )
         self.symbols = get_exchange_symbols(
             exchange=self.exchange, contract_type=self.contract_type
         )

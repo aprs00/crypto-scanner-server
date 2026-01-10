@@ -9,6 +9,7 @@ from decimal import Decimal
 from exchange_connections.base import BaseKlineCollector
 from exchange_connections.candle_types import NormalizedCandle
 from exchange_connections.constants import BinanceContractStatus
+from core.constants import Exchange
 
 
 BINANCE_FUTURES_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
@@ -33,7 +34,7 @@ class BinanceKlineCollector(BaseKlineCollector):
     """
 
     def __init__(self):
-        super().__init__(exchange="binance", contract_type="perpetual")
+        super().__init__(exchange=Exchange.BINANCE, contract_type="perpetual")
         self.ws: Optional[websocket.WebSocketApp] = None
         self.ws_connected = False
         self.connection_start_time: Optional[float] = None
