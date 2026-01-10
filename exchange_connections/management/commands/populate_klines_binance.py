@@ -17,7 +17,7 @@ class Command(BasePopulateKlinesCommand):
 
     exchange = Exchange.BINANCE
     contract_type = "perpetual"
-    request_delay = 0.5
+    request_delay = 0.25
 
     def fetch_all_klines_paginated(self, symbol, start_date, end_date) -> List:
         """Fetch all klines using Binance API with pagination (1000 klines per request)."""

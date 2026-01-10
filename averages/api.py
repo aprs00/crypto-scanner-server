@@ -14,11 +14,11 @@ def get_average_prices(request):
     type = request.GET.get("type", None)
     hours = request.GET.get("hours", None)
     exchange = request.GET.get("exchange")
-    contract_type = request.GET.get("contractType")
+    contract_type = request.GET.get("contractType", "perpetual")
 
-    if not hours or not exchange or not contract_type:
+    if not hours or not exchange:
         return JsonResponse(
-            {"error": "Required parameters are: hours, exchange, contractType"},
+            {"error": "Required parameters are: hours, exchange"},
             status=400,
         )
 

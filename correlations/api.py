@@ -35,7 +35,7 @@ def get_pearson_correlation(request):
     hours = body.get("hours")
     requested_symbols = body.get("symbols", [])
     exchange = body.get("exchange")
-    contract_type = body.get("contractType")
+    contract_type = body.get("contractType", "perpetual")
 
     if not data_type or not hours:
         return JsonResponse(
@@ -121,7 +121,7 @@ def get_correlation_pair_history(request):
     data_type = body.get("type")
     hours = body.get("hours")
     exchange = body.get("exchange")
-    contract_type = body.get("contractType")
+    contract_type = body.get("contractType", "perpetual")
 
     if hours is None:
         return JsonResponse({"error": "Parameter 'hours' is required"}, status=400)

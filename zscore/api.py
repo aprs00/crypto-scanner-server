@@ -21,12 +21,12 @@ def get_z_score_matrix(request):
     z_axis = body.get("zAxis")
     hours = body.get("hours")
     exchange = body.get("exchange")
-    contract_type = body.get("contractType")
+    contract_type = body.get("contractType", "perpetual")
     symbols = body.get("symbols", [])
 
-    if not hours or not exchange or not contract_type:
+    if not hours or not exchange:
         return JsonResponse(
-            {"error": "Missing required parameters: hours, exchange, contractType"},
+            {"error": "Missing required parameters: hours, exchange"},
             status=400,
         )
 
@@ -64,12 +64,12 @@ def get_z_score_heatmap(request):
     data_type = body.get("type")
     hours = body.get("hours")
     exchange = body.get("exchange")
-    contract_type = body.get("contractType")
+    contract_type = body.get("contractType", "perpetual")
     requested_symbols = body.get("symbols", [])
 
-    if not hours or not exchange or not contract_type:
+    if not hours or not exchange:
         return JsonResponse(
-            {"error": "Missing required parameters: hours, exchange, contractType"},
+            {"error": "Missing required parameters: hours, exchange"},
             status=400,
         )
 

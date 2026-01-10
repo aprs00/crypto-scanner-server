@@ -9,10 +9,10 @@ Populate historical 1-minute kline data from exchange APIs.
 
 ```sh
 # Binance
-docker exec -it cs-binance-klines python manage.py populate_klines_binance --ticker BTCUSDT --start-date "01 Jan 2026 08:00"
+docker exec -it cs-binance-klines python manage.py populate_klines_binance --start-date "01 Jan 2026 08:00"
 
 # Bybit
-docker exec -it cs-bybit-klines python manage.py populate_klines_bybit --ticker BTCUSDT --start-date "01 Jan 2026 08:00"
+docker exec -it cs-bybit-klines python manage.py populate_klines_bybit --start-date "01 Jan 2026 08:00"
 
 # Hyperliquid
 # Only last 5000 candles available
