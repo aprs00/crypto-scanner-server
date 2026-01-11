@@ -4,9 +4,9 @@ from django.db import connection
 from correlations.db_utils import cleanup_old_correlation_data
 from zscore.services.db_utils import cleanup_old_zscore_data
 
-INTERVAL_SECONDS = 900
+INTERVAL_SECONDS = 300
 CORRELATION_RETENTION_HOURS = 4
-ZSCORE_RETENTION_HOURS = 25
+ZSCORE_RETENTION_HOURS = 12
 
 
 class Command(BaseCommand):
