@@ -7,7 +7,6 @@ from datetime import datetime
 
 from exchange_connections.constants import KLINE_FIELD_MAP
 from core.redis_config import get_redis_connection
-from core.constants import Exchange
 
 r = get_redis_connection()
 
@@ -199,7 +198,7 @@ def get_symbol_kline_data_multi_hours(
 
 
 def get_top_market_cap_symbols(
-    limit: int = 100, exchange: str = Exchange.BINANCE, contract_type: str = "perpetual"
+    limit: int, exchange: str, contract_type: str = "perpetual"
 ) -> List[str]:
     """Return a simple list of symbols sorted by market cap descending."""
     if limit <= 0:

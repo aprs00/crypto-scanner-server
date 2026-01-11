@@ -6,7 +6,6 @@ from datetime import timedelta
 
 from correlations.models import CorrelationPairHistory
 from exchange_connections.models import Symbol
-from core.constants import Exchange
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +15,7 @@ def get_symbol_pair_correlation_history(
     comparison_symbols: List[str],
     data_type: str,
     hours: int,
-    exchange: str = Exchange.BINANCE,
+    exchange: str,
     contract_type: str = "perpetual",
 ) -> List[List[List]]:
     """

@@ -120,7 +120,7 @@ class CorrelationTracker:
 class CorrelationCalculator:
     """Main correlation calculator with Redis pubsub integration."""
 
-    def __init__(self, exchange=Exchange.BINANCE, contract_type: str = "perpetual"):
+    def __init__(self, exchange: str, contract_type: str = "perpetual"):
         self.exchange = exchange
         self.contract_type = contract_type
         self.redis = get_redis_connection()

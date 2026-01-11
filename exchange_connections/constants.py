@@ -13,6 +13,9 @@ def get_btc_symbol(exchange: str) -> str:
     """Get the BTC symbol for a given exchange."""
     if exchange == Exchange.BINANCE:
         return "BTCUSDT"
+    elif exchange == Exchange.BYBIT:
+        return "BTCUSDT"
+    # Hyperliquid
     return "BTC"
 
 

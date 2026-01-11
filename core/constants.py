@@ -11,6 +11,9 @@ class Exchange(str, Enum):
     HYPERLIQUID = "hyperliquid"
     BYBIT = "bybit"
 
+    def __str__(self):
+        return self.value
+
 
 class RedisPubMessages(Enum):
     KLINE_SAVED_TO_DB = b"KLINE_SAVED_TO_DB"
