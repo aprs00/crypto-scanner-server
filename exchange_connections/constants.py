@@ -19,6 +19,16 @@ def get_btc_symbol(exchange: str) -> str:
     return "BTC"
 
 
+def get_sol_symbol(exchange: str) -> str:
+    """Get the SOL symbol for a given exchange."""
+    if exchange == Exchange.BINANCE:
+        return "SOLUSDT"
+    elif exchange == Exchange.BYBIT:
+        return "SOLUSDT"
+    # Hyperliquid
+    return "SOL"
+
+
 class BinanceContractStatus(Enum):
     PENDING_TRADING = "PENDING_TRADING"
     TRADING = "TRADING"

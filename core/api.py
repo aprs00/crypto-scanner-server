@@ -55,7 +55,7 @@ def bootstrap(request):
         }
         for exchange_id, exchange_config in EXCHANGE_CONFIG.items()
         for symbols in [get_exchange_symbols(exchange=exchange_id, contract_type=contract_type)]
-        for market_cap_symbols in [get_top_market_cap_symbols(exchange=exchange_id, contract_type=contract_type)]
+        for market_cap_symbols in [get_top_market_cap_symbols(limit=100, exchange=exchange_id, contract_type=contract_type)]
     }
 
     data = {

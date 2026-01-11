@@ -2,6 +2,7 @@ from django.core.management.base import BaseCommand
 from correlations.services.incremental_correlations import (
     CorrelationCalculator,
 )
+from core.constants import Exchange
 
 
 class Command(BaseCommand):
@@ -22,7 +23,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        exchange = options["exchange"]
+        exchange = Exchange(options["exchange"])
         contract_type = options["contract_type"]
         self.stdout.write(
             self.style.SUCCESS(
