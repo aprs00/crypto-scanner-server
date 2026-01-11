@@ -18,7 +18,7 @@ def get_zscore_history_data(hours, exchange: str, contract_type: str):
         .annotate(
             time=Func(
                 F("calculated_at"),
-                Value("HH24:MI:SS"),
+                Value("HH24:MI"),
                 function="to_char",
                 output_field=CharField(),
             )

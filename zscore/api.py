@@ -76,6 +76,12 @@ def get_z_score_heatmap(request):
     if len(requested_symbols) == 0:
         return JsonResponse([], safe=False)
 
+    if data_type not in {"price", "volume", "trades"}:
+        return JsonResponse(
+            {"error": "Invalid type. Expected one of: price, volume, trades"},
+            status=400,
+        )
+
     hours = int(hours)
 
     redis_key = f"zscore:heatmap:{exchange}:{contract_type}:{hours}"
@@ -85,37 +91,33 @@ def get_z_score_heatmap(request):
             {"error": f"Heatmap data not available for {exchange}"}, status=503
         )
 
-    zscore_data = msgpack.unpackb(redis_data)
+    zscore_data = msgpack.unpackb(redis_data, raw=False)
 
-    requested_symbols_set = set(requested_symbols) if requested_symbols else None
+    requested_symbols_set = set(requested_symbols)
 
-    transformed_zscore_data = {}
+    symbol_to_time_to_value = {}
     times = []
 
     for record in zscore_data:
-        if record["hours"] != 1:
+        if record["hours"] != hours:
             continue
 
         symbol = record["symbol__name"]
-
-        if requested_symbols_set and symbol not in requested_symbols_set:
+        if symbol not in requested_symbols_set:
             continue
 
-        transformed_zscore_data.setdefault(symbol, []).append(
-            round(record[data_type], 3)
-        )
-
         time = record["time"]
+        value = round(record[data_type], 3)
+
+        symbol_to_time_to_value.setdefault(symbol, {})[time] = value
+
         if not times or times[-1] != time:
             times.append(time)
 
-    matrix = [value for values in transformed_zscore_data.values() for value in values]
+    y_axis = [s for s in requested_symbols if s in symbol_to_time_to_value]
+    matrix_rows = [[symbol_to_time_to_value[s].get(t) for t in times] for s in y_axis]
+    matrix = [v for row in matrix_rows for v in row]
 
-    response = {
-        "data": matrix,
-        "y_axis": list(transformed_zscore_data.keys()),
-        "x_axis": list(times),
-        "type": "grid",
-    }
+    response = {"data": matrix, "y_axis": y_axis, "x_axis": times, "type": "grid"}
 
     return JsonResponse(response, safe=False)
