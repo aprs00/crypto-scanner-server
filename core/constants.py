@@ -38,7 +38,7 @@ EXCHANGE_CONFIG = {
             },
             "correlation_pair": {"1h": 1, "4h": 4},
             "zscore": {"1h": 1, "4h": 4, "12h": 12},
-            "average_price": {"1w": 168, "1M": 720, "3M": 2160, "6M": 4320},
+            "average_price": {"1w": 168, "1M": 720, "3M": 2160},
         },
     },
     Exchange.HYPERLIQUID: {
@@ -74,7 +74,7 @@ EXCHANGE_CONFIG = {
             },
             "correlation_pair": {"1h": 1, "4h": 4},
             "zscore": {"1h": 1, "4h": 4, "12h": 12},
-            "average_price": {"1w": 168, "1M": 720, "3M": 2160, "6M": 4320},
+            "average_price": {"1w": 168, "1M": 720, "3M": 2160},
         },
     },
 }
