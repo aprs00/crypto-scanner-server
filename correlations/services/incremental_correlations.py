@@ -1,4 +1,3 @@
-import json
 import time
 import threading
 import gc
@@ -6,7 +5,7 @@ from collections import deque
 import numpy as np
 import redis
 import msgpack
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from exchange_connections.constants import KLINE_FIELD_MAP, get_btc_symbol
 from exchange_connections.selectors import (
@@ -14,8 +13,9 @@ from exchange_connections.selectors import (
     get_historical_kline_data,
     get_symbol_kline_data,
 )
-from core.constants import RedisPubMessages, EXCHANGE_CONFIG, Exchange
+from core.constants import RedisStreamKeys, EXCHANGE_CONFIG, Exchange
 from core.redis_config import get_redis_connection
+from core.redis_streams import StreamConsumer
 from core.notifications import notification_service
 from correlations.services.save_correlations import (
     save_correlation_matrices_batch_to_db,
@@ -120,7 +120,7 @@ class CorrelationTracker:
 class CorrelationCalculator:
     """Main correlation calculator with Redis pubsub integration."""
 
-    def __init__(self, exchange: str, contract_type: str = "perpetual"):
+    def __init__(self, exchange: Exchange, contract_type: str = "perpetual"):
         self.exchange = exchange
         self.contract_type = contract_type
         self.redis = get_redis_connection()
@@ -130,7 +130,6 @@ class CorrelationCalculator:
         self.hours_options: List[int] = []
         self.trackers: Dict[tuple, CorrelationTracker] = {}
         self.initialized = False
-        self.pending_updates: List[tuple] = []
         self.last_update_time: float = 0
         self.update_count: int = 0
 
@@ -211,26 +210,6 @@ class CorrelationCalculator:
         del all_data
         gc.collect()
 
-    def _drain_pending_updates(self):
-        """Drain all pending updates before setting initialized=True.
-
-        Lock and while loop prevent race condition where pubsub thread processes updates out of order.
-        """
-        while True:
-            with self.lock:
-                if not self.pending_updates:
-                    self.initialized = True
-                    break
-
-                updates_to_process = list(self.pending_updates)
-                self.pending_updates.clear()
-
-            print(
-                f"[{self.exchange}] Processing {len(updates_to_process)} pending updates..."
-            )
-            for newest, ts, oldest in updates_to_process:
-                self._store_pubsub_prices(newest, ts)
-                self.update_correlations(newest, oldest, save_to_db=False)
 
     def _update_trackers(self, newest: Dict, oldest_by_hours: Dict[int, Dict]):
         """Update all trackers with new/old values."""
@@ -608,56 +587,97 @@ class CorrelationCalculator:
             self._cache_correlations(save_to_db=False)
             print(f"[{self.exchange}][DEBUG] remove_symbol completed for {symbol}")
 
-    def _pubsub_loop(self):
-        """Listen for Redis pubsub messages."""
-        channels = [
-            RedisPubMessages.KLINE_SAVED_TO_DB.value,
-            RedisPubMessages.SYMBOL_ADDED.value,
-            RedisPubMessages.SYMBOL_DELISTED.value,
-        ]
+    def _handle_kline_message(self, msg_id: str, msg_data: Dict[str, Any]) -> bool:
+        """
+        Handle a single kline message from Redis Stream.
 
-        while True:
+        Returns:
+            True if processed successfully (will be ACKed)
+            False if processing failed (will retry)
+        """
+        try:
+            # Filter by exchange
+            if msg_data.get("exchange") != str(self.exchange):
+                return True  # ACK, not for us
+
+            # Extract data
+            newest_values = msg_data.get("newest_values", {})
+            oldest_values = msg_data.get("oldest_values", {})
+            timestamp_raw = msg_data.get("timestamp")
+
+            if timestamp_raw is None:
+                print(f"[{self.exchange}] Missing timestamp in kline message")
+                return True  # ACK to skip invalid message
+
             try:
-                pubsub = self.redis.pubsub()
-                pubsub.subscribe(*channels)
-                pubsub.get_message()
+                timestamp = int(cast(int | str, timestamp_raw))
+            except (TypeError, ValueError):
+                print(f"[{self.exchange}] Invalid timestamp: {timestamp_raw!r}")
+                return True  # ACK to skip invalid message
 
-                for msg in pubsub.listen():
-                    if msg["type"] != "message":
-                        continue
+            # Process update
+            self._handle_kline_update_from_stream(newest_values, timestamp, oldest_values)
+            return True  # Success
 
-                    channel = msg["channel"]
-                    data = msg.get("data", b"")
+        except Exception as e:
+            print(f"[{self.exchange}] Error processing kline message: {e}")
+            return False  # Retry
 
-                    if isinstance(data, bytes):
-                        data = data.decode("utf-8")
+    def _handle_symbol_message(self, msg_id: str, msg_data: Dict[str, Any]) -> bool:
+        """
+        Handle a single symbol event message from Redis Stream.
 
-                    if channel == RedisPubMessages.KLINE_SAVED_TO_DB.value:
-                        self._handle_kline_update(data)
-                    elif channel == RedisPubMessages.SYMBOL_ADDED.value:
-                        self._handle_symbol_event(data, self.add_symbol)
-                    elif channel == RedisPubMessages.SYMBOL_DELISTED.value:
-                        self._handle_symbol_event(data, self.remove_symbol)
+        Returns:
+            True if processed successfully (will be ACKed)
+            False if processing failed (will retry)
+        """
+        try:
+            # Filter by exchange
+            if msg_data.get("exchange") != str(self.exchange):
+                return True  # ACK, not for us
 
-            except (redis.ConnectionError, redis.TimeoutError) as e:
-                print(f"[{self.exchange}] Redis error: {e}, reconnecting...")
-                time.sleep(5)
-            except Exception as e:
-                print(f"[{self.exchange}] Pubsub error: {e}")
-                time.sleep(5)
+            symbol_raw = msg_data.get("symbol")
+            event = msg_data.get("event")
 
-    def _handle_symbol_event(self, data: str, handler):
-        """Handle symbol add/remove events with exchange filtering."""
-        parts = data.split(":")
-        if len(parts) >= 3:
-            msg_exchange, symbol = parts[0], parts[1]
-            if msg_exchange != self.exchange:
-                return
-        else:
-            symbol = parts[0]
-            if self.exchange != Exchange.BINANCE:
-                return
-        handler(symbol)
+            if not isinstance(symbol_raw, str) or not symbol_raw:
+                print(f"[{self.exchange}] Invalid symbol: {symbol_raw!r}")
+                return True  # ACK to skip invalid message
+
+            if event == "ADDED":
+                self.add_symbol(symbol_raw)
+            elif event == "DELISTED":
+                self.remove_symbol(symbol_raw)
+
+            return True  # Success
+
+        except Exception as e:
+            print(f"[{self.exchange}] Error processing symbol message: {e}")
+            return True  # ACK anyway for symbol events to avoid blocking
+
+    def _handle_kline_update_from_stream(
+        self, newest: Dict, timestamp: int, oldest_values: Dict
+    ):
+        """Handle kline update from Redis Stream (already decoded)."""
+        self.last_update_time = time.time()
+        self.update_count += 1
+
+        time_since_last = (
+            self.last_update_time - self.last_update_time
+            if self.last_update_time > 0
+            else 0
+        )
+
+        print(
+            f"[{self.exchange}][DEBUG] Kline update #{self.update_count} - timestamp: {timestamp}, "
+            f"symbols in payload: {len(newest)}, tracked symbols: {len(self.symbols)}"
+        )
+
+        if self.initialized:
+            self._validate_newest_values(newest, timestamp)
+
+        self._store_pubsub_prices(newest, timestamp)
+        self.update_correlations(newest, oldest_values)
+
 
     def _validate_newest_values(self, newest: Dict, timestamp: int) -> bool:
         """Validate the newest_values payload for issues."""
@@ -713,70 +733,12 @@ class CorrelationCalculator:
 
         return True
 
-    def _handle_kline_update(self, data: str):
-        """Process kline update message."""
-        try:
-            payload = json.loads(data)
-        except json.JSONDecodeError:
-            print(
-                f"[{self.exchange}][DEBUG] Failed to decode kline update JSON: {data[:100]}"
-            )
-            return
-
-        # Filter by exchange - ignore messages from other exchanges
-        msg_exchange = payload.get(
-            "exchange", Exchange.BINANCE
-        )  # Default to binance for backward compatibility
-        if msg_exchange != self.exchange:
-            return
-
-        newest = payload.get("newest_values")
-        timestamp = payload.get("timestamp")
-
-        oldest_values = {int(k): v for k, v in payload.get("oldest_values", {}).items()}
-
-        if not isinstance(newest, dict):
-            print(
-                f"[{self.exchange}][DEBUG] newest_values is not a dict: {type(newest)}"
-            )
-            return
-
-        self._store_pubsub_prices(newest, timestamp)
-
-        current_time = time.time()
-        time_since_last = (
-            current_time - self.last_update_time if self.last_update_time > 0 else 0
-        )
-        self.update_count += 1
-
-        print(
-            f"[{self.exchange}][DEBUG] Kline update #{self.update_count} - timestamp: {timestamp}, symbols in payload: {len(newest)}, tracked symbols: {len(self.symbols)}, time_since_last: {time_since_last:.1f}s"
-        )
-
-        if time_since_last > 90 and self.last_update_time > 0:
-            print(
-                f"[{self.exchange}][DEBUG] WARNING: Gap of {time_since_last:.1f}s since last update (expected ~60s)"
-            )
-
-        if self.initialized:
-            self._validate_newest_values(newest, timestamp)
-
-        if not self.initialized:
-            with self.lock:
-                self.pending_updates.append((newest, timestamp, oldest_values))
-            print(
-                f"[{self.exchange}] Queued update (pending: {len(self.pending_updates)})"
-            )
-            return
-
-        self.last_update_time = current_time
-        start = time.time()
-        self.update_correlations(newest, oldest_values)
-        print(f"[{self.exchange}] Update completed in {time.time() - start:.2f}s")
 
     def run(self):
         """Main entry point."""
-        print(f"[{self.exchange}] Starting correlation calculator...")
+        print(
+            f"[{self.exchange}] Starting correlation calculator with Redis Streams..."
+        )
         self.hours_options = list(
             EXCHANGE_CONFIG[self.exchange]["hours_options"]["correlation"].values()
         )
@@ -785,11 +747,7 @@ class CorrelationCalculator:
         )
         self._rebuild_indices()
 
-        pubsub_thread = threading.Thread(target=self._pubsub_loop, daemon=True)
-        pubsub_thread.start()
-
-        time.sleep(2)
-
+        # Initialize trackers from historical data first
         print(f"[{self.exchange}] Initializing correlation trackers...")
         start = time.time()
         self._init_trackers()
@@ -797,11 +755,50 @@ class CorrelationCalculator:
             f"[{self.exchange}] Initialization completed in {time.time() - start:.2f}s"
         )
 
-        self._drain_pending_updates()
+        # Mark as initialized - handlers can now process messages
+        self.initialized = True
 
-        print(f"[{self.exchange}] Ready for real-time updates")
+        # Set up stream consumers
+        klines_stream = RedisStreamKeys.klines(self.exchange)
+        symbols_stream = RedisStreamKeys.symbols(self.exchange)
+        group_name = RedisStreamKeys.consumer_group("correlations", self.exchange)
+
+        klines_consumer = StreamConsumer(self.redis, klines_stream, group_name)
+        symbols_consumer = StreamConsumer(self.redis, symbols_stream, group_name)
+
+        # Create consumer groups - start from latest to only process new messages
+        klines_consumer.create_consumer_group(start_id="$")
+        symbols_consumer.create_consumer_group(start_id="$")
+
+        print(f"[{self.exchange}] Starting stream consumers...")
+
+        # Start consuming in separate threads
+        klines_thread = threading.Thread(
+            target=lambda: klines_consumer.start_consuming(
+                message_handler=self._handle_kline_message,
+                count=10,
+                block_ms=2000,
+            ),
+            daemon=True,
+        )
+        symbols_thread = threading.Thread(
+            target=lambda: symbols_consumer.start_consuming(
+                message_handler=self._handle_symbol_message,
+                count=10,
+                block_ms=1000,
+            ),
+            daemon=True,
+        )
+
+        klines_thread.start()
+        symbols_thread.start()
+
+        print(f"[{self.exchange}] Ready for real-time updates from streams")
 
         try:
-            pubsub_thread.join()
+            klines_thread.join()
+            symbols_thread.join()
         except KeyboardInterrupt:
             print(f"[{self.exchange}] Shutting down...")
+            klines_consumer.stop()
+            symbols_consumer.stop()
