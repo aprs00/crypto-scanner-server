@@ -1,8 +1,7 @@
-import json
 import numpy as np
 import msgpack
-import time
-from typing import Dict, Optional
+import threading
+from typing import Any, Dict
 from django.utils import timezone
 from django.conf import settings
 
@@ -13,10 +12,11 @@ from exchange_connections.selectors import (
 )
 from zscore.selectors.zscore import get_zscore_history_data
 from exchange_connections.constants import KLINE_FIELD_MAP
-from core.constants import RedisPubMessages, EXCHANGE_CONFIG, Exchange
+from core.constants import RedisStreamKeys, EXCHANGE_CONFIG, Exchange
 from zscore.models import ZScoreHistory
 from exchange_connections.models import Symbol, Exchange as ExchangeModel, ContractType
 from core.redis_config import get_redis_connection
+from core.redis_streams import StreamConsumer
 from core.notifications import notification_service
 
 r = get_redis_connection()
@@ -262,126 +262,136 @@ class ZScoreProcessor:
 
         print(f"[{self.exchange}] ZSCORE: Stored zscore history data to redis")
 
-    def _handle_symbol_event(self, data: str, handler):
-        """Handle symbol add/remove events with exchange filtering."""
-        parts = data.split(":")
-        if len(parts) >= 3:
-            # New format: "exchange:symbol:timestamp"
-            msg_exchange, symbol = parts[0], parts[1]
-            if msg_exchange != self.exchange:
-                return
-        else:
-            # Legacy format: "symbol:timestamp" - assume binance
-            symbol = parts[0]
-            if self.exchange != Exchange.BINANCE:
-                return
-        handler(symbol)
+    def _handle_kline_message(self, _msg_id: str, msg_data: Dict[str, Any]) -> bool:
+        """
+        Handle a single kline message from Redis Stream.
+
+        Returns:
+            True if processed successfully (will be ACKed)
+            False if processing failed (will retry)
+        """
+        try:
+            # Filter by exchange
+            msg_exchange = msg_data.get("exchange", str(Exchange.BINANCE))
+            if msg_exchange != str(self.exchange):
+                return True  # ACK, not for us
+
+            print(f"[{self.exchange}] ZSCORE: Processing update")
+
+            newest_values = msg_data.get("newest_values")
+            if not isinstance(newest_values, dict):
+                print(f"[{self.exchange}] ZSCORE: No newest_values found in payload")
+                return True  # ACK to skip invalid message
+
+            oldest_values = msg_data.get("oldest_values", {})
+            if not isinstance(oldest_values, dict):
+                oldest_values = {}
+
+            # Update zscores
+            self.update_zscores(
+                newest_values=newest_values,
+                oldest_values=oldest_values,
+            )
+            results = self.create_z_score_results()
+
+            # Store to Redis and DB
+            pipeline = r.pipeline()
+            for tf, tf_data in results.items():
+                pipeline.execute_command(
+                    "SET",
+                    f"zscore:{self.exchange}:{self.contract_type}:{tf}",
+                    msgpack.packb(tf_data),
+                )
+            self.store_z_score_results(results)
+            self.fetch_and_store_zscore_history_data(redis_pipeline=pipeline)
+            pipeline.execute()
+
+            notification_service.send_zscore_update()
+
+            return True  # Success
+
+        except Exception as e:
+            print(f"[{self.exchange}] ZSCORE: Error processing message: {e}")
+            return False  # Retry
+
+    def _handle_symbol_message(self, _msg_id: str, msg_data: Dict[str, Any]) -> bool:
+        """
+        Handle a single symbol event message from Redis Stream.
+
+        Returns:
+            True if processed successfully (will be ACKed)
+            False if processing failed (will retry)
+        """
+        try:
+            # Filter by exchange
+            if msg_data.get("exchange") != str(self.exchange):
+                return True  # ACK, not for us
+
+            symbol = msg_data.get("symbol")
+            event = msg_data.get("event")
+
+            if event == "ADDED":
+                print(
+                    f"[{self.exchange}] ZSCORE: Received symbol added event: {symbol}"
+                )
+                self.add_new_symbol(symbol)
+            elif event == "DELISTED":
+                print(
+                    f"[{self.exchange}] ZSCORE: Received symbol delisted event: {symbol}"
+                )
+                self.remove_symbol(symbol)
+
+            return True  # Success
+
+        except Exception as e:
+            print(f"[{self.exchange}] ZSCORE: Error processing symbol message: {e}")
+            return True  # ACK anyway for symbol events to avoid blocking
 
     def run(self):
-        """Main processing loop listening for Redis updates"""
-        retries = 0
-        print(f"[{self.exchange}] Starting ZScore processor...")
+        """Main processing loop listening for Redis Streams"""
+        print(f"[{self.exchange}] Starting ZScore processor with Redis Streams...")
 
-        while True:
-            try:
-                print(f"[{self.exchange}] Subscribing to Redis channels...")
-                pubsub = r.pubsub()
-                pubsub.subscribe(
-                    RedisPubMessages.KLINE_SAVED_TO_DB.value,
-                    RedisPubMessages.SYMBOL_ADDED.value,
-                    RedisPubMessages.SYMBOL_DELISTED.value,
-                )
-                pubsub.get_message()
+        # Set up stream consumers
+        klines_stream = RedisStreamKeys.klines(self.exchange)
+        symbols_stream = RedisStreamKeys.symbols(self.exchange)
+        group_name = RedisStreamKeys.consumer_group("zscore", self.exchange)
 
-                for message in pubsub.listen():
-                    if message["type"] == "message":
-                        channel = message["channel"]
+        klines_consumer = StreamConsumer(r, klines_stream, group_name)
+        symbols_consumer = StreamConsumer(r, symbols_stream, group_name)
 
-                        if channel == RedisPubMessages.KLINE_SAVED_TO_DB.value:
-                            data_raw = message.get("data")
-                            if data_raw is None:
-                                print(
-                                    f"[{self.exchange}] ZSCORE: Received empty payload"
-                                )
-                                continue
+        # Create consumer groups - start from latest to only process new messages
+        klines_consumer.create_consumer_group(start_id="$")
+        symbols_consumer.create_consumer_group(start_id="$")
 
-                            if isinstance(data_raw, bytes):
-                                data_text = data_raw.decode("utf-8")
-                            elif isinstance(data_raw, str):
-                                data_text = data_raw
-                            else:
-                                print(
-                                    f"[{self.exchange}] ZSCORE: Unexpected payload type {type(data_raw)}"
-                                )
-                                continue
+        print(f"[{self.exchange}] ZScore stream consumers initialized")
 
-                            try:
-                                payload = json.loads(data_text)
-                            except (TypeError, json.JSONDecodeError):
-                                print(
-                                    f"[{self.exchange}] ZSCORE: Failed to decode newest values payload"
-                                )
-                                continue
+        # Start consuming in separate threads
+        klines_thread = threading.Thread(
+            target=lambda: klines_consumer.start_consuming(
+                message_handler=self._handle_kline_message,
+                count=10,
+                block_ms=2000,
+            ),
+            daemon=True,
+        )
+        symbols_thread = threading.Thread(
+            target=lambda: symbols_consumer.start_consuming(
+                message_handler=self._handle_symbol_message,
+                count=10,
+                block_ms=1000,
+            ),
+            daemon=True,
+        )
 
-                            msg_exchange = payload.get("exchange", Exchange.BINANCE)
-                            if msg_exchange != self.exchange:
-                                continue
+        klines_thread.start()
+        symbols_thread.start()
 
-                            print(f"[{self.exchange}] ZSCORE: Processing update")
+        print(f"[{self.exchange}] Ready for real-time zscore updates from streams")
 
-                            newest_values = payload.get("newest_values")
-                            if not isinstance(newest_values, dict):
-                                print(
-                                    f"[{self.exchange}] ZSCORE: No newest_values found in payload"
-                                )
-                                continue
-
-                            oldest_values = {
-                                int(k): v
-                                for k, v in payload.get("oldest_values", {}).items()
-                            }
-
-                            self.update_zscores(
-                                newest_values=newest_values,
-                                oldest_values=oldest_values,
-                            )
-                            results = self.create_z_score_results()
-
-                            pipeline = r.pipeline()
-                            for tf, tf_data in results.items():
-                                pipeline.execute_command(
-                                    "SET",
-                                    f"zscore:{self.exchange}:{self.contract_type}:{tf}",
-                                    msgpack.packb(tf_data),
-                                )
-                            self.store_z_score_results(results)
-                            self.fetch_and_store_zscore_history_data(
-                                redis_pipeline=pipeline
-                            )
-                            pipeline.execute()
-
-                            notification_service.send_zscore_update()
-
-                        elif channel == RedisPubMessages.SYMBOL_ADDED.value:
-                            data = message.get("data", b"").decode("utf-8")
-                            print(
-                                f"[{self.exchange}] ZSCORE: Received symbol added event: {data}"
-                            )
-                            self._handle_symbol_event(data, self.add_new_symbol)
-
-                        elif channel == RedisPubMessages.SYMBOL_DELISTED.value:
-                            data = message.get("data", b"").decode("utf-8")
-                            print(
-                                f"[{self.exchange}] ZSCORE: Received symbol delisted event: {data}"
-                            )
-                            self._handle_symbol_event(data, self.remove_symbol)
-
-                retries = 0
-
-            except Exception as e:
-                retries += 1
-                wait = min(2**retries, 40)
-                print(
-                    f"[{self.exchange}][ZScore] Unexpected error: {e}. Retrying in {wait}s..."
-                )
-                time.sleep(wait)
+        try:
+            klines_thread.join()
+            symbols_thread.join()
+        except KeyboardInterrupt:
+            print(f"[{self.exchange}] Shutting down...")
+            klines_consumer.stop()
+            symbols_consumer.stop()

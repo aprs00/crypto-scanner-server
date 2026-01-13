@@ -14,8 +14,9 @@ from exchange_connections.services.klines_ingest import (
     build_model_from_ws,
 )
 from exchange_connections.selectors import get_symbol_kline_data_multi_hours
-from core.constants import RedisPubMessages, TIMEFRAME_HOURS
+from core.constants import Exchange, RedisStreamKeys, TIMEFRAME_HOURS
 from core.redis_config import get_redis_connection
+from core.redis_streams import StreamPublisher
 
 
 ERROR_LOG_KEY = "error_log"
@@ -40,10 +41,11 @@ class BaseKlineCollector(ABC):
     - normalize_candle(): Convert exchange-specific candle format to NormalizedCandle
     """
 
-    def __init__(self, exchange: str, contract_type: str = "perpetual"):
+    def __init__(self, exchange: Exchange, contract_type: str = "perpetual"):
         self.exchange = exchange
         self.contract_type = contract_type
         self.redis = get_redis_connection()
+        self.stream_publisher = StreamPublisher(self.redis)
         self.symbols: Set[str] = set()
         self.should_run = True
 
@@ -129,10 +131,22 @@ class BaseKlineCollector(ABC):
             print(f"[{self.exchange}] New symbol listed: {symbol}")
             try:
                 self.redis.sadd(self.symbols_redis_key, symbol)
-                self.redis.publish(
-                    RedisPubMessages.SYMBOL_ADDED.value,
-                    f"{self.exchange}:{symbol}:{timestamp}",
+                # Publish to stream
+                stream_key = RedisStreamKeys.symbols(self.exchange)
+                msg_id = self.stream_publisher.publish(
+                    stream_key,
+                    {
+                        "exchange": self.exchange,
+                        "symbol": symbol,
+                        "event": "ADDED",
+                        "timestamp": timestamp,
+                    },
+                    maxlen=100,
                 )
+                if msg_id:
+                    print(
+                        f"[{self.exchange}] Published SYMBOL_ADDED to stream: {symbol}"
+                    )
             except Exception as e:
                 self.log_error(f"Failed to add symbol {symbol}: {e}")
 
@@ -140,10 +154,22 @@ class BaseKlineCollector(ABC):
             print(f"[{self.exchange}] Symbol delisted: {symbol}")
             try:
                 self.redis.srem(self.symbols_redis_key, symbol)
-                self.redis.publish(
-                    RedisPubMessages.SYMBOL_DELISTED.value,
-                    f"{self.exchange}:{symbol}:{timestamp}",
+                # Publish to stream
+                stream_key = RedisStreamKeys.symbols(self.exchange)
+                msg_id = self.stream_publisher.publish(
+                    stream_key,
+                    {
+                        "exchange": self.exchange,
+                        "symbol": symbol,
+                        "event": "DELISTED",
+                        "timestamp": timestamp,
+                    },
+                    maxlen=100,
                 )
+                if msg_id:
+                    print(
+                        f"[{self.exchange}] Published SYMBOL_DELISTED to stream: {symbol}"
+                    )
             except Exception as e:
                 self.log_error(f"Failed to remove symbol {symbol}: {e}")
 
@@ -361,21 +387,27 @@ class BaseKlineCollector(ABC):
                     kline_timestamp_ms=timestamp_ms,
                 )
 
-                self.redis.publish(
-                    RedisPubMessages.KLINE_SAVED_TO_DB.value,
-                    json.dumps(
-                        {
-                            "exchange": self.exchange,
-                            "contract_type": self.contract_type,
-                            "newest_values": newest_values,
-                            "oldest_values": oldest_values,
-                            "timestamp": timestamp_ms,
-                        }
-                    ),
+                # Publish to stream with automatic retries
+                stream_key = RedisStreamKeys.klines(self.exchange)
+                msg_id = self.stream_publisher.publish(
+                    stream_key,
+                    {
+                        "exchange": self.exchange,
+                        "contract_type": self.contract_type,
+                        "newest_values": newest_values,
+                        "oldest_values": oldest_values,
+                        "timestamp": timestamp_ms,
+                    },
+                    maxlen=1000,  # Keep last ~7 days at 1min intervals
                 )
-                print(
-                    f"[{self.exchange}] Published KLINE_SAVED_TO_DB with {len(newest_values)} symbols"
-                )
+                if msg_id:
+                    print(
+                        f"[{self.exchange}] Published to stream {stream_key} with {len(newest_values)} symbols (ID: {msg_id})"
+                    )
+                else:
+                    self.log_error(
+                        f"Failed to publish kline update to stream for timestamp {timestamp_ms}"
+                    )
 
         except Exception as e:
             self.log_error(f"Error processing batch: {e}")

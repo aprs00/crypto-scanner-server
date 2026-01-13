@@ -15,10 +15,23 @@ class Exchange(str, Enum):
         return self.value
 
 
-class RedisPubMessages(Enum):
-    KLINE_SAVED_TO_DB = b"KLINE_SAVED_TO_DB"
-    SYMBOL_DELISTED = b"SYMBOL_DELISTED"
-    SYMBOL_ADDED = b"SYMBOL_ADDED"
+class RedisStreamKeys:
+    """Redis Stream keys for persistent message delivery."""
+
+    @staticmethod
+    def klines(exchange: Exchange) -> str:
+        """Stream key for kline updates."""
+        return f"klines:{exchange}:stream"
+
+    @staticmethod
+    def symbols(exchange: Exchange) -> str:
+        """Stream key for symbol add/delist events."""
+        return f"symbols:{exchange}:stream"
+
+    @staticmethod
+    def consumer_group(service: str, exchange: Exchange) -> str:
+        """Consumer group name for a service."""
+        return f"{service}:{exchange}"
 
 
 # Per-exchange configuration
