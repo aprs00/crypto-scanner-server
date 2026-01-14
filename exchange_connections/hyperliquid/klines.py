@@ -4,7 +4,7 @@ import threading
 import requests
 import websocket
 from decimal import Decimal
-from typing import Set, Optional
+from typing import List, Set, Optional
 
 from exchange_connections.base import BaseKlineCollector
 from exchange_connections.candle_types import NormalizedCandle
@@ -82,6 +82,52 @@ class HyperliquidKlineCollector(BaseKlineCollector):
     def map_coingecko_symbol(self, coingecko_symbol: str) -> Optional[str]:
         return coingecko_symbol
 
+    def fetch_historical_klines(
+        self, symbol: str, start_time_ms: int, end_time_ms: int
+    ) -> List[NormalizedCandle]:
+        """Fetch historical klines via Hyperliquid REST API.
+
+        POST /info with {"type": "candleSnapshot", "req": {...}}
+
+        NOTE: Hyperliquid REST API does NOT return candle data for periods
+        with no trading activity. This means synthetic candles (for inactive
+        symbols) cannot be backfilled - only real trades can be recovered.
+        Returns empty list for symbols with no trades.
+        """
+        try:
+            response = requests.post(
+                HYPERLIQUID_INFO_URL,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "type": "candleSnapshot",
+                    "req": {
+                        "coin": symbol,
+                        "interval": "1m",
+                        "startTime": start_time_ms,
+                        "endTime": end_time_ms,
+                    },
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            candles = response.json()
+
+            if not candles:
+                # No trades for this symbol in this period - this is expected
+                return []
+
+            result = []
+            for raw_candle in candles:
+                candle = self.normalize_candle(raw_candle)
+                if candle:
+                    result.append(candle)
+
+            return result
+
+        except Exception as e:
+            self.log_error(f"Failed to fetch historical klines for {symbol}: {e}")
+            return []
+
     def _on_message(self, ws, message):
         try:
             data = json.loads(message)
@@ -144,14 +190,27 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         self.log_error(f"WebSocket error: {error}")
 
     def _on_close(self, ws, code, msg):
+        # Flush any pending candles to DB before clearing
+        with self.pending_lock:
+            if self.pending_candles:
+                try:
+                    prev_minute = int(next(iter(self.pending_candles.values()))["t"])
+                    print(
+                        f"[hyperliquid] Flushing {len(self.pending_candles)} pending "
+                        f"candles before disconnect"
+                    )
+                    self._save_candles_locked(prev_minute)
+                except Exception as e:
+                    self.log_error(f"Failed to flush pending candles on close: {e}")
+                    self.pending_candles.clear()
+
+        # Then mark disconnected
         self.ws_connected = False
         duration = (
             int(time.time() - self.connection_start_time)
             if self.connection_start_time
             else 0
         )
-        with self.pending_lock:
-            self.pending_candles.clear()
         print(
             f"[hyperliquid] WebSocket closed: code={code}, msg={msg}, duration={duration}s, heartbeats_sent={self.heartbeat_count}"
         )
@@ -196,7 +255,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
             print(
                 f"[hyperliquid] Skipping initial price fetch, already have {len(self.last_prices)} prices"
             )
-        self._backfill_gaps()
+        # Gap detection and backfill is now handled by the base class
         self._run_stale_checker()
 
     def _heartbeat_loop(self):
@@ -292,81 +351,6 @@ class HyperliquidKlineCollector(BaseKlineCollector):
             except Exception:
                 pass
         print(f"[hyperliquid] Initialized {count} prices")
-
-    def _backfill_gaps(self):
-        """Detect and backfill any gaps in kline data after reconnection."""
-        print("[hyperliquid] Checking for gaps to backfill...")
-        print("hyperliquid] last_processed_timestamp:", self.last_processed_timestamp)
-
-        if self.last_processed_timestamp == 0:
-            return
-
-        current_time_ms = int(time.time() * 1000)
-        current_minute_ms = (current_time_ms // 60000) * 60000
-        expected_next_minute = self.last_processed_timestamp + 60000
-
-        if expected_next_minute >= current_minute_ms:
-            return
-
-        gap_minutes = (current_minute_ms - expected_next_minute) // 60000
-        if gap_minutes == 0:
-            return
-
-        print(
-            f"[hyperliquid] Detected gap: {gap_minutes} missing minutes after ts={self.last_processed_timestamp}"
-        )
-
-        timestamps_to_fill = []
-        ts = expected_next_minute
-        while ts < current_minute_ms:
-            timestamps_to_fill.append(ts)
-            ts += 60000
-
-        for timestamp_ms in timestamps_to_fill:
-            print(f"[hyperliquid] Backfilling ts={timestamp_ms}...")
-            candles_by_symbol = {}
-
-            for symbol in self.symbols:
-                if not self.ws_connected:
-                    print("[hyperliquid] Backfill interrupted - WebSocket disconnected")
-                    return
-
-                try:
-                    resp = requests.post(
-                        HYPERLIQUID_INFO_URL,
-                        headers={"Content-Type": "application/json"},
-                        json={
-                            "type": "candleSnapshot",
-                            "req": {
-                                "coin": symbol,
-                                "interval": "1m",
-                                "startTime": timestamp_ms,
-                                "endTime": timestamp_ms + 60000,
-                            },
-                        },
-                        timeout=10,
-                    )
-                    resp.raise_for_status()
-                    candles = resp.json()
-                    if candles:
-                        raw_candle = candles[0]
-                        normalized = self.normalize_candle(raw_candle)
-                        if normalized:
-                            candles_by_symbol[symbol] = normalized
-                    time.sleep(0.04)
-                except Exception as e:
-                    self.log_error(
-                        f"Backfill failed for {symbol} at ts={timestamp_ms}: {e}"
-                    )
-
-            if candles_by_symbol:
-                print(
-                    f"[hyperliquid] Backfilled {len(candles_by_symbol)} candles for ts={timestamp_ms}"
-                )
-                for candle in candles_by_symbol.values():
-                    self.process_kline(candle)
-
-        print(f"[hyperliquid] Gap backfill completed")
 
     def _run_stale_checker(self):
         """Flush pending candles if their minute has passed."""
