@@ -3,7 +3,7 @@ import time
 import threading
 import requests
 import websocket
-from typing import Set, Optional
+from typing import List, Set, Optional
 from decimal import Decimal
 
 from exchange_connections.base import BaseKlineCollector
@@ -14,6 +14,7 @@ from core.constants import Exchange
 
 BINANCE_FUTURES_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/stream"
+BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 
 WS_PING_INTERVAL = 0
 WS_PING_TIMEOUT = None
@@ -85,6 +86,54 @@ class BinanceKlineCollector(BaseKlineCollector):
     def map_coingecko_symbol(self, coingecko_symbol: str) -> Optional[str]:
         """Map CoinGecko symbol to Binance format (add USDT suffix)."""
         return f"{coingecko_symbol}USDT"
+
+    def fetch_historical_klines(
+        self, symbol: str, start_time_ms: int, end_time_ms: int
+    ) -> List[NormalizedCandle]:
+        """Fetch historical klines via Binance REST API.
+
+        GET /fapi/v1/klines
+        Response format: [open_time, open, high, low, close, volume, close_time,
+                          quote_volume, trades, taker_buy_base, taker_buy_quote, ignore]
+        """
+        try:
+            response = requests.get(
+                BINANCE_FUTURES_KLINES_URL,
+                params={
+                    "symbol": symbol,
+                    "interval": "1m",
+                    "startTime": start_time_ms,
+                    "endTime": end_time_ms,
+                    "limit": 1,
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            klines = response.json()
+
+            result = []
+            for k in klines:
+                candle = NormalizedCandle(
+                    open_time_ms=int(k[0]),
+                    close_time_ms=int(k[6]),
+                    symbol=symbol,
+                    open=Decimal(str(k[1])),
+                    high=Decimal(str(k[2])),
+                    low=Decimal(str(k[3])),
+                    close=Decimal(str(k[4])),
+                    base_volume=Decimal(str(k[5])),
+                    number_of_trades=int(k[8]),
+                    quote_volume=Decimal(str(k[7])),
+                    taker_buy_base_volume=Decimal(str(k[9])),
+                    taker_buy_quote_volume=Decimal(str(k[10])),
+                )
+                result.append(candle)
+
+            return result
+
+        except Exception as e:
+            self.log_error(f"Failed to fetch historical klines for {symbol}: {e}")
+            return []
 
     def build_ws_url(self) -> str:
         """Build WebSocket URL with all kline streams."""

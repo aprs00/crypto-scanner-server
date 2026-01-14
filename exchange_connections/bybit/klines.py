@@ -12,7 +12,7 @@ import threading
 import requests
 import websocket
 from decimal import Decimal
-from typing import Set, Optional
+from typing import List, Set, Optional
 
 from exchange_connections.base import BaseKlineCollector
 from exchange_connections.candle_types import NormalizedCandle
@@ -137,6 +137,64 @@ class BybitKlineCollector(BaseKlineCollector):
     def map_coingecko_symbol(self, coingecko_symbol: str) -> Optional[str]:
         """Map CoinGecko symbol to Bybit format (add USDT suffix)."""
         return f"{coingecko_symbol}USDT"
+
+    def fetch_historical_klines(
+        self, symbol: str, start_time_ms: int, end_time_ms: int
+    ) -> List[NormalizedCandle]:
+        """Fetch historical klines via Bybit REST API.
+
+        GET /v5/market/kline
+        Response format: result.list -> [startTime, open, high, low, close, volume, turnover]
+        """
+        try:
+            response = requests.get(
+                f"{BYBIT_API_BASE}/v5/market/kline",
+                params={
+                    "category": "linear",
+                    "symbol": symbol,
+                    "interval": "1",
+                    "start": start_time_ms,
+                    "end": end_time_ms,
+                    "limit": 1,
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("retCode") != 0:
+                self.log_error(
+                    f"Bybit API error for {symbol}: {data.get('retMsg')}"
+                )
+                return []
+
+            result = []
+            for k in data.get("result", {}).get("list", []):
+                # Bybit returns [startTime, open, high, low, close, volume, turnover]
+                open_time_ms = int(k[0])
+                close_time_ms = open_time_ms + 60000 - 1  # End of the minute
+
+                candle = NormalizedCandle(
+                    open_time_ms=open_time_ms,
+                    close_time_ms=close_time_ms,
+                    symbol=symbol,
+                    open=Decimal(str(k[1])),
+                    high=Decimal(str(k[2])),
+                    low=Decimal(str(k[3])),
+                    close=Decimal(str(k[4])),
+                    base_volume=Decimal(str(k[5])),
+                    number_of_trades=0,  # Bybit doesn't provide trade count in kline
+                    quote_volume=Decimal(str(k[6])),  # turnover
+                    taker_buy_base_volume=None,
+                    taker_buy_quote_volume=None,
+                )
+                result.append(candle)
+
+            return result
+
+        except Exception as e:
+            self.log_error(f"Failed to fetch historical klines for {symbol}: {e}")
+            return []
 
     def _on_message(self, ws, message):
         """Handle incoming WebSocket message."""
