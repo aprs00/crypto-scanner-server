@@ -7,7 +7,7 @@ import redis
 import msgpack
 from typing import Any, Dict, List, Optional, cast
 
-from exchange_connections.constants import KLINE_FIELD_MAP, get_btc_symbol
+from exchange_connections.constants import KLINE_FIELD_MAP, get_btc_symbol, get_sol_symbol
 from exchange_connections.selectors import (
     get_exchange_symbols,
     get_historical_kline_data,
@@ -142,7 +142,7 @@ class CorrelationCalculator:
     def _get_validation_symbols(self) -> List[str]:
         """Get validation symbol pair for the exchange."""
         btc = get_btc_symbol(self.exchange)
-        sol = "SOLUSDT" if self.exchange == Exchange.BINANCE else "SOL"
+        sol = get_sol_symbol(self.exchange)
         return [btc, sol]
 
     def _store_pubsub_prices(self, newest: Dict, timestamp: int):
