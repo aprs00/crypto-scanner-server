@@ -737,6 +737,28 @@ class CorrelationCalculator:
 
         return True
 
+    def _get_stream_latest_id(self, stream_key: str) -> str:
+        """
+        Get the latest message ID from a stream, or '0' if stream doesn't exist.
+
+        Used to capture stream position before initialization so we don't miss
+        messages that arrive during the init window.
+        """
+        try:
+            info = self.redis.xinfo_stream(stream_key)
+            if isinstance(info, dict):
+                last_id = info.get("last-generated-id", "0")
+                if last_id is None:
+                    return "0"
+                # Handle bytes response from redis-py
+                if isinstance(last_id, bytes):
+                    return last_id.decode("utf-8")
+                return str(last_id)
+            return "0"
+        except redis.ResponseError:
+            # Stream doesn't exist yet
+            return "0"
+
     def run(self):
         """Main entry point."""
         print(
@@ -750,7 +772,20 @@ class CorrelationCalculator:
         )
         self._rebuild_indices()
 
-        # Initialize trackers from historical data first
+        # Set up stream keys
+        klines_stream = RedisStreamKeys.klines(self.exchange)
+        symbols_stream = RedisStreamKeys.symbols(self.exchange)
+        group_name = RedisStreamKeys.consumer_group("correlations", self.exchange)
+
+        # Capture stream positions BEFORE initialization
+        # This ensures we process all messages that arrive during init (~2+ mins)
+        klines_start_id = self._get_stream_latest_id(klines_stream)
+        symbols_start_id = self._get_stream_latest_id(symbols_stream)
+        print(
+            f"[{self.exchange}] Captured stream positions - klines: {klines_start_id}, symbols: {symbols_start_id}"
+        )
+
+        # Initialize trackers from historical data (takes 2+ mins for large exchanges)
         print(f"[{self.exchange}] Initializing correlation trackers...")
         start = time.time()
         self._init_trackers()
@@ -761,17 +796,18 @@ class CorrelationCalculator:
         # Mark as initialized - handlers can now process messages
         self.initialized = True
 
-        # Set up stream consumers
-        klines_stream = RedisStreamKeys.klines(self.exchange)
-        symbols_stream = RedisStreamKeys.symbols(self.exchange)
-        group_name = RedisStreamKeys.consumer_group("correlations", self.exchange)
-
+        # Create consumers and consumer groups
+        # Start from pre-init positions to process messages that arrived during init
         klines_consumer = StreamConsumer(self.redis, klines_stream, group_name)
         symbols_consumer = StreamConsumer(self.redis, symbols_stream, group_name)
 
-        # Create consumer groups - start from latest to only process new messages
-        klines_consumer.create_consumer_group(start_id="$")
-        symbols_consumer.create_consumer_group(start_id="$")
+        klines_consumer.create_consumer_group(start_id=klines_start_id)
+        symbols_consumer.create_consumer_group(start_id=symbols_start_id)
+
+        # Reset position to pre-init point (in case group already existed)
+        # This ensures we process all messages that arrived during initialization
+        klines_consumer.reset_position(klines_start_id)
+        symbols_consumer.reset_position(symbols_start_id)
 
         print(f"[{self.exchange}] Starting stream consumers...")
 
