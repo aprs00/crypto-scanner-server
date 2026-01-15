@@ -7,7 +7,11 @@ import redis
 import msgpack
 from typing import Any, Dict, List, Optional, cast
 
-from exchange_connections.constants import KLINE_FIELD_MAP, get_btc_symbol, get_sol_symbol
+from exchange_connections.constants import (
+    KLINE_FIELD_MAP,
+    get_btc_symbol,
+    get_sol_symbol,
+)
 from exchange_connections.selectors import (
     get_exchange_symbols,
     get_historical_kline_data,
@@ -210,13 +214,12 @@ class CorrelationCalculator:
         del all_data
         gc.collect()
 
-
-    def _update_trackers(self, newest: Dict, oldest_by_hours: Dict[int, Dict]):
+    def _update_trackers(self, newest: Dict, oldest_by_hours: Dict[int | str, Dict]):
         """Update all trackers with new/old values."""
         n = len(self.symbols)
 
         for hours in self.hours_options:
-            oldest = oldest_by_hours.get(hours, {})
+            oldest = oldest_by_hours.get(hours) or oldest_by_hours.get(str(hours), {})
             window = hours * 60
 
             for data_type in KLINE_FIELD_MAP:
@@ -401,7 +404,7 @@ class CorrelationCalculator:
     def update_correlations(
         self,
         newest: Optional[Dict] = None,
-        oldest_values: Optional[Dict[int, Dict]] = None,
+        oldest_values: Optional[Dict[int | str, Dict]] = None,
         save_to_db: bool = True,
     ):
         """Main update method - fetch data, update trackers, cache results."""
@@ -616,7 +619,9 @@ class CorrelationCalculator:
                 return True  # ACK to skip invalid message
 
             # Process update
-            self._handle_kline_update_from_stream(newest_values, timestamp, oldest_values)
+            self._handle_kline_update_from_stream(
+                newest_values, timestamp, oldest_values
+            )
             return True  # Success
 
         except Exception as e:
@@ -678,7 +683,6 @@ class CorrelationCalculator:
         self._store_pubsub_prices(newest, timestamp)
         self.update_correlations(newest, oldest_values)
 
-
     def _validate_newest_values(self, newest: Dict, timestamp: int) -> bool:
         """Validate the newest_values payload for issues."""
         issues = []
@@ -732,7 +736,6 @@ class CorrelationCalculator:
             return False
 
         return True
-
 
     def run(self):
         """Main entry point."""
