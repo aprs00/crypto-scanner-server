@@ -663,18 +663,17 @@ class CorrelationCalculator:
         self, newest: Dict, timestamp: int, oldest_values: Dict
     ):
         """Handle kline update from Redis Stream (already decoded)."""
-        self.last_update_time = time.time()
-        self.update_count += 1
-
+        current_time = time.time()
         time_since_last = (
-            self.last_update_time - self.last_update_time
-            if self.last_update_time > 0
-            else 0
+            current_time - self.last_update_time if self.last_update_time > 0 else 0
         )
+        self.last_update_time = current_time
+        self.update_count += 1
 
         print(
             f"[{self.exchange}][DEBUG] Kline update #{self.update_count} - timestamp: {timestamp}, "
-            f"symbols in payload: {len(newest)}, tracked symbols: {len(self.symbols)}"
+            f"symbols in payload: {len(newest)}, tracked symbols: {len(self.symbols)}, "
+            f"time_since_last: {time_since_last:.1f}s"
         )
 
         if self.initialized:
@@ -801,13 +800,16 @@ class CorrelationCalculator:
         klines_consumer = StreamConsumer(self.redis, klines_stream, group_name)
         symbols_consumer = StreamConsumer(self.redis, symbols_stream, group_name)
 
+        # Create consumer groups with pre-init positions for NEW groups
+        # If group already exists (restart scenario), it uses its existing position
+        # which ensures we continue from where we crashed instead of losing messages
         klines_consumer.create_consumer_group(start_id=klines_start_id)
         symbols_consumer.create_consumer_group(start_id=symbols_start_id)
 
-        # Reset position to pre-init point (in case group already existed)
-        # This ensures we process all messages that arrived during initialization
-        klines_consumer.reset_position(klines_start_id)
-        symbols_consumer.reset_position(symbols_start_id)
+        # NOTE: We do NOT call reset_position() here
+        # - On fresh start: group is created at klines_start_id, correct behavior
+        # - On restart: group keeps its existing position, ensuring crash recovery
+        #   works properly and pending messages are reclaimed
 
         print(f"[{self.exchange}] Starting stream consumers...")
 
