@@ -38,6 +38,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         self.last_heartbeat_time = 0
         self.last_pong_time = 0
         self.heartbeat_count = 0
+        self.backfill_rate_limit = 0.04  # 40ms between API calls
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         try:
@@ -113,7 +114,6 @@ class HyperliquidKlineCollector(BaseKlineCollector):
             candles = response.json()
 
             if not candles:
-                # No trades for this symbol in this period - this is expected
                 return []
 
             result = []
@@ -249,13 +249,6 @@ class HyperliquidKlineCollector(BaseKlineCollector):
                 self.log_error(f"Subscribe failed for {symbol}: {e}")
         print("[hyperliquid] Subscribed")
 
-        if not self.last_prices:
-            self._fetch_initial_prices()
-        else:
-            print(
-                f"[hyperliquid] Skipping initial price fetch, already have {len(self.last_prices)} prices"
-            )
-        # Gap detection and backfill is now handled by the base class
         self._run_stale_checker()
 
     def _heartbeat_loop(self):
@@ -386,6 +379,19 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         )
         thread.start()
         return thread
+
+    def _pre_backfill_setup(self):
+        """Fetch initial prices before backfill starts.
+
+        Both operations use the same REST API endpoint, so running them
+        sequentially avoids 429 rate limit errors.
+        """
+        if not self.last_prices:
+            self._fetch_initial_prices()
+        else:
+            print(
+                f"[hyperliquid] Skipping initial price fetch, already have {len(self.last_prices)} prices"
+            )
 
     def on_symbols_changed(self):
         if self.ws:

@@ -70,6 +70,7 @@ class BaseKlineCollector(ABC):
         self.backfill_thread: Optional[threading.Thread] = None
         self.backfill_start_timestamp: int = 0  # Track where backfill started
         self.backfill_minutes: int = BACKFILL_MINUTES  # Look back N minutes for gaps
+        self.backfill_rate_limit: float = BACKFILL_RATE_LIMIT  # Can be overridden by subclass
 
     @property
     def symbols_redis_key(self) -> str:
@@ -582,7 +583,7 @@ class BaseKlineCollector(ABC):
                         kline_models.append(model)
                         total_fetched += 1
 
-                    time.sleep(BACKFILL_RATE_LIMIT)
+                    time.sleep(self.backfill_rate_limit)
                 except Exception as e:
                     self.log_error(
                         f"Backfill failed for {symbol} at ts={timestamp_ms}: {e}"
@@ -721,6 +722,9 @@ class BaseKlineCollector(ABC):
 
         self.fetch_market_cap_ranking()
 
+        # Hook for subclass setup before backfill (e.g., fetch initial prices)
+        self._pre_backfill_setup()
+
         # Detect gaps before connecting WebSocket
         missing_timestamps = self.detect_gaps()
         if missing_timestamps:
@@ -789,6 +793,14 @@ class BaseKlineCollector(ABC):
 
     def on_symbols_changed(self):
         """Called when symbols change and need to reconnect. Override in subclass if needed."""
+        pass
+
+    def _pre_backfill_setup(self):
+        """Hook for subclasses to run setup before backfill starts.
+
+        Override this to do setup that must complete before backfill begins,
+        such as fetching initial prices (which uses the same API endpoint).
+        """
         pass
 
     def stop(self):
