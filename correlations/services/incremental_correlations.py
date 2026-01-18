@@ -2,6 +2,7 @@ import time
 import threading
 import gc
 from collections import deque
+import os
 import numpy as np
 import redis
 import msgpack
@@ -763,6 +764,8 @@ class CorrelationCalculator:
         print(
             f"[{self.exchange}] Starting correlation calculator with Redis Streams..."
         )
+
+        reset_groups = os.getenv("RESET_STREAM_GROUP_ON_START", "0") == "1"
         self.hours_options = list(
             EXCHANGE_CONFIG[self.exchange]["hours_options"]["correlation"].values()
         )
@@ -803,8 +806,14 @@ class CorrelationCalculator:
         # Create consumer groups with pre-init positions for NEW groups
         # If group already exists (restart scenario), it uses its existing position
         # which ensures we continue from where we crashed instead of losing messages
-        klines_consumer.create_consumer_group(start_id=klines_start_id)
-        symbols_consumer.create_consumer_group(start_id=symbols_start_id)
+        klines_consumer.create_consumer_group(
+            start_id=klines_start_id,
+            reset_if_exists=reset_groups,
+        )
+        symbols_consumer.create_consumer_group(
+            start_id=symbols_start_id,
+            reset_if_exists=reset_groups,
+        )
 
         # NOTE: We do NOT call reset_position() here
         # - On fresh start: group is created at klines_start_id, correct behavior

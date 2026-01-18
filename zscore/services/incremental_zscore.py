@@ -1,6 +1,7 @@
 import numpy as np
 import msgpack
 import threading
+import os
 from typing import Any, Dict
 from django.utils import timezone
 from django.conf import settings
@@ -377,6 +378,8 @@ class ZScoreProcessor:
         """Main processing loop listening for Redis Streams"""
         print(f"[{self.exchange}] Starting ZScore processor with Redis Streams...")
 
+        reset_groups = os.getenv("RESET_STREAM_GROUP_ON_START", "0") == "1"
+
         # Set up stream keys
         klines_stream = RedisStreamKeys.klines(self.exchange)
         symbols_stream = RedisStreamKeys.symbols(self.exchange)
@@ -402,8 +405,14 @@ class ZScoreProcessor:
 
         # Create consumer groups starting from pre-init positions
         # This ensures messages that arrived during init are processed
-        klines_consumer.create_consumer_group(start_id=klines_start_id)
-        symbols_consumer.create_consumer_group(start_id=symbols_start_id)
+        klines_consumer.create_consumer_group(
+            start_id=klines_start_id,
+            reset_if_exists=reset_groups,
+        )
+        symbols_consumer.create_consumer_group(
+            start_id=symbols_start_id,
+            reset_if_exists=reset_groups,
+        )
 
         print(f"[{self.exchange}] ZScore stream consumers initialized")
 

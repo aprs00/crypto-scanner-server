@@ -60,11 +60,28 @@ class HyperliquidKlineCollector(BaseKlineCollector):
             self.log_error(f"Failed to fetch symbols: {e}")
             return set()
 
+    def _normalize_minute_ts_ms(self, raw_ts: int | str) -> int:
+        """Normalize Hyperliquid timestamps to minute-aligned milliseconds.
+
+        Hyperliquid payloads have historically been observed in both seconds and
+        milliseconds depending on endpoint/context. Our pipeline assumes ms.
+        """
+        ts = int(raw_ts)
+
+        # Heuristic: seconds timestamps are ~1e9-1e10; ms are ~1e12-1e13.
+        if ts < 1_000_000_000_000:
+            ts *= 1000
+
+        # Ensure batch keys align to exact minute boundaries.
+        return (ts // 60000) * 60000
+
     def normalize_candle(self, raw_data: dict) -> Optional[NormalizedCandle]:
         try:
+            open_time_ms = self._normalize_minute_ts_ms(raw_data["t"])
+            close_time_ms = open_time_ms + 60000 - 1
             return NormalizedCandle(
-                open_time_ms=int(raw_data["t"]),
-                close_time_ms=int(raw_data["T"]),
+                open_time_ms=open_time_ms,
+                close_time_ms=close_time_ms,
                 symbol=raw_data["s"],
                 open=Decimal(str(raw_data["o"])),
                 high=Decimal(str(raw_data["h"])),
@@ -167,7 +184,15 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         if not symbol:
             return
 
-        candle_minute = int(candle_data.get("t", 0))
+        raw_t = candle_data.get("t")
+        if raw_t is None:
+            return
+
+        candle_minute = self._normalize_minute_ts_ms(raw_t)
+
+        # Normalize the payload in-place so downstream logic uses ms minute keys.
+        candle_data["t"] = candle_minute
+        candle_data["T"] = candle_minute + 60000 - 1
 
         if candle_minute <= self.last_processed_timestamp:
             return
