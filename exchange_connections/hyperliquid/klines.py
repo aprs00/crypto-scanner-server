@@ -38,7 +38,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         self.last_heartbeat_time = 0
         self.last_pong_time = 0
         self.heartbeat_count = 0
-        self.backfill_rate_limit = 0.04  # 40ms between API calls
+        self.backfill_rate_limit = 0.05
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         try:
@@ -95,38 +95,55 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         symbols) cannot be backfilled - only real trades can be recovered.
         Returns empty list for symbols with no trades.
         """
-        try:
-            response = requests.post(
-                HYPERLIQUID_INFO_URL,
-                headers={"Content-Type": "application/json"},
-                json={
-                    "type": "candleSnapshot",
-                    "req": {
-                        "coin": symbol,
-                        "interval": "1m",
-                        "startTime": start_time_ms,
-                        "endTime": end_time_ms,
-                    },
-                },
-                timeout=10,
-            )
-            response.raise_for_status()
-            candles = response.json()
+        max_retries = 4
+        retry_delay = 2
 
-            if not candles:
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    HYPERLIQUID_INFO_URL,
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "type": "candleSnapshot",
+                        "req": {
+                            "coin": symbol,
+                            "interval": "1m",
+                            "startTime": start_time_ms,
+                            "endTime": end_time_ms,
+                        },
+                    },
+                    timeout=10,
+                )
+                response.raise_for_status()
+                candles = response.json()
+
+                if not candles:
+                    return []
+
+                result = []
+                for raw_candle in candles:
+                    candle = self.normalize_candle(raw_candle)
+                    if candle:
+                        result.append(candle)
+
+                return result
+
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 429:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (attempt + 1)
+                        print(
+                            f"[hyperliquid] 429 rate limit for {symbol}, waiting {wait_time}s before retry..."
+                        )
+                        time.sleep(wait_time)
+                        continue
+                self.log_error(f"Failed to fetch historical klines for {symbol}: {e}")
+                return []
+            except Exception as e:
+                self.log_error(f"Failed to fetch historical klines for {symbol}: {e}")
                 return []
 
-            result = []
-            for raw_candle in candles:
-                candle = self.normalize_candle(raw_candle)
-                if candle:
-                    result.append(candle)
-
-            return result
-
-        except Exception as e:
-            self.log_error(f"Failed to fetch historical klines for {symbol}: {e}")
-            return []
+        return []
 
     def _on_message(self, ws, message):
         try:
@@ -340,7 +357,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
                 if candles:
                     self.last_prices[symbol] = Decimal(str(candles[-1]["c"]))
                     count += 1
-                time.sleep(0.04)
+                time.sleep(0.25)  # 250ms between API calls
             except Exception:
                 pass
         print(f"[hyperliquid] Initialized {count} prices")
