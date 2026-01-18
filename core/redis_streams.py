@@ -96,12 +96,16 @@ class StreamConsumer:
         self.consumer_name = consumer_name or f"worker-{os.getpid()}"
         self.running = False
 
-    def create_consumer_group(self, start_id: str = "0") -> bool:
+    def create_consumer_group(self, start_id: str = "0", reset_if_exists: bool = False) -> bool:
         """
         Create consumer group if it doesn't exist.
 
         Args:
             start_id: Starting message ID ('0' for beginning, '$' for latest)
+            reset_if_exists: If True, reset the group position to start_id when group already exists.
+                           This is useful when you want to ensure the consumer starts from a specific
+                           position regardless of previous runs. Default False preserves crash recovery
+                           behavior where pending messages can be reclaimed.
 
         Returns:
             True if created or already exists, False on error
@@ -113,6 +117,13 @@ class StreamConsumer:
         except redis.ResponseError as e:
             if "BUSYGROUP" in str(e):
                 print(f"[StreamConsumer] Consumer group already exists: {self.group_name}")
+                if reset_if_exists:
+                    # Reset position to ensure we start from the specified ID
+                    # This abandons any pending messages from previous runs
+                    if self.reset_position(start_id):
+                        print(f"[StreamConsumer] Reset group position to: {start_id}")
+                    else:
+                        print(f"[StreamConsumer] Warning: Failed to reset group position")
                 return True
             print(f"[StreamConsumer] Error creating consumer group: {e}")
             return False

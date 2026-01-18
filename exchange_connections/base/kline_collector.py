@@ -70,7 +70,9 @@ class BaseKlineCollector(ABC):
         self.backfill_thread: Optional[threading.Thread] = None
         self.backfill_start_timestamp: int = 0  # Track where backfill started
         self.backfill_minutes: int = BACKFILL_MINUTES  # Look back N minutes for gaps
-        self.backfill_rate_limit: float = BACKFILL_RATE_LIMIT  # Can be overridden by subclass
+        self.backfill_rate_limit: float = (
+            BACKFILL_RATE_LIMIT  # Can be overridden by subclass
+        )
 
     @property
     def symbols_redis_key(self) -> str:
