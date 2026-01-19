@@ -1,12 +1,9 @@
-import json
 import time
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone as dt_timezone
-from decimal import Decimal
-from typing import Dict, List, Set, Optional, cast
+from typing import List, Set, Optional
 
-import requests
 from django.db import connection
 
 from exchange_connections.candle_types import NormalizedCandle
@@ -14,84 +11,41 @@ from exchange_connections.services.klines_ingest import (
     bulk_insert_klines,
     build_model_from_ws,
 )
-from exchange_connections.selectors import get_symbol_kline_data_multi_hours
-from core.constants import Exchange, RedisStreamKeys, TIMEFRAME_HOURS
-from core.redis_config import get_redis_connection
-from core.redis_streams import StreamPublisher
+from core.constants import Exchange
 from exchange_connections.constants import get_btc_symbol
 
 
-ERROR_LOG_KEY = "error_log"
 WS_RECONNECT_DELAY = 5
-BACKFILL_MINUTES = 30  # Look back N minutes for gaps
-BACKFILL_RATE_LIMIT = 0.05  # 50ms between REST API calls (~20 req/sec)
-COINGECKO_MARKET_CAP_URL = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false"
-MARKET_CAP_REFRESH_INTERVAL = 14400
+BACKFILL_MINUTES = 30
+BACKFILL_RATE_LIMIT = 0.001
+SYMBOL_CHECK_INTERVAL = 30
 
 
 class BaseKlineCollector(ABC):
     """
     Base class for collecting 1-minute kline data from any exchange.
 
-    Handles:
-    - Symbol discovery and change detection
-    - Kline batching by timestamp for complete minute collection
-    - Bulk database inserts
-    - Redis pubsub for correlation updates
+    Features:
+    - Auto-reconnect in-process (never exits)
+    - On reconnect: detect gaps (via BTC) and backfill all symbols
+    - Auto-subscribe to new symbols (reconnect when symbols change)
+    - Immediate DB save for each kline (no batching)
 
     Subclasses must implement:
     - fetch_perpetual_symbols(): Get available symbols from exchange API
     - connect_websocket(): Establish WebSocket connection
+    - close_websocket(): Close WebSocket connection
     - normalize_candle(): Convert exchange-specific candle format to NormalizedCandle
+    - fetch_historical_klines(): Fetch historical klines via REST API
     """
 
     def __init__(self, exchange: Exchange, contract_type: str = "perpetual"):
         self.exchange = exchange
         self.contract_type = contract_type
-        self.redis = get_redis_connection()
-        self.stream_publisher = StreamPublisher(self.redis)
         self.symbols: Set[str] = set()
         self.should_run = True
-
-        self.kline_batch: Dict[int, Dict[str, NormalizedCandle]] = {}
-        self.batch_lock = threading.RLock()
-        self.expected_symbols: Set[str] = set()
-
-        self.last_prices: Dict[str, Decimal] = {}
-        self.generate_synthetic_candles = False
-        self.last_processed_timestamp: int = 0
-
-        self.last_symbol_refresh = 0
-        self.symbol_refresh_interval = 1800
-        self.last_market_cap_refresh = 0
-
-        # Backfill state
-        self.publishing_paused = False
-        self.backfill_thread: Optional[threading.Thread] = None
-        self.backfill_start_timestamp: int = 0  # Track where backfill started
-        self.backfill_minutes: int = BACKFILL_MINUTES  # Look back N minutes for gaps
-        self.backfill_rate_limit: float = (
-            BACKFILL_RATE_LIMIT  # Can be overridden by subclass
-        )
-
-    @property
-    def symbols_redis_key(self) -> str:
-        return f"symbols:{self.exchange}:{self.contract_type}"
-
-    @property
-    def market_cap_redis_key(self) -> str:
-        return f"market_cap:{self.exchange}:{self.contract_type}"
-
-    def log_error(self, error_msg: str):
-        """Store error message to Redis for monitoring."""
-        timestamp = datetime.now(dt_timezone.utc).isoformat()
-        full_msg = f"[{self.exchange.upper()}][{timestamp}] {error_msg}"
-        print(f"ERROR: {full_msg}")
-        try:
-            self.redis.lpush(ERROR_LOG_KEY, full_msg)
-            self.redis.ltrim(ERROR_LOG_KEY, 0, 999)
-        except Exception as e:
-            print(f"Failed to log error to Redis: {e}")
+        self.ws_thread: Optional[threading.Thread] = None
+        self.backfill_rate_limit: float = BACKFILL_RATE_LIMIT
 
     @abstractmethod
     def fetch_perpetual_symbols(self) -> Set[str]:
@@ -104,197 +58,56 @@ class BaseKlineCollector(ABC):
         pass
 
     @abstractmethod
-    def normalize_candle(self, raw_data: dict) -> Optional[NormalizedCandle]:
-        """Convert exchange-specific candle data to NormalizedCandle."""
+    def close_websocket(self):
+        """Close the WebSocket connection."""
         pass
 
     @abstractmethod
-    def map_coingecko_symbol(self, coingecko_symbol: str) -> Optional[str]:
-        """Map a CoinGecko symbol (e.g., 'BTC') to exchange symbol format.
-
-        Returns None if the symbol doesn't exist on this exchange.
-        Examples:
-            - Binance: 'BTC' -> 'BTCUSDT'
-            - Hyperliquid: 'BTC' -> 'BTC'
-        """
+    def normalize_candle(self, raw_data: dict) -> Optional[NormalizedCandle]:
+        """Convert exchange-specific candle data to NormalizedCandle."""
         pass
 
     @abstractmethod
     def fetch_historical_klines(
         self, symbol: str, start_time_ms: int, end_time_ms: int
     ) -> List[NormalizedCandle]:
-        """Fetch historical klines via REST API for backfill.
-
-        Args:
-            symbol: Symbol to fetch (e.g., 'BTCUSDT')
-            start_time_ms: Start timestamp in milliseconds
-            end_time_ms: End timestamp in milliseconds
-
-        Returns:
-            List of NormalizedCandle objects for the requested period.
-            May return empty list if no data exists (e.g., no trades during period).
-        """
+        """Fetch historical klines via REST API for backfill."""
         pass
 
-    def update_symbols(self):
-        """Update symbols in Redis and detect changes."""
+    def update_symbols(self) -> bool:
+        """Update symbols from exchange API. Returns True if symbols changed."""
         new_symbols = self.fetch_perpetual_symbols()
         if not new_symbols:
             print(f"[{self.exchange}] No symbols fetched, keeping existing symbols")
-            return
+            return False
 
-        try:
-            current_bytes = cast(
-                Set[bytes], self.redis.smembers(self.symbols_redis_key)
-            )
-            current_symbols = {s.decode("utf-8") for s in current_bytes}
-        except Exception as e:
-            self.log_error(f"Failed to get current symbols from Redis: {e}")
-            current_symbols = set()
+        if new_symbols != self.symbols:
+            added = new_symbols - self.symbols
+            removed = self.symbols - new_symbols
 
-        added = new_symbols - current_symbols
-        removed = current_symbols - new_symbols
+            for symbol in added:
+                print(f"[{self.exchange}] New symbol: {symbol}")
+            for symbol in removed:
+                print(f"[{self.exchange}] Removed symbol: {symbol}")
 
-        timestamp = int(time.time() * 1000)
-
-        for symbol in added:
-            print(f"[{self.exchange}] New symbol listed: {symbol}")
-            try:
-                self.redis.sadd(self.symbols_redis_key, symbol)
-                # Publish to stream
-                stream_key = RedisStreamKeys.symbols(self.exchange)
-                msg_id = self.stream_publisher.publish(
-                    stream_key,
-                    {
-                        "exchange": self.exchange,
-                        "symbol": symbol,
-                        "event": "ADDED",
-                        "timestamp": timestamp,
-                    },
-                    maxlen=100,
-                )
-                if msg_id:
-                    print(
-                        f"[{self.exchange}] Published SYMBOL_ADDED to stream: {symbol}"
-                    )
-            except Exception as e:
-                self.log_error(f"Failed to add symbol {symbol}: {e}")
-
-        for symbol in removed:
-            print(f"[{self.exchange}] Symbol delisted: {symbol}")
-            try:
-                self.redis.srem(self.symbols_redis_key, symbol)
-                # Publish to stream
-                stream_key = RedisStreamKeys.symbols(self.exchange)
-                msg_id = self.stream_publisher.publish(
-                    stream_key,
-                    {
-                        "exchange": self.exchange,
-                        "symbol": symbol,
-                        "event": "DELISTED",
-                        "timestamp": timestamp,
-                    },
-                    maxlen=100,
-                )
-                if msg_id:
-                    print(
-                        f"[{self.exchange}] Published SYMBOL_DELISTED to stream: {symbol}"
-                    )
-            except Exception as e:
-                self.log_error(f"Failed to remove symbol {symbol}: {e}")
-
-        self.symbols = new_symbols
-        self.expected_symbols = new_symbols.copy()
-        self.last_symbol_refresh = time.time()
-
-        print(
-            f"[{self.exchange}] Symbol update complete: {len(added)} added, "
-            f"{len(removed)} removed, {len(self.symbols)} total"
-        )
-
-    def _get_coingecko_rankings(self) -> dict:
-        """Fetch CoinGecko market cap data, using Redis cache if available.
-
-        Returns dict mapping symbol (e.g., 'BTC') to rank (1 = highest market cap).
-        Cache is shared across all exchanges with 4-hour TTL.
-        """
-        cache_key = "coingecko:market_cap_rankings"
-
-        try:
-            cached = cast(Optional[bytes], self.redis.get(cache_key))
-            if cached:
-                return json.loads(cached)
-        except Exception as e:
-            self.log_error(f"Failed to read CoinGecko cache: {e}")
-
-        try:
-            response = requests.get(COINGECKO_MARKET_CAP_URL, timeout=30)
-            response.raise_for_status()
-            coins = response.json()
-
-            coin_ranks = {}
-            for rank, coin in enumerate(coins, 1):
-                coin_symbol = coin.get("symbol", "").upper()
-                if coin_symbol:
-                    coin_ranks[coin_symbol] = rank
-
-            try:
-                self.redis.setex(
-                    cache_key, MARKET_CAP_REFRESH_INTERVAL, json.dumps(coin_ranks)
-                )
-            except Exception as e:
-                self.log_error(f"Failed to cache CoinGecko data: {e}")
-
+            old_count = len(self.symbols)
+            self.symbols = new_symbols
             print(
-                f"[{self.exchange}] Fetched fresh CoinGecko market cap data: {len(coin_ranks)} coins"
+                f"[{self.exchange}] Symbols updated: {old_count} -> {len(self.symbols)}"
             )
-            return coin_ranks
+            return old_count > 0  # Only trigger reconnect if we had symbols before
 
-        except Exception as e:
-            self.log_error(f"Failed to fetch CoinGecko market cap: {e}")
-            return {}
+        return False
 
-    def fetch_market_cap_ranking(self):
-        """Update market cap ranking for this exchange using CoinGecko data."""
-        coin_ranks = self._get_coingecko_rankings()
-        if not coin_ranks:
-            return
+    def detect_btc_gaps(self) -> List[int]:
+        """Detect missing BTC kline timestamps in the last N minutes.
 
-        matched = []
-        for coingecko_symbol, rank in coin_ranks.items():
-            exchange_symbol = self.map_coingecko_symbol(coingecko_symbol)
-            if exchange_symbol and exchange_symbol in self.symbols:
-                matched.append((exchange_symbol, rank))
-
-        matched.sort(key=lambda x: x[1])
-        top_100 = matched[:100]
-
-        try:
-            pipe = self.redis.pipeline()
-            pipe.delete(self.market_cap_redis_key)
-            for symbol, rank in top_100:
-                pipe.zadd(self.market_cap_redis_key, {symbol: -rank})
-            pipe.execute()
-
-            print(
-                f"[{self.exchange}] Updated market cap ranking: {len(top_100)} symbols"
-            )
-            self.last_market_cap_refresh = time.time()
-
-        except Exception as e:
-            self.log_error(f"Failed to update market cap ranking: {e}")
-
-    def detect_gaps(self) -> List[int]:
-        """Detect missing kline timestamps in the last N minutes.
-
-        Queries the database for existing timestamps and compares with expected.
         Returns list of missing timestamp_ms values that need backfilling.
         """
         current_time_ms = int(time.time() * 1000)
         current_minute_ms = (current_time_ms // 60000) * 60000
-        start_time_ms = current_minute_ms - (self.backfill_minutes * 60000)
+        start_time_ms = current_minute_ms - (BACKFILL_MINUTES * 60000)
 
-        # Generate expected timestamps
         expected_timestamps = set()
         ts = start_time_ms
         while ts < current_minute_ms:
@@ -304,8 +117,6 @@ class BaseKlineCollector(ABC):
         if not expected_timestamps:
             return []
 
-        # Query DB for existing timestamps - only check BTC since it always has data
-        # If BTC has data for a timestamp, we can assume data collection was working
         start_dt = datetime.fromtimestamp(start_time_ms / 1000, tz=dt_timezone.utc)
         end_dt = datetime.fromtimestamp(current_minute_ms / 1000, tz=dt_timezone.utc)
         btc_symbol = get_btc_symbol(self.exchange)
@@ -328,483 +139,129 @@ class BaseKlineCollector(ABC):
                 for row in cursor.fetchall():
                     existing_timestamps.add(int(row[0]))
         except Exception as e:
-            self.log_error(f"Failed to query existing kline timestamps: {e}")
+            print(f"[{self.exchange}] ERROR: Failed to query existing timestamps: {e}")
             return []
+        finally:
+            connection.close()
 
-        # Find missing timestamps
         missing = sorted(expected_timestamps - existing_timestamps)
 
         if missing:
             print(
-                f"[{self.exchange}] Gap detection: {len(missing)} missing minutes "
-                f"in last {self.backfill_minutes} minutes"
+                f"[{self.exchange}] Gap detection: {len(missing)} missing BTC minutes "
+                f"in last {BACKFILL_MINUTES} minutes"
             )
 
         return missing
 
-    def process_kline(self, candle: NormalizedCandle):
-        """Process a normalized kline from WebSocket."""
+    def _backfill_symbol(self, symbol: str, timestamp_ms: int) -> int:
+        """Fetch and save a single symbol's kline for a timestamp. Returns count inserted."""
         try:
-            timestamp_ms = candle.open_time_ms
-            symbol = candle.symbol
-
-            self.last_prices[symbol] = candle.close
-
-            batches_to_process = []
-
-            with self.batch_lock:
-                if timestamp_ms <= self.last_processed_timestamp:
-                    return
-
-                existing_timestamps = set(self.kline_batch.keys())
-
-                if existing_timestamps:
-                    current_latest = max(existing_timestamps)
-
-                    if timestamp_ms < current_latest:
-                        if timestamp_ms not in self.kline_batch:
-                            print(
-                                f"[{self.exchange}] Discarding stale kline for {symbol} "
-                                f"ts={timestamp_ms} (latest={current_latest})"
-                            )
-                            return
-                        # Late arrival for existing batch - continue to add it
-
-                    elif timestamp_ms > current_latest:
-                        # New minute arrived - process all older batches
-                        for ts in list(existing_timestamps):
-                            batch = self.kline_batch.pop(ts)
-                            batches_to_process.append((ts, batch))
-
-                if timestamp_ms not in self.kline_batch:
-                    self.kline_batch[timestamp_ms] = {}
-                self.kline_batch[timestamp_ms][symbol] = candle
-
-                if len(self.kline_batch[timestamp_ms]) == len(self.expected_symbols):
-                    batch = self.kline_batch.pop(timestamp_ms)
-                    batches_to_process.append((timestamp_ms, batch))
-
-            # Process batches OUTSIDE the lock
-            for ts, batch in batches_to_process:
-                self._do_batch_processing(ts, batch)
-
+            candles = self.fetch_historical_klines(
+                symbol=symbol,
+                start_time_ms=timestamp_ms,
+                end_time_ms=timestamp_ms + 60000,
+            )
+            count = 0
+            for candle in candles:
+                self.save_kline(candle)
+                count += 1
+            return count
         except Exception as e:
-            self.log_error(f"Error processing kline: {e}")
+            print(
+                f"[{self.exchange}] ERROR: Backfill failed for {symbol} "
+                f"at ts={timestamp_ms}: {e}"
+            )
+            return 0
+        finally:
+            connection.close()
 
-    def _create_synthetic_candle(
-        self, symbol: str, timestamp_ms: int, last_price: Decimal
-    ) -> NormalizedCandle:
-        """Create a synthetic candle for a symbol with no trades."""
-        close_time_ms = timestamp_ms + 60000 - 1
-        return NormalizedCandle(
-            open_time_ms=timestamp_ms,
-            close_time_ms=close_time_ms,
-            symbol=symbol,
-            open=last_price,
-            high=last_price,
-            low=last_price,
-            close=last_price,
-            base_volume=Decimal("0"),
-            number_of_trades=0,
-            quote_volume=None,
-            taker_buy_base_volume=None,
-            taker_buy_quote_volume=None,
-        )
-
-    def _do_batch_processing(
-        self, timestamp_ms: int, batch: Dict[str, NormalizedCandle]
-    ):
-        """Process a batch - add synthetics if needed, save to DB, publish to Redis.
-
-        This method does the heavy work and should be called OUTSIDE any locks.
-        """
-        with self.batch_lock:
-            if timestamp_ms > self.last_processed_timestamp:
-                self.last_processed_timestamp = timestamp_ms
-
-        if self.generate_synthetic_candles:
-            missing_symbols = self.expected_symbols - set(batch.keys())
-            synthetic_count = 0
-            for symbol in missing_symbols:
-                if symbol in self.last_prices:
-                    batch[symbol] = self._create_synthetic_candle(
-                        symbol, timestamp_ms, self.last_prices[symbol]
-                    )
-                    synthetic_count += 1
-
-            if synthetic_count > 0:
-                print(
-                    f"[{self.exchange}] Generated {synthetic_count} synthetic candles for ts={timestamp_ms}"
-                )
-
-        print(
-            f"[{self.exchange}] Processing batch: ts={timestamp_ms}, symbols={len(batch)}"
-        )
-
-        try:
-            kline_models = []
-            newest_values = {}
-
-            for symbol, candle in batch.items():
-                try:
-                    model = build_model_from_ws(
-                        kline_dict=candle.to_dict(),
-                        exchange=self.exchange,
-                        contract_type=self.contract_type,
-                    )
-                    kline_models.append(model)
-
-                    newest_values[symbol] = {
-                        "price": float(candle.close),
-                        "volume": float(candle.base_volume),
-                        "trades": float(candle.number_of_trades),
-                    }
-                except Exception as e:
-                    self.log_error(f"Error building model for {symbol}: {e}")
-
-            if kline_models:
-                inserted = bulk_insert_klines(kline_models)
-                print(f"[{self.exchange}] Inserted {inserted} klines to database")
-
-            # Skip Redis stream publish when paused (during backfill)
-            # Data is still inserted to DB above, will be published later by _publish_missed_minutes()
-            if self.publishing_paused:
-                print(
-                    f"[{self.exchange}] Publishing paused (backfill in progress), "
-                    f"skipping stream publish for ts={timestamp_ms}"
-                )
-            elif newest_values:
-                oldest_values = get_symbol_kline_data_multi_hours(
-                    symbols=list(batch.keys()),
-                    exchange=self.exchange,
-                    contract_type=self.contract_type,
-                    hours_list=TIMEFRAME_HOURS,
-                    kline_timestamp_ms=timestamp_ms,
-                )
-
-                # Publish to stream with automatic retries
-                stream_key = RedisStreamKeys.klines(self.exchange)
-                msg_id = self.stream_publisher.publish(
-                    stream_key,
-                    {
-                        "exchange": self.exchange,
-                        "contract_type": self.contract_type,
-                        "newest_values": newest_values,
-                        "oldest_values": oldest_values,
-                        "timestamp": timestamp_ms,
-                    },
-                    maxlen=1000,  # Keep last ~7 days at 1min intervals
-                )
-                if msg_id:
-                    print(
-                        f"[{self.exchange}] Published to stream {stream_key} with {len(newest_values)} symbols (ID: {msg_id})"
-                    )
-                else:
-                    self.log_error(
-                        f"Failed to publish kline update to stream for timestamp {timestamp_ms}"
-                    )
-
-        except Exception as e:
-            self.log_error(f"Error processing batch: {e}")
-
-    def _process_batch(self, timestamp_ms: int):
-        """Pop batch from kline_batch and process it.
-
-        Used by check_pending_batches() and subclasses (e.g., Hyperliquid).
-        """
-        with self.batch_lock:
-            if timestamp_ms not in self.kline_batch:
-                return
-            batch = self.kline_batch.pop(timestamp_ms)
-
-        self._do_batch_processing(timestamp_ms, batch)
-
-    def check_pending_batches(self):
-        """Check for stale batches that should be processed."""
-        current_time = int(time.time() * 1000)
-
-        with self.batch_lock:
-            stale_timestamps = []
-            for timestamp_ms in self.kline_batch:
-                if current_time - timestamp_ms > 90000:
-                    stale_timestamps.append(timestamp_ms)
-
-            for ts in stale_timestamps:
-                batch = self.kline_batch.get(ts, {})
-                if batch:
-                    print(
-                        f"[{self.exchange}] Processing stale batch: ts={ts}, "
-                        f"symbols={len(batch)}/{len(self.expected_symbols)}"
-                    )
-
-        for ts in stale_timestamps:
-            self._process_batch(ts)
-
-    def _run_backfill(self, missing_timestamps: List[int]):
-        """Backfill missing kline data via REST API.
-
-        Called in a background thread. Fetches historical klines for each
-        missing timestamp and inserts them into the database.
-        After completion, calls _publish_missed_minutes() to publish
-        all data in chronological order.
-        """
+    def backfill_gaps(self):
+        """Detect BTC gaps and backfill ALL symbols for those timestamps sequentially."""
+        missing_timestamps = self.detect_btc_gaps()
         if not missing_timestamps:
             return
 
+        symbols_list = list(self.symbols)
+        total_requests = len(missing_timestamps) * len(symbols_list)
         print(
-            f"[{self.exchange}] Starting backfill for {len(missing_timestamps)} "
-            f"missing timestamps"
+            f"[{self.exchange}] Backfilling {len(missing_timestamps)} gaps "
+            f"for {len(symbols_list)} symbols ({total_requests} requests)..."
         )
 
-        symbols_list = list(self.symbols)
-        total_fetched = 0
         total_inserted = 0
-
         for timestamp_ms in missing_timestamps:
             if not self.should_run:
-                print(f"[{self.exchange}] Backfill interrupted - collector stopping")
                 break
 
-            kline_models = []
             for symbol in symbols_list:
                 if not self.should_run:
                     break
+                count = self._backfill_symbol(symbol, timestamp_ms)
+                total_inserted += count
+                # time.sleep(self.backfill_rate_limit)
 
-                try:
-                    candles = self.fetch_historical_klines(
-                        symbol=symbol,
-                        start_time_ms=timestamp_ms,
-                        end_time_ms=timestamp_ms + 60000,
-                    )
-                    for candle in candles:
-                        model = build_model_from_ws(
-                            kline_dict=candle.to_dict(),
-                            exchange=self.exchange,
-                            contract_type=self.contract_type,
-                        )
-                        kline_models.append(model)
-                        total_fetched += 1
+        print(f"[{self.exchange}] Backfill complete: {total_inserted} klines inserted")
 
-                    time.sleep(self.backfill_rate_limit)
-                except Exception as e:
-                    self.log_error(
-                        f"Backfill failed for {symbol} at ts={timestamp_ms}: {e}"
-                    )
-
-            if kline_models:
-                inserted = bulk_insert_klines(kline_models)
-                total_inserted += inserted
-                print(
-                    f"[{self.exchange}] Backfilled ts={timestamp_ms}: "
-                    f"{len(kline_models)} fetched, {inserted} inserted"
-                )
-
-        print(
-            f"[{self.exchange}] Backfill complete: {total_fetched} fetched, "
-            f"{total_inserted} inserted"
-        )
-
-        # After backfill, publish all missed minutes in order
-        self._publish_missed_minutes()
-
-    def _publish_missed_minutes(self):
-        """Publish all klines from backfill_start_timestamp to current minute.
-
-        Ensures correct chronological order for Redis stream consumers.
-        Backfilled data is published first, then WS-received-during-pause data.
-        """
-        if self.backfill_start_timestamp == 0:
-            self.publishing_paused = False
-            return
-
-        current_time_ms = int(time.time() * 1000)
-        current_minute_ms = (current_time_ms // 60000) * 60000
-
-        start_dt = datetime.fromtimestamp(
-            self.backfill_start_timestamp / 1000, tz=dt_timezone.utc
-        )
-        end_dt = datetime.fromtimestamp(current_minute_ms / 1000, tz=dt_timezone.utc)
-
-        print(
-            f"[{self.exchange}] Publishing missed minutes from "
-            f"{self.backfill_start_timestamp} to {current_minute_ms}"
-        )
-
-        # Query all klines from backfill_start to current, grouped by timestamp
-        query = """
-            SELECT
-                EXTRACT(EPOCH FROM k.start_time)::bigint * 1000 AS ts_ms,
-                s.name AS symbol_name,
-                k.close,
-                k.base_volume,
-                k.number_of_trades
-            FROM cs_klines_1m k
-            JOIN cs_exchanges e ON k.exchange_id = e.id
-            JOIN cs_symbols s ON k.symbol_id = s.id
-            WHERE e.name = %s
-              AND k.start_time >= %s
-              AND k.start_time < %s
-            ORDER BY k.start_time ASC
-        """
-
+    def save_kline(self, candle: NormalizedCandle):
+        """Save single kline to database immediately."""
         try:
-            klines_by_timestamp: Dict[int, Dict[str, dict]] = {}
-
-            with connection.cursor() as cursor:
-                cursor.execute(query, [self.exchange, start_dt, end_dt])
-                for row in cursor.fetchall():
-                    ts_ms = int(row[0])
-                    symbol = row[1]
-                    if ts_ms not in klines_by_timestamp:
-                        klines_by_timestamp[ts_ms] = {}
-                    klines_by_timestamp[ts_ms][symbol] = {
-                        "price": float(row[2]),
-                        "volume": float(row[3]),
-                        "trades": float(row[4]),
-                    }
-
-            # Publish each timestamp in order
-            published_count = 0
-            for ts_ms in sorted(klines_by_timestamp.keys()):
-                newest_values = klines_by_timestamp[ts_ms]
-                if not newest_values:
-                    continue
-
-                oldest_values = get_symbol_kline_data_multi_hours(
-                    symbols=list(newest_values.keys()),
-                    exchange=self.exchange,
-                    contract_type=self.contract_type,
-                    hours_list=TIMEFRAME_HOURS,
-                    kline_timestamp_ms=ts_ms,
-                )
-
-                stream_key = RedisStreamKeys.klines(self.exchange)
-                msg_id = self.stream_publisher.publish(
-                    stream_key,
-                    {
-                        "exchange": self.exchange,
-                        "contract_type": self.contract_type,
-                        "newest_values": newest_values,
-                        "oldest_values": oldest_values,
-                        "timestamp": ts_ms,
-                    },
-                    maxlen=1000,
-                )
-                if msg_id:
-                    published_count += 1
-                else:
-                    self.log_error(
-                        f"Failed to publish missed minute ts={ts_ms} to stream"
-                    )
-
-            print(
-                f"[{self.exchange}] Published {published_count} missed minutes to stream"
+            model = build_model_from_ws(
+                kline_dict=candle.to_dict(),
+                exchange=self.exchange,
+                contract_type=self.contract_type,
             )
-
+            bulk_insert_klines([model])
         except Exception as e:
-            self.log_error(f"Failed to publish missed minutes: {e}")
-
-        # Resume normal publishing
-        self.publishing_paused = False
-        self.backfill_start_timestamp = 0
-        print(f"[{self.exchange}] Publishing resumed")
+            print(
+                f"[{self.exchange}] ERROR: Failed to save kline for {candle.symbol}: {e}"
+            )
 
     def run(self):
-        """Main run loop - single connection, no auto-reconnect.
-
-        External orchestrator (systemd/docker/supervisor) handles restart.
-        On startup: detect gaps, start backfill, pause publishing until complete.
-        """
+        """Main loop - runs forever with auto-reconnect."""
         print(f"Starting {self.exchange.title()} Kline Collector...")
 
-        self.update_symbols()
-        if not self.symbols:
-            self.log_error("No symbols available, exiting")
-            return
+        while self.should_run:
+            # Update symbols from exchange
+            self.update_symbols()
 
-        self.fetch_market_cap_ranking()
+            if not self.symbols:
+                print(f"[{self.exchange}] No symbols available, waiting 60s...")
+                time.sleep(60)
+                continue
 
-        # Hook for subclass setup before backfill (e.g., fetch initial prices)
-        self._pre_backfill_setup()
+            # Connect WebSocket
+            self.ws_thread = self.connect_websocket()
+            if not self.ws_thread:
+                print(
+                    f"[{self.exchange}] Failed to connect, retrying in {WS_RECONNECT_DELAY}s..."
+                )
+                time.sleep(WS_RECONNECT_DELAY)
+                continue
 
-        # Detect gaps before connecting WebSocket
-        missing_timestamps = self.detect_gaps()
-        if missing_timestamps:
-            # Set backfill start timestamp to the earliest missing timestamp
-            self.backfill_start_timestamp = missing_timestamps[0]
-            self.publishing_paused = True
-            print(
-                f"[{self.exchange}] Pausing publishing, starting backfill for "
-                f"{len(missing_timestamps)} missing timestamps"
-            )
-            # Start backfill in background thread
-            self.backfill_thread = threading.Thread(
-                target=self._run_backfill,
-                args=(missing_timestamps,),
-                daemon=True,
-            )
-            self.backfill_thread.start()
+            # On connect: detect gaps (via BTC) and backfill all symbols
+            self.backfill_gaps()
 
-        try:
-            ws_thread = self.connect_websocket()
-            if ws_thread is None:
-                self.log_error("Failed to connect WebSocket, exiting")
-                self._wait_for_backfill()
-                return
+            # Wait for disconnect or symbol change
+            last_symbol_check = time.time()
+            while self.should_run and self.ws_thread.is_alive():
+                time.sleep(SYMBOL_CHECK_INTERVAL)
 
-            while self.should_run and ws_thread.is_alive():
-                time.sleep(10)
-                self.check_pending_batches()
-
-                if (
-                    time.time() - self.last_symbol_refresh
-                    > self.symbol_refresh_interval
-                ):
+                # Check for symbol changes periodically
+                if time.time() - last_symbol_check > SYMBOL_CHECK_INTERVAL:
+                    last_symbol_check = time.time()
                     old_symbols = self.symbols.copy()
                     self.update_symbols()
 
                     if self.symbols != old_symbols:
-                        print(
-                            f"[{self.exchange}] Symbols changed, exiting for restart..."
-                        )
-                        self.on_symbols_changed()
+                        print(f"[{self.exchange}] Symbols changed, reconnecting...")
+                        self.close_websocket()
                         break
 
-                if (
-                    time.time() - self.last_market_cap_refresh
-                    > MARKET_CAP_REFRESH_INTERVAL
-                ):
-                    self.fetch_market_cap_ranking()
-
-            # WebSocket disconnected - wait for backfill to finish then exit
-            print(f"[{self.exchange}] WebSocket disconnected, cleaning up...")
-            self._wait_for_backfill()
-            print(f"[{self.exchange}] Exiting (external orchestrator will restart)")
-
-        except Exception as e:
-            self.log_error(f"Error in main loop: {e}")
-            self._wait_for_backfill()
-
-    def _wait_for_backfill(self):
-        """Wait for backfill thread to complete if running."""
-        if self.backfill_thread and self.backfill_thread.is_alive():
-            print(f"[{self.exchange}] Waiting for backfill thread to complete...")
-            self.backfill_thread.join(timeout=300)  # 5 minute timeout
-            if self.backfill_thread.is_alive():
-                self.log_error("Backfill thread did not complete within timeout")
-
-    def on_symbols_changed(self):
-        """Called when symbols change and need to reconnect. Override in subclass if needed."""
-        pass
-
-    def _pre_backfill_setup(self):
-        """Hook for subclasses to run setup before backfill starts.
-
-        Override this to do setup that must complete before backfill begins,
-        such as fetching initial prices (which uses the same API endpoint).
-        """
-        pass
+            print(f"[{self.exchange}] Reconnecting in {WS_RECONNECT_DELAY}s...")
+            time.sleep(WS_RECONNECT_DELAY)
 
     def stop(self):
         """Stop the collector."""
         self.should_run = False
+        self.close_websocket()

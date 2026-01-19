@@ -25,20 +25,16 @@ class BinanceKlineCollector(BaseKlineCollector):
     """
     Collects 1-minute kline data for all Binance perpetual futures symbols.
 
-    Handles:
-    - Symbol discovery and change detection
-    - WebSocket connection with automatic reconnection (24h limit)
-    - Kline batching by timestamp for complete minute collection
-    - Bulk database inserts
-    - Redis pubsub for correlation updates
-    - Market cap ranking from CoinGecko (via base class)
+    Features:
+    - Auto-reconnect in-process (never exits)
+    - On reconnect: detect gaps (via BTC) and backfill all symbols
+    - Immediate DB save for each kline (no batching)
     """
 
     def __init__(self):
         super().__init__(exchange=Exchange.BINANCE, contract_type="perpetual")
         self.ws: Optional[websocket.WebSocketApp] = None
         self.ws_connected = False
-        self.connection_start_time: Optional[float] = None
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         """Fetch all perpetual futures symbols from Binance API."""
@@ -59,7 +55,7 @@ class BinanceKlineCollector(BaseKlineCollector):
             print(f"[binance] Fetched {len(symbols)} perpetual futures symbols")
             return symbols
         except Exception as e:
-            self.log_error(f"Failed to fetch symbols: {e}")
+            print(f"[binance] ERROR: Failed to fetch symbols: {e}")
             return set()
 
     def normalize_candle(self, raw_data: dict) -> Optional[NormalizedCandle]:
@@ -80,68 +76,85 @@ class BinanceKlineCollector(BaseKlineCollector):
                 taker_buy_quote_volume=Decimal(raw_data["Q"]),
             )
         except (KeyError, ValueError, TypeError) as e:
-            self.log_error(f"Failed to normalize candle: {e}, data: {raw_data}")
+            print(f"[binance] ERROR: Failed to normalize candle: {e}, data: {raw_data}")
             return None
-
-    def map_coingecko_symbol(self, coingecko_symbol: str) -> Optional[str]:
-        """Map CoinGecko symbol to Binance format (add USDT suffix)."""
-        return f"{coingecko_symbol}USDT"
 
     def fetch_historical_klines(
         self, symbol: str, start_time_ms: int, end_time_ms: int
     ) -> List[NormalizedCandle]:
-        """Fetch historical klines via Binance REST API.
+        """Fetch historical klines via Binance REST API with retry logic."""
+        max_retries = 4
+        base_delay = 1
 
-        GET /fapi/v1/klines
-        Response format: [open_time, open, high, low, close, volume, close_time,
-                          quote_volume, trades, taker_buy_base, taker_buy_quote, ignore]
-        """
-        try:
-            response = requests.get(
-                BINANCE_FUTURES_KLINES_URL,
-                params={
-                    "symbol": symbol,
-                    "interval": "1m",
-                    "startTime": start_time_ms,
-                    "endTime": end_time_ms,
-                    "limit": 1,
-                },
-                timeout=10,
-            )
-            response.raise_for_status()
-            klines = response.json()
-
-            result = []
-            for k in klines:
-                candle = NormalizedCandle(
-                    open_time_ms=int(k[0]),
-                    close_time_ms=int(k[6]),
-                    symbol=symbol,
-                    open=Decimal(str(k[1])),
-                    high=Decimal(str(k[2])),
-                    low=Decimal(str(k[3])),
-                    close=Decimal(str(k[4])),
-                    base_volume=Decimal(str(k[5])),
-                    number_of_trades=int(k[8]),
-                    quote_volume=Decimal(str(k[7])),
-                    taker_buy_base_volume=Decimal(str(k[9])),
-                    taker_buy_quote_volume=Decimal(str(k[10])),
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(
+                    BINANCE_FUTURES_KLINES_URL,
+                    params={
+                        "symbol": symbol,
+                        "interval": "1m",
+                        "startTime": start_time_ms,
+                        "endTime": end_time_ms,
+                        "limit": 1,
+                    },
+                    timeout=10,
                 )
-                result.append(candle)
+                response.raise_for_status()
+                klines = response.json()
 
-            return result
+                result = []
+                for k in klines:
+                    candle = NormalizedCandle(
+                        open_time_ms=int(k[0]),
+                        close_time_ms=int(k[6]),
+                        symbol=symbol,
+                        open=Decimal(str(k[1])),
+                        high=Decimal(str(k[2])),
+                        low=Decimal(str(k[3])),
+                        close=Decimal(str(k[4])),
+                        base_volume=Decimal(str(k[5])),
+                        number_of_trades=int(k[8]),
+                        quote_volume=Decimal(str(k[7])),
+                        taker_buy_base_volume=Decimal(str(k[9])),
+                        taker_buy_quote_volume=Decimal(str(k[10])),
+                    )
+                    result.append(candle)
 
-        except Exception as e:
-            self.log_error(f"Failed to fetch historical klines for {symbol}: {e}")
-            return []
+                return result
+
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code in (429, 418):
+                    if attempt < max_retries - 1:
+                        # Check for Retry-After header
+                        retry_after = e.response.headers.get("Retry-After")
+                        if retry_after:
+                            wait_time = int(retry_after)
+                        else:
+                            wait_time = base_delay * (2**attempt)
+                        print(
+                            f"[binance] Rate limit for {symbol}, waiting {wait_time}s (attempt {attempt + 1}/{max_retries})..."
+                        )
+                        time.sleep(wait_time)
+                        continue
+                print(
+                    f"[binance] ERROR: Failed to fetch historical klines for {symbol}: {e}"
+                )
+                return []
+            except Exception as e:
+                print(
+                    f"[binance] ERROR: Failed to fetch historical klines for {symbol}: {e}"
+                )
+                return []
+
+        return []
 
     def build_ws_url(self) -> str:
         """Build WebSocket URL with all kline streams."""
         streams = [f"{symbol.lower()}@kline_1m" for symbol in self.symbols]
 
         if len(streams) > MAX_STREAMS_PER_CONNECTION:
-            self.log_error(
-                f"Warning: {len(streams)} streams exceed limit of {MAX_STREAMS_PER_CONNECTION}"
+            print(
+                f"[binance] WARNING: {len(streams)} streams exceed limit of {MAX_STREAMS_PER_CONNECTION}"
             )
             streams = streams[:MAX_STREAMS_PER_CONNECTION]
 
@@ -162,33 +175,26 @@ class BinanceKlineCollector(BaseKlineCollector):
                     if is_closed:
                         candle = self.normalize_candle(kline_data)
                         if candle:
-                            self.process_kline(candle)
+                            self.save_kline(candle)
+                            print(
+                                f"[binance] Stored kline: {candle.symbol} at {candle.open_time_ms}"
+                            )
 
         except Exception as e:
-            self.log_error(f"Error handling WebSocket message: {e}")
+            print(f"[binance] ERROR: Error handling WebSocket message: {e}")
 
     def on_error(self, _ws, error):
         """Handle WebSocket errors."""
-        error_msg = str(error)
-        self.log_error(f"WebSocket error: {error_msg}")
+        print(f"[binance] ERROR: WebSocket error: {error}")
 
     def on_close(self, _ws, close_status_code, close_msg):
         """Handle WebSocket close."""
         self.ws_connected = False
         print(f"[binance] WebSocket closed: code={close_status_code}, msg={close_msg}")
 
-        if self.connection_start_time:
-            duration = time.time() - self.connection_start_time
-            hours = duration / 3600
-            if hours >= 23.5:
-                print(
-                    f"[binance] WebSocket closed after {hours:.2f} hours (expected 24h disconnect)"
-                )
-
     def on_open(self, _ws):
         """Handle WebSocket open."""
         self.ws_connected = True
-        self.connection_start_time = time.time()
         print(
             f"[binance] WebSocket connected, subscribed to {len(self.symbols)} streams"
         )
@@ -222,16 +228,11 @@ class BinanceKlineCollector(BaseKlineCollector):
 
         return ws_thread
 
-    def on_symbols_changed(self):
-        """Called when symbols change - close WebSocket to reconnect with new symbols."""
+    def close_websocket(self):
+        """Close the WebSocket connection."""
         if self.ws:
             self.ws.close()
-
-    def stop(self):
-        """Stop the collector."""
-        super().stop()
-        if self.ws:
-            self.ws.close()
+            self.ws = None
 
 
 def main():
