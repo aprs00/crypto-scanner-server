@@ -2,11 +2,9 @@ import time
 import threading
 import gc
 from collections import deque
-import os
 import numpy as np
-import redis
 import msgpack
-from typing import Any, Dict, List, Optional, cast
+from typing import Dict, List, Optional
 
 from exchange_connections.constants import (
     KLINE_FIELD_MAP,
@@ -18,9 +16,8 @@ from exchange_connections.selectors import (
     get_historical_kline_data,
     get_symbol_kline_data,
 )
-from core.constants import RedisStreamKeys, EXCHANGE_CONFIG, Exchange
+from core.constants import EXCHANGE_CONFIG, Exchange
 from core.redis_config import get_redis_connection
-from core.redis_streams import StreamConsumer
 from core.notifications import notification_service
 from correlations.services.save_correlations import (
     save_correlation_matrices_batch_to_db,
@@ -140,7 +137,7 @@ class CorrelationCalculator:
 
         self._validation_symbols = self._get_validation_symbols()
 
-        # Buffer to store last 60 pubsub price points for validation
+        # Buffer to store last 60 price points for validation
         self._pubsub_prices: Dict[str, deque] = {}
         self._pubsub_timestamps: deque = deque(maxlen=60)
 
@@ -337,21 +334,12 @@ class CorrelationCalculator:
 
             diff = abs(incremental_corr - manual_corr)
 
-            pubsub_btc_prices = [
-                p["price"] for p in self._pubsub_prices.get(btc_sym, [])
-            ]
-            pubsub_sol_prices = [
-                p["price"] for p in self._pubsub_prices.get(sol_sym, [])
-            ]
-
             # Print comparison
             print("\n" + "=" * 80)
             print(
                 f"[VALIDATION] BTC-SOL 1h price - Incremental={incremental_corr:.6f}, Numpy={manual_corr:.6f}, Diff={diff:.6f}"
             )
-            print(f"  PS BTC ({len(pubsub_btc_prices)}): {pubsub_btc_prices}")
             print(f"  DB BTC ({len(btc_prices)}): {btc_prices.tolist()}")
-            print(f"  PS SOL ({len(pubsub_sol_prices)}): {pubsub_sol_prices}")
             print(f"  DB SOL ({len(sol_prices)}): {sol_prices.tolist()}")
             print("=" * 80)
 
@@ -591,98 +579,6 @@ class CorrelationCalculator:
             self._cache_correlations(save_to_db=False)
             print(f"[{self.exchange}][DEBUG] remove_symbol completed for {symbol}")
 
-    def _handle_kline_message(self, msg_id: str, msg_data: Dict[str, Any]) -> bool:
-        """
-        Handle a single kline message from Redis Stream.
-
-        Returns:
-            True if processed successfully (will be ACKed)
-            False if processing failed (will retry)
-        """
-        try:
-            # Filter by exchange
-            if msg_data.get("exchange") != str(self.exchange):
-                return True  # ACK, not for us
-
-            # Extract data
-            newest_values = msg_data.get("newest_values", {})
-            oldest_values = msg_data.get("oldest_values", {})
-            timestamp_raw = msg_data.get("timestamp")
-
-            if timestamp_raw is None:
-                print(f"[{self.exchange}] Missing timestamp in kline message")
-                return True  # ACK to skip invalid message
-
-            try:
-                timestamp = int(cast(int | str, timestamp_raw))
-            except (TypeError, ValueError):
-                print(f"[{self.exchange}] Invalid timestamp: {timestamp_raw!r}")
-                return True  # ACK to skip invalid message
-
-            # Process update
-            self._handle_kline_update_from_stream(
-                newest_values, timestamp, oldest_values
-            )
-            return True  # Success
-
-        except Exception as e:
-            print(f"[{self.exchange}] Error processing kline message: {e}")
-            return False  # Retry
-
-    def _handle_symbol_message(self, msg_id: str, msg_data: Dict[str, Any]) -> bool:
-        """
-        Handle a single symbol event message from Redis Stream.
-
-        Returns:
-            True if processed successfully (will be ACKed)
-            False if processing failed (will retry)
-        """
-        try:
-            # Filter by exchange
-            if msg_data.get("exchange") != str(self.exchange):
-                return True  # ACK, not for us
-
-            symbol_raw = msg_data.get("symbol")
-            event = msg_data.get("event")
-
-            if not isinstance(symbol_raw, str) or not symbol_raw:
-                print(f"[{self.exchange}] Invalid symbol: {symbol_raw!r}")
-                return True  # ACK to skip invalid message
-
-            if event == "ADDED":
-                self.add_symbol(symbol_raw)
-            elif event == "DELISTED":
-                self.remove_symbol(symbol_raw)
-
-            return True  # Success
-
-        except Exception as e:
-            print(f"[{self.exchange}] Error processing symbol message: {e}")
-            return True  # ACK anyway for symbol events to avoid blocking
-
-    def _handle_kline_update_from_stream(
-        self, newest: Dict, timestamp: int, oldest_values: Dict
-    ):
-        """Handle kline update from Redis Stream (already decoded)."""
-        current_time = time.time()
-        time_since_last = (
-            current_time - self.last_update_time if self.last_update_time > 0 else 0
-        )
-        self.last_update_time = current_time
-        self.update_count += 1
-
-        print(
-            f"[{self.exchange}][DEBUG] Kline update #{self.update_count} - timestamp: {timestamp}, "
-            f"symbols in payload: {len(newest)}, tracked symbols: {len(self.symbols)}, "
-            f"time_since_last: {time_since_last:.1f}s"
-        )
-
-        if self.initialized:
-            self._validate_newest_values(newest, timestamp)
-
-        self._store_pubsub_prices(newest, timestamp)
-        self.update_correlations(newest, oldest_values)
-
     def _validate_newest_values(self, newest: Dict, timestamp: int) -> bool:
         """Validate the newest_values payload for issues."""
         issues = []
@@ -737,35 +633,9 @@ class CorrelationCalculator:
 
         return True
 
-    def _get_stream_latest_id(self, stream_key: str) -> str:
-        """
-        Get the latest message ID from a stream, or '0' if stream doesn't exist.
-
-        Used to capture stream position before initialization so we don't miss
-        messages that arrive during the init window.
-        """
-        try:
-            info = self.redis.xinfo_stream(stream_key)
-            if isinstance(info, dict):
-                last_id = info.get("last-generated-id", "0")
-                if last_id is None:
-                    return "0"
-                # Handle bytes response from redis-py
-                if isinstance(last_id, bytes):
-                    return last_id.decode("utf-8")
-                return str(last_id)
-            return "0"
-        except redis.ResponseError:
-            # Stream doesn't exist yet
-            return "0"
-
     def run(self):
-        """Main entry point."""
-        print(
-            f"[{self.exchange}] Starting correlation calculator with Redis Streams..."
-        )
-
-        reset_groups = os.getenv("RESET_STREAM_GROUP_ON_START", "0") == "1"
+        """Run a one-time correlation update."""
+        print(f"[{self.exchange}] Starting correlation calculator (streams removed)...")
         self.hours_options = list(
             EXCHANGE_CONFIG[self.exchange]["hours_options"]["correlation"].values()
         )
@@ -774,20 +644,7 @@ class CorrelationCalculator:
         )
         self._rebuild_indices()
 
-        # Set up stream keys
-        klines_stream = RedisStreamKeys.klines(self.exchange)
-        symbols_stream = RedisStreamKeys.symbols(self.exchange)
-        group_name = RedisStreamKeys.consumer_group("correlations", self.exchange)
-
-        # Capture stream positions BEFORE initialization
-        # This ensures we process all messages that arrive during init (~2+ mins)
-        klines_start_id = self._get_stream_latest_id(klines_stream)
-        symbols_start_id = self._get_stream_latest_id(symbols_stream)
-        print(
-            f"[{self.exchange}] Captured stream positions - klines: {klines_start_id}, symbols: {symbols_start_id}"
-        )
-
-        # Initialize trackers from historical data (takes 2+ mins for large exchanges)
+        # Initialize trackers from historical data
         print(f"[{self.exchange}] Initializing correlation trackers...")
         start = time.time()
         self._init_trackers()
@@ -795,60 +652,7 @@ class CorrelationCalculator:
             f"[{self.exchange}] Initialization completed in {time.time() - start:.2f}s"
         )
 
-        # Mark as initialized - handlers can now process messages
+        # Mark as initialized and compute one update snapshot
         self.initialized = True
-
-        # Create consumers and consumer groups
-        # Start from pre-init positions to process messages that arrived during init
-        klines_consumer = StreamConsumer(self.redis, klines_stream, group_name)
-        symbols_consumer = StreamConsumer(self.redis, symbols_stream, group_name)
-
-        # Create consumer groups with pre-init positions for NEW groups
-        # If group already exists (restart scenario), it uses its existing position
-        # which ensures we continue from where we crashed instead of losing messages
-        klines_consumer.create_consumer_group(
-            start_id=klines_start_id,
-            reset_if_exists=reset_groups,
-        )
-        symbols_consumer.create_consumer_group(
-            start_id=symbols_start_id,
-            reset_if_exists=reset_groups,
-        )
-
-        # NOTE: We do NOT call reset_position() here
-        # - On fresh start: group is created at klines_start_id, correct behavior
-        # - On restart: group keeps its existing position, ensuring crash recovery
-        #   works properly and pending messages are reclaimed
-
-        print(f"[{self.exchange}] Starting stream consumers...")
-
-        # Start consuming in separate threads
-        klines_thread = threading.Thread(
-            target=lambda: klines_consumer.start_consuming(
-                message_handler=self._handle_kline_message,
-                count=10,
-                block_ms=2000,
-            ),
-            daemon=True,
-        )
-        symbols_thread = threading.Thread(
-            target=lambda: symbols_consumer.start_consuming(
-                message_handler=self._handle_symbol_message,
-                count=10,
-                block_ms=1000,
-            ),
-            daemon=True,
-        )
-
-        klines_thread.start()
-        symbols_thread.start()
-
-        print(f"[{self.exchange}] Ready for real-time updates from streams")
-
-        try:
-            klines_thread.join()
-            symbols_thread.join()
-        except KeyboardInterrupt:
-            print(f"[{self.exchange}] Shutting down...")
-            klines_consumer.stop()
-            symbols_consumer.stop()
+        self.update_correlations()
+        print(f"[{self.exchange}] Correlation snapshot complete")
