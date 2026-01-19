@@ -4,7 +4,7 @@ import gc
 from collections import deque
 import numpy as np
 import msgpack
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, cast
 
 from exchange_connections.constants import (
     KLINE_FIELD_MAP,
@@ -15,10 +15,19 @@ from exchange_connections.selectors import (
     get_exchange_symbols,
     get_historical_kline_data,
     get_symbol_kline_data,
+    get_symbol_kline_data_at_timestamp,
+    get_symbol_kline_data_multi_hours,
 )
 from core.constants import EXCHANGE_CONFIG, Exchange
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
+from core.redis_streams import (
+    get_market_stream_key,
+    ensure_consumer_group,
+    decode_stream_fields,
+    is_timestamp_processed,
+    mark_timestamp_processed,
+)
 from correlations.services.save_correlations import (
     save_correlation_matrices_batch_to_db,
 )
@@ -83,7 +92,7 @@ class CorrelationTracker:
                 self.sum_x[mask] -= vals
                 self.sum_xx[mask] -= vals * vals
                 self.sum_xy[np.ix_(mask, mask)] -= np.outer(vals, vals)
-            self.count -= 1
+                self.count -= 1
 
         mask = ~np.isnan(new_vals)
         if mask.any():
@@ -212,7 +221,7 @@ class CorrelationCalculator:
         del all_data
         gc.collect()
 
-    def _update_trackers(self, newest: Dict, oldest_by_hours: Dict[int | str, Dict]):
+    def _update_trackers(self, newest: Dict, oldest_by_hours: Dict):
         """Update all trackers with new/old values."""
         n = len(self.symbols)
 
@@ -250,15 +259,18 @@ class CorrelationCalculator:
                     elif tracker.count >= window:
                         missing_old += 1
 
-                if hours == 1 and data_type == "close":
+                if (
+                    hours == 1
+                    and data_type == "close"
+                    and (missing_new > 0 or missing_old > 0)
+                ):
                     new_valid = np.sum(~np.isnan(new_arr))
                     old_valid = (
                         np.sum(~np.isnan(old_arr)) if tracker.count >= window else 0
                     )
-                    if missing_new > 0 or missing_old > 0:
-                        print(
-                            # f"[DEBUG] _update_tackers(1h,close): new_valid={new_valid}/{n}, old_valid={old_valid}/{n}, missing_new={missing_new}, missing_old={missing_old}"
-                        )
+                    print(
+                        f"[DEBUG] _update_trackers(1h,close): new_valid={new_valid}/{n}, old_valid={old_valid}/{n}, missing_new={missing_new}, missing_old={missing_old}"
+                    )
 
                 tracker.update(new_arr, old_arr if tracker.count >= window else None)
 
@@ -393,7 +405,7 @@ class CorrelationCalculator:
     def update_correlations(
         self,
         newest: Optional[Dict] = None,
-        oldest_values: Optional[Dict[int | str, Dict]] = None,
+        oldest_values: Optional[Dict] = None,
         save_to_db: bool = True,
     ):
         """Main update method - fetch data, update trackers, cache results."""
@@ -408,6 +420,17 @@ class CorrelationCalculator:
                     symbols=self.symbols,
                     exchange=self.exchange,
                     contract_type=self.contract_type,
+                )
+
+            if oldest_values is None:
+                print(
+                    f"[{self.exchange}][DEBUG] Fetching oldest values for windows (not provided)"
+                )
+                oldest_values = get_symbol_kline_data_multi_hours(
+                    symbols=self.symbols,
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
+                    hours_list=self.hours_options,
                 )
 
             missing = [s for s in self.symbols if s not in newest]
@@ -634,8 +657,8 @@ class CorrelationCalculator:
         return True
 
     def run(self):
-        """Run a one-time correlation update."""
-        print(f"[{self.exchange}] Starting correlation calculator (streams removed)...")
+        """Run correlation updates using Redis streams."""
+        print(f"[{self.exchange}] Starting correlation calculator (streams enabled)...")
         self.hours_options = list(
             EXCHANGE_CONFIG[self.exchange]["hours_options"]["correlation"].values()
         )
@@ -654,5 +677,124 @@ class CorrelationCalculator:
 
         # Mark as initialized and compute one update snapshot
         self.initialized = True
-        self.update_correlations()
-        print(f"[{self.exchange}] Correlation snapshot complete")
+        self._cache_correlations(save_to_db=True)
+
+        # Mark the initial timestamp as processed to prevent duplicate processing
+        current_ts = (int(time.time() * 1000) // 60000) * 60000 - 60000
+        mark_timestamp_processed(
+            self.redis, "correlations", self.exchange, self.contract_type, current_ts
+        )
+        print(
+            f"[{self.exchange}] Correlation snapshot complete (marked ts={current_ts})"
+        )
+
+        self._consume_stream()
+
+    def _consume_stream(self):
+        stream_key = get_market_stream_key(self.exchange, self.contract_type)
+        group_name = f"correlations:{self.exchange}:{self.contract_type}"
+        # Use fixed consumer name to take over pending messages on restart
+        consumer_name = f"correlations-{self.exchange}-worker"
+
+        ensure_consumer_group(self.redis, stream_key, group_name)
+
+        # Reset consumer group to latest - we already processed historical data in run()
+        # This skips any backlogged messages and only processes new ones
+        self.redis.xgroup_setid(stream_key, group_name, "$")
+        print(
+            f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (reset to latest)"
+        )
+
+        while True:
+            messages = cast(
+                list,
+                self.redis.xreadgroup(
+                    group_name,
+                    consumer_name,
+                    {stream_key: ">"},
+                    count=10,
+                    block=5000,
+                ),
+            )
+
+            if not messages:
+                continue
+
+            for _, entries in messages:
+                for msg_id, fields in entries:
+                    self._process_message(msg_id, fields, stream_key, group_name)
+
+    def _process_message(
+        self, msg_id: bytes, fields: dict, stream_key: str, group_name: str
+    ):
+        """Process a single stream message and ACK only on success."""
+        decoded = decode_stream_fields(fields)
+        event_type = decoded.get("event_type")
+        payload = decoded.get("payload") or {}
+
+        try:
+            if event_type == "kline":
+                timestamp_ms = payload.get("timestamp_ms")
+                if timestamp_ms is None:
+                    # ACK invalid messages to prevent infinite redelivery
+                    self.redis.xack(stream_key, group_name, msg_id)
+                    return
+                timestamp_ms = int(timestamp_ms)
+
+                # Idempotency check - skip if already processed
+                if is_timestamp_processed(
+                    self.redis,
+                    "correlations",
+                    self.exchange,
+                    self.contract_type,
+                    timestamp_ms,
+                ):
+                    print(
+                        f"[{self.exchange}] Skipping duplicate correlations timestamp {timestamp_ms}"
+                    )
+                    self.redis.xack(stream_key, group_name, msg_id)
+                    return
+
+                newest = get_symbol_kline_data_at_timestamp(
+                    symbols=self.symbols,
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
+                    kline_timestamp_ms=timestamp_ms,
+                )
+                oldest = get_symbol_kline_data_multi_hours(
+                    symbols=self.symbols,
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
+                    hours_list=self.hours_options,
+                    kline_timestamp_ms=timestamp_ms,
+                )
+                save_to_db = payload.get("source") != "backfill"
+                self.update_correlations(
+                    newest=newest,
+                    oldest_values=oldest,
+                    save_to_db=save_to_db,
+                )
+
+                # Mark as processed after successful update
+                mark_timestamp_processed(
+                    self.redis,
+                    "correlations",
+                    self.exchange,
+                    self.contract_type,
+                    timestamp_ms,
+                )
+            elif event_type == "symbol_update":
+                added = payload.get("added") or []
+                removed = payload.get("removed") or []
+
+                for symbol in added:
+                    self.add_symbol(symbol)
+                for symbol in removed:
+                    self.remove_symbol(symbol)
+
+            # ACK only on success
+            self.redis.xack(stream_key, group_name, msg_id)
+        except Exception as e:
+            print(
+                f"[{self.exchange}] ERROR: Stream handler failed: {e}, message will be redelivered"
+            )

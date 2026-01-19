@@ -1,5 +1,6 @@
 import time
 import threading
+from collections import deque
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone as dt_timezone
 from typing import List, Set, Optional
@@ -13,12 +14,14 @@ from exchange_connections.services.klines_ingest import (
 )
 from core.constants import Exchange
 from exchange_connections.constants import get_btc_symbol
+from core.redis_config import get_redis_connection
+from core.redis_streams import publish_market_event
 
 
 WS_RECONNECT_DELAY = 5
 BACKFILL_MINUTES = 30
 BACKFILL_RATE_LIMIT = 0.001
-SYMBOL_CHECK_INTERVAL = 30
+SYMBOL_CHECK_INTERVAL = 900  # 15 minutes
 
 
 class BaseKlineCollector(ABC):
@@ -46,6 +49,13 @@ class BaseKlineCollector(ABC):
         self.should_run = True
         self.ws_thread: Optional[threading.Thread] = None
         self.backfill_rate_limit: float = BACKFILL_RATE_LIMIT
+        self.redis = get_redis_connection()
+        self._backfill_in_progress = False
+        self._pending_timestamps: Set[int] = set()
+        self._recent_timestamps: deque[int] = deque()
+        self._recent_timestamp_set: Set[int] = set()
+        self._recent_limit = 500
+        self._primary_symbol = get_btc_symbol(self.exchange)
 
     @abstractmethod
     def fetch_perpetual_symbols(self) -> Set[str]:
@@ -95,9 +105,65 @@ class BaseKlineCollector(ABC):
             print(
                 f"[{self.exchange}] Symbols updated: {old_count} -> {len(self.symbols)}"
             )
+            try:
+                key = f"symbols:{self.exchange}:{self.contract_type}"
+                pipe = self.redis.pipeline()
+                pipe.delete(key)
+                if self.symbols:
+                    pipe.sadd(key, *self.symbols)
+                pipe.execute()
+            except Exception as e:
+                print(f"[{self.exchange}] ERROR: Failed to sync symbols to redis: {e}")
+            try:
+                publish_market_event(
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
+                    event_type="symbol_update",
+                    payload={
+                        "added": sorted(list(added)),
+                        "removed": sorted(list(removed)),
+                    },
+                    redis_client=self.redis,
+                )
+            except Exception as e:
+                print(f"[{self.exchange}] ERROR: Failed to publish symbol update: {e}")
             return old_count > 0  # Only trigger reconnect if we had symbols before
 
         return False
+
+    def _remember_timestamp(self, timestamp_ms: int):
+        if timestamp_ms in self._recent_timestamp_set:
+            return
+        self._recent_timestamps.append(timestamp_ms)
+        self._recent_timestamp_set.add(timestamp_ms)
+        while len(self._recent_timestamps) > self._recent_limit:
+            oldest = self._recent_timestamps.popleft()
+            self._recent_timestamp_set.discard(oldest)
+
+    def _publish_kline_timestamp(self, timestamp_ms: int, source: str):
+        if timestamp_ms in self._recent_timestamp_set:
+            return
+        self._remember_timestamp(timestamp_ms)
+        publish_market_event(
+            exchange=self.exchange,
+            contract_type=self.contract_type,
+            event_type="kline",
+            payload={
+                "timestamp_ms": timestamp_ms,
+                "source": source,
+            },
+            redis_client=self.redis,
+        )
+
+    def _buffer_live_timestamp(self, timestamp_ms: int):
+        self._pending_timestamps.add(timestamp_ms)
+
+    def _flush_pending_timestamps(self):
+        if not self._pending_timestamps:
+            return
+        for timestamp_ms in sorted(self._pending_timestamps):
+            self._publish_kline_timestamp(timestamp_ms, source="live")
+        self._pending_timestamps.clear()
 
     def detect_btc_gaps(self) -> List[int]:
         """Detect missing BTC kline timestamps in the last N minutes.
@@ -164,7 +230,7 @@ class BaseKlineCollector(ABC):
             )
             count = 0
             for candle in candles:
-                self.save_kline(candle)
+                self.save_kline(candle, source="backfill")
                 count += 1
             return count
         except Exception as e:
@@ -182,6 +248,7 @@ class BaseKlineCollector(ABC):
         if not missing_timestamps:
             return
 
+        self._backfill_in_progress = True
         symbols_list = list(self.symbols)
         total_requests = len(missing_timestamps) * len(symbols_list)
         print(
@@ -199,11 +266,17 @@ class BaseKlineCollector(ABC):
                     break
                 count = self._backfill_symbol(symbol, timestamp_ms)
                 total_inserted += count
-                # time.sleep(self.backfill_rate_limit)
+
+            try:
+                self._publish_kline_timestamp(timestamp_ms, source="backfill")
+            except Exception as e:
+                print(f"[{self.exchange}] ERROR: Failed to publish backfill event: {e}")
 
         print(f"[{self.exchange}] Backfill complete: {total_inserted} klines inserted")
+        self._backfill_in_progress = False
+        self._flush_pending_timestamps()
 
-    def save_kline(self, candle: NormalizedCandle):
+    def save_kline(self, candle: NormalizedCandle, source: str = "live"):
         """Save single kline to database immediately."""
         try:
             model = build_model_from_ws(
@@ -212,6 +285,11 @@ class BaseKlineCollector(ABC):
                 contract_type=self.contract_type,
             )
             bulk_insert_klines([model])
+            if source == "live" and candle.symbol == self._primary_symbol:
+                if self._backfill_in_progress:
+                    self._buffer_live_timestamp(candle.open_time_ms)
+                else:
+                    self._publish_kline_timestamp(candle.open_time_ms, source="live")
         except Exception as e:
             print(
                 f"[{self.exchange}] ERROR: Failed to save kline for {candle.symbol}: {e}"

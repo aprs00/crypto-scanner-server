@@ -251,6 +251,8 @@ class BybitKlineCollector(BaseKlineCollector):
             if not kline_list:
                 return
 
+            stored_count = 0
+            last_timestamp = None
             for kline_data in kline_list:
                 if not kline_data.get("confirm", False):
                     continue
@@ -258,10 +260,12 @@ class BybitKlineCollector(BaseKlineCollector):
                 kline_data["s"] = symbol
                 candle = self.normalize_candle(kline_data)
                 if candle:
-                    self.save_kline(candle)
-                    print(
-                        f"[bybit] Stored kline: {candle.symbol} at {candle.open_time_ms}"
-                    )
+                    self.save_kline(candle, source="live")
+                    stored_count += 1
+                    last_timestamp = candle.open_time_ms
+
+            if stored_count > 0:
+                print(f"[bybit] Stored {stored_count} klines at {last_timestamp}")
 
         except Exception as e:
             print(f"[bybit] ERROR: Error handling kline: {e}")

@@ -213,7 +213,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         for symbol, raw in self.pending_candles.items():
             candle = self.normalize_candle(raw)
             if candle:
-                self.save_kline(candle)
+                self.save_kline(candle, source="live")
                 self.last_prices[symbol] = candle.close
                 real_count += 1
 
@@ -224,7 +224,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
                 candle = self._create_synthetic_candle(
                     symbol, self.current_minute, self.last_prices[symbol]
                 )
-                self.save_kline(candle)
+                self.save_kline(candle, source="live")
                 synthetic_count += 1
 
         print(

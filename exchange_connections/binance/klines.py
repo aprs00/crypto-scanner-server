@@ -175,10 +175,8 @@ class BinanceKlineCollector(BaseKlineCollector):
                     if is_closed:
                         candle = self.normalize_candle(kline_data)
                         if candle:
-                            self.save_kline(candle)
-                            print(
-                                f"[binance] Stored kline: {candle.symbol} at {candle.open_time_ms}"
-                            )
+                            self.save_kline(candle, source="live")
+                            print(f"[binance] Stored 1 kline at {candle.open_time_ms}")
 
         except Exception as e:
             print(f"[binance] ERROR: Error handling WebSocket message: {e}")
