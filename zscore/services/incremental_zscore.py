@@ -1,6 +1,7 @@
+import time
 import numpy as np
 import msgpack
-from typing import Dict
+from typing import Dict, cast
 from django.utils import timezone
 from django.conf import settings
 
@@ -8,6 +9,8 @@ from exchange_connections.selectors import (
     get_exchange_symbols,
     get_symbol_kline_data,
     get_historical_kline_data,
+    get_symbol_kline_data_at_timestamp,
+    get_symbol_kline_data_multi_hours,
 )
 from zscore.selectors.zscore import get_zscore_history_data
 from exchange_connections.constants import KLINE_FIELD_MAP
@@ -16,6 +19,13 @@ from zscore.models import ZScoreHistory
 from exchange_connections.models import Symbol, Exchange as ExchangeModel, ContractType
 from core.redis_config import get_redis_connection
 from core.notifications import notification_service
+from core.redis_streams import (
+    get_market_stream_key,
+    ensure_consumer_group,
+    decode_stream_fields,
+    is_timestamp_processed,
+    mark_timestamp_processed,
+)
 
 r = get_redis_connection()
 
@@ -266,8 +276,8 @@ class ZScoreProcessor:
         print(f"[{self.exchange}] ZSCORE: Stored zscore history data to redis")
 
     def run(self):
-        """Initialize and compute a single Z-score snapshot."""
-        print(f"[{self.exchange}] Starting ZScore processor (streams removed)")
+        """Initialize and process Z-scores using Redis streams."""
+        print(f"[{self.exchange}] Starting ZScore processor (streams enabled)")
 
         print(f"[{self.exchange}] Initializing zscore trackers...")
         self.incremental_zscores = self.initialize_zscores()
@@ -293,5 +303,132 @@ class ZScoreProcessor:
         self.fetch_and_store_zscore_history_data(redis_pipeline=pipeline)
         pipeline.execute()
 
+        # Mark the initial timestamp as processed to prevent duplicate processing
+        current_ts = (int(time.time() * 1000) // 60000) * 60000 - 60000
+        mark_timestamp_processed(
+            r, "zscore", self.exchange, self.contract_type, current_ts
+        )
+
         notification_service.send_zscore_update()
-        print(f"[{self.exchange}] ZScore snapshot complete")
+        print(f"[{self.exchange}] ZScore snapshot complete (marked ts={current_ts})")
+
+        self._consume_stream()
+
+    def _consume_stream(self):
+        stream_key = get_market_stream_key(self.exchange, self.contract_type)
+        group_name = f"zscore:{self.exchange}:{self.contract_type}"
+        # Use fixed consumer name to take over pending messages on restart
+        consumer_name = f"zscore-{self.exchange}-worker"
+
+        ensure_consumer_group(r, stream_key, group_name)
+
+        # Reset consumer group to latest - we already processed historical data in run()
+        # This skips any backlogged messages and only processes new ones
+        r.xgroup_setid(stream_key, group_name, "$")
+        print(f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (reset to latest)")
+
+        while True:
+            messages = cast(
+                list,
+                r.xreadgroup(
+                    group_name,
+                    consumer_name,
+                    {stream_key: ">"},
+                    count=10,
+                    block=5000,
+                ),
+            )
+
+            if not messages:
+                continue
+
+            for _, entries in messages:
+                for msg_id, fields in entries:
+                    self._process_message(
+                        msg_id, fields, stream_key, group_name
+                    )
+
+    def _process_message(
+        self, msg_id: bytes, fields: dict, stream_key: str, group_name: str
+    ):
+        """Process a single stream message and ACK only on success."""
+        decoded = decode_stream_fields(fields)
+        event_type = decoded.get("event_type")
+        payload = decoded.get("payload") or {}
+
+        try:
+            if event_type == "kline":
+                timestamp_ms = payload.get("timestamp_ms")
+                if timestamp_ms is None:
+                    # ACK invalid messages to prevent infinite redelivery
+                    r.xack(stream_key, group_name, msg_id)
+                    return
+                timestamp_ms = int(timestamp_ms)
+
+                # Idempotency check - skip if already processed
+                if is_timestamp_processed(
+                    r, "zscore", self.exchange, self.contract_type, timestamp_ms
+                ):
+                    print(f"[{self.exchange}] Skipping duplicate zscore timestamp {timestamp_ms}")
+                    r.xack(stream_key, group_name, msg_id)
+                    return
+
+                newest = get_symbol_kline_data_at_timestamp(
+                    symbols=self.symbols,
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
+                    kline_timestamp_ms=timestamp_ms,
+                )
+                oldest = get_symbol_kline_data_multi_hours(
+                    symbols=self.symbols,
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
+                    hours_list=self.hours_options,
+                    kline_timestamp_ms=timestamp_ms,
+                )
+                oldest = cast(
+                    Dict[int | str, Dict[str, Dict[str, float]]], oldest
+                )
+
+                self.update_zscores(
+                    newest_values=newest,
+                    oldest_values=oldest,
+                )
+                results = self.create_z_score_results()
+
+                pipeline = r.pipeline()
+                for tf, tf_data in results.items():
+                    pipeline.execute_command(
+                        "SET",
+                        f"zscore:{self.exchange}:{self.contract_type}:{tf}",
+                        msgpack.packb(tf_data),
+                    )
+                save_to_db = payload.get("source") != "backfill"
+                if save_to_db:
+                    self.store_z_score_results(results)
+                self.fetch_and_store_zscore_history_data(
+                    redis_pipeline=pipeline
+                )
+                pipeline.execute()
+
+                # Mark as processed after successful update
+                mark_timestamp_processed(
+                    r, "zscore", self.exchange, self.contract_type, timestamp_ms
+                )
+
+                notification_service.send_zscore_update()
+            elif event_type == "symbol_update":
+                added = payload.get("added") or []
+                removed = payload.get("removed") or []
+
+                for symbol in added:
+                    self.add_new_symbol(symbol)
+                for symbol in removed:
+                    self.remove_symbol(symbol)
+
+            # ACK only on success
+            r.xack(stream_key, group_name, msg_id)
+        except Exception as e:
+            print(
+                f"[{self.exchange}] ERROR: Stream handler failed: {e}, message will be redelivered"
+            )

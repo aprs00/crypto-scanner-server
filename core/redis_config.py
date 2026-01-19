@@ -7,7 +7,7 @@ def get_redis_connection() -> redis.Redis:
         socket_keepalive=True,
         socket_keepalive_options={},
         socket_connect_timeout=5,
-        socket_timeout=5,
+        socket_timeout=10,
         retry_on_timeout=True,
         health_check_interval=30,
     )

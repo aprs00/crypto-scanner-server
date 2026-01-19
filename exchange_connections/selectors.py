@@ -129,6 +129,51 @@ def get_symbol_kline_data(
         }
 
 
+def get_symbol_kline_data_at_timestamp(
+    symbols: list,
+    exchange: str,
+    contract_type: str,
+    kline_timestamp_ms: int,
+):
+    if not symbols:
+        return {}
+
+    symbol_placeholders = ",".join(["%s"] * len(symbols))
+    target_time = datetime.fromtimestamp(kline_timestamp_ms / 1000, tz=dt_timezone.utc)
+
+    query = f"""
+        SELECT
+            s.name AS symbol_name,
+            k.close,
+            k.base_volume,
+            k.number_of_trades
+        FROM cs_klines_1m k
+        JOIN cs_symbols s ON k.symbol_id = s.id
+        JOIN cs_exchanges e ON k.exchange_id = e.id
+        JOIN cs_contract_types ct ON s.contract_type_id = ct.id
+        WHERE
+            e.name = %s
+            AND ct.name = %s
+            AND s.name IN ({symbol_placeholders})
+            AND k.start_time = %s
+    """
+
+    params = [exchange, contract_type] + symbols + [target_time]
+
+    with connection.cursor() as cursor:
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+        return {
+            row[0]: {
+                "price": float(row[1]),
+                "volume": float(row[2]),
+                "trades": float(row[3]),
+            }
+            for row in rows
+        }
+
+
 def get_symbol_kline_data_multi_hours(
     symbols: list,
     exchange: str,
