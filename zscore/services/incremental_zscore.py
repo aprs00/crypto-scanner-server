@@ -1,8 +1,6 @@
 import numpy as np
 import msgpack
-import threading
-import os
-from typing import Any, Dict
+from typing import Dict
 from django.utils import timezone
 from django.conf import settings
 
@@ -13,11 +11,10 @@ from exchange_connections.selectors import (
 )
 from zscore.selectors.zscore import get_zscore_history_data
 from exchange_connections.constants import KLINE_FIELD_MAP
-from core.constants import RedisStreamKeys, EXCHANGE_CONFIG, Exchange
+from core.constants import EXCHANGE_CONFIG, Exchange
 from zscore.models import ZScoreHistory
 from exchange_connections.models import Symbol, Exchange as ExchangeModel, ContractType
 from core.redis_config import get_redis_connection
-from core.redis_streams import StreamConsumer
 from core.notifications import notification_service
 
 r = get_redis_connection()
@@ -268,181 +265,33 @@ class ZScoreProcessor:
 
         print(f"[{self.exchange}] ZSCORE: Stored zscore history data to redis")
 
-    def _handle_kline_message(self, _msg_id: str, msg_data: Dict[str, Any]) -> bool:
-        """
-        Handle a single kline message from Redis Stream.
-
-        Returns:
-            True if processed successfully (will be ACKed)
-            False if processing failed (will retry)
-        """
-        try:
-            # Filter by exchange
-            msg_exchange = msg_data.get("exchange", str(Exchange.BINANCE))
-            if msg_exchange != str(self.exchange):
-                return True  # ACK, not for us
-
-            print(f"[{self.exchange}] ZSCORE: Processing update")
-
-            newest_values = msg_data.get("newest_values")
-            if not isinstance(newest_values, dict):
-                print(f"[{self.exchange}] ZSCORE: No newest_values found in payload")
-                return True  # ACK to skip invalid message
-
-            oldest_values = msg_data.get("oldest_values", {})
-            if not isinstance(oldest_values, dict):
-                oldest_values = {}
-
-            # Update zscores
-            self.update_zscores(
-                newest_values=newest_values,
-                oldest_values=oldest_values,
-            )
-            results = self.create_z_score_results()
-
-            # Store to Redis and DB
-            pipeline = r.pipeline()
-            for tf, tf_data in results.items():
-                pipeline.execute_command(
-                    "SET",
-                    f"zscore:{self.exchange}:{self.contract_type}:{tf}",
-                    msgpack.packb(tf_data),
-                )
-            self.store_z_score_results(results)
-            self.fetch_and_store_zscore_history_data(redis_pipeline=pipeline)
-            pipeline.execute()
-
-            notification_service.send_zscore_update()
-
-            return True  # Success
-
-        except Exception as e:
-            print(f"[{self.exchange}] ZSCORE: Error processing message: {e}")
-            return False  # Retry
-
-    def _handle_symbol_message(self, _msg_id: str, msg_data: Dict[str, Any]) -> bool:
-        """
-        Handle a single symbol event message from Redis Stream.
-
-        Returns:
-            True if processed successfully (will be ACKed)
-            False if processing failed (will retry)
-        """
-        try:
-            # Filter by exchange
-            if msg_data.get("exchange") != str(self.exchange):
-                return True  # ACK, not for us
-
-            symbol = msg_data.get("symbol")
-            event = msg_data.get("event")
-
-            if event == "ADDED":
-                print(
-                    f"[{self.exchange}] ZSCORE: Received symbol added event: {symbol}"
-                )
-                self.add_new_symbol(symbol)
-            elif event == "DELISTED":
-                print(
-                    f"[{self.exchange}] ZSCORE: Received symbol delisted event: {symbol}"
-                )
-                self.remove_symbol(symbol)
-
-            return True  # Success
-
-        except Exception as e:
-            print(f"[{self.exchange}] ZSCORE: Error processing symbol message: {e}")
-            return True  # ACK anyway for symbol events to avoid blocking
-
-    def _get_stream_latest_id(self, stream_key: str) -> str:
-        """
-        Get the latest message ID from a stream, or '0' if stream doesn't exist.
-
-        Used to capture stream position before initialization so we don't miss
-        messages that arrive during the init window.
-        """
-        try:
-            info = r.xinfo_stream(stream_key)
-            if isinstance(info, dict):
-                last_id = info.get("last-generated-id", "0")
-                if last_id is None:
-                    return "0"
-                if isinstance(last_id, bytes):
-                    return last_id.decode("utf-8")
-                return str(last_id)
-            return "0"
-        except Exception:
-            # Stream doesn't exist yet
-            return "0"
-
     def run(self):
-        """Main processing loop listening for Redis Streams"""
-        print(f"[{self.exchange}] Starting ZScore processor with Redis Streams...")
+        """Initialize and compute a single Z-score snapshot."""
+        print(f"[{self.exchange}] Starting ZScore processor (streams removed)")
 
-        reset_groups = os.getenv("RESET_STREAM_GROUP_ON_START", "0") == "1"
-
-        # Set up stream keys
-        klines_stream = RedisStreamKeys.klines(self.exchange)
-        symbols_stream = RedisStreamKeys.symbols(self.exchange)
-        group_name = RedisStreamKeys.consumer_group("zscore", self.exchange)
-
-        # Capture stream positions BEFORE initialization
-        # This ensures we process all messages that arrive during init
-        klines_start_id = self._get_stream_latest_id(klines_stream)
-        symbols_start_id = self._get_stream_latest_id(symbols_stream)
-        print(
-            f"[{self.exchange}] Captured stream positions - klines: {klines_start_id}, symbols: {symbols_start_id}"
-        )
-
-        # Initialize zscores from historical data (takes time)
         print(f"[{self.exchange}] Initializing zscore trackers...")
         self.incremental_zscores = self.initialize_zscores()
         self.initialized = True
         print(f"[{self.exchange}] ZScore initialization complete")
 
-        # Create stream consumers
-        klines_consumer = StreamConsumer(r, klines_stream, group_name)
-        symbols_consumer = StreamConsumer(r, symbols_stream, group_name)
-
-        # Create consumer groups starting from pre-init positions
-        # This ensures messages that arrived during init are processed
-        klines_consumer.create_consumer_group(
-            start_id=klines_start_id,
-            reset_if_exists=reset_groups,
+        newest_values = get_symbol_kline_data(
+            symbols=self.symbols,
+            exchange=self.exchange,
+            contract_type=self.contract_type,
         )
-        symbols_consumer.create_consumer_group(
-            start_id=symbols_start_id,
-            reset_if_exists=reset_groups,
-        )
+        self.update_zscores(newest_values=newest_values, oldest_values={})
+        results = self.create_z_score_results()
 
-        print(f"[{self.exchange}] ZScore stream consumers initialized")
+        pipeline = r.pipeline()
+        for tf, tf_data in results.items():
+            pipeline.execute_command(
+                "SET",
+                f"zscore:{self.exchange}:{self.contract_type}:{tf}",
+                msgpack.packb(tf_data),
+            )
+        self.store_z_score_results(results)
+        self.fetch_and_store_zscore_history_data(redis_pipeline=pipeline)
+        pipeline.execute()
 
-        # Start consuming in separate threads
-        klines_thread = threading.Thread(
-            target=lambda: klines_consumer.start_consuming(
-                message_handler=self._handle_kline_message,
-                count=10,
-                block_ms=2000,
-            ),
-            daemon=True,
-        )
-        symbols_thread = threading.Thread(
-            target=lambda: symbols_consumer.start_consuming(
-                message_handler=self._handle_symbol_message,
-                count=10,
-                block_ms=1000,
-            ),
-            daemon=True,
-        )
-
-        klines_thread.start()
-        symbols_thread.start()
-
-        print(f"[{self.exchange}] Ready for real-time zscore updates from streams")
-
-        try:
-            klines_thread.join()
-            symbols_thread.join()
-        except KeyboardInterrupt:
-            print(f"[{self.exchange}] Shutting down...")
-            klines_consumer.stop()
-            symbols_consumer.stop()
+        notification_service.send_zscore_update()
+        print(f"[{self.exchange}] ZScore snapshot complete")

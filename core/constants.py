@@ -15,25 +15,6 @@ class Exchange(str, Enum):
         return self.value
 
 
-class RedisStreamKeys:
-    """Redis Stream keys for persistent message delivery."""
-
-    @staticmethod
-    def klines(exchange: Exchange) -> str:
-        """Stream key for kline updates."""
-        return f"klines:{exchange}:stream"
-
-    @staticmethod
-    def symbols(exchange: Exchange) -> str:
-        """Stream key for symbol add/delist events."""
-        return f"symbols:{exchange}:stream"
-
-    @staticmethod
-    def consumer_group(service: str, exchange: Exchange) -> str:
-        """Consumer group name for a service."""
-        return f"{service}:{exchange}"
-
-
 # Per-exchange configuration
 EXCHANGE_CONFIG = {
     Exchange.BINANCE: {
