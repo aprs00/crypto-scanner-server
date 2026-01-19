@@ -1,9 +1,10 @@
 """
 Bybit Perpetual Futures Kline Collector
 
-Production-grade WebSocket connection with:
+Features:
+- Auto-reconnect in-process (never exits)
 - Robust heartbeat monitoring (20s ping, 90s pong timeout)
-- Symbol change detection and hot-reload
+- On reconnect: detect gaps (via BTC) and backfill all symbols
 """
 
 import json
@@ -31,9 +32,9 @@ WS_PING_TIMEOUT = None
 HEARTBEAT_INTERVAL = 20
 PONG_TIMEOUT_SECONDS = 90
 
-# Subscription limits (Bybit allows up to 21000 characters in args array)
+# Subscription limits
 MAX_ARGS_PER_SUBSCRIBE = 10
-SUBSCRIBE_DELAY = 0.1  # seconds between subscription batches
+SUBSCRIBE_DELAY = 0.1
 
 
 class BybitKlineCollector(BaseKlineCollector):
@@ -43,8 +44,6 @@ class BybitKlineCollector(BaseKlineCollector):
     Uses Bybit V5 WebSocket API with:
     - JSON ping/pong heartbeat (20s interval)
     - Only processes confirmed (closed) candles
-
-    Note: Bybit sends closed candles for ALL symbols every minute (like Binance).
     """
 
     def __init__(self):
@@ -54,12 +53,8 @@ class BybitKlineCollector(BaseKlineCollector):
 
         # Heartbeat tracking
         self.connection_start_time = 0
-        self.last_heartbeat_time = 0
         self.last_pong_time = 0
         self.heartbeat_count = 0
-
-        # Track subscribed symbols for efficient reconnection
-        self.subscribed_symbols: Set[str] = set()
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         """Fetch all USDT linear perpetual symbols from Bybit API with pagination."""
@@ -84,14 +79,13 @@ class BybitKlineCollector(BaseKlineCollector):
                 data = response.json()
 
                 if data.get("retCode") != 0:
-                    self.log_error(f"API error: {data.get('retMsg')}")
+                    print(f"[bybit] ERROR: API error: {data.get('retMsg')}")
                     break
 
                 result = data.get("result", {})
                 instruments = result.get("list", [])
 
                 for instrument in instruments:
-                    # Filter for USDT perpetual contracts that are actively trading
                     if (
                         instrument.get("contractType") == "LinearPerpetual"
                         and instrument.get("quoteCoin") == "USDT"
@@ -99,18 +93,17 @@ class BybitKlineCollector(BaseKlineCollector):
                     ):
                         symbols.add(instrument["symbol"])
 
-                # Check for next page
                 cursor = result.get("nextPageCursor")
                 if not cursor:
                     break
 
-                time.sleep(0.1)  # Rate limit courtesy
+                time.sleep(0.1)
 
             print(f"[bybit] Fetched {len(symbols)} linear perpetual symbols")
             return symbols
 
         except Exception as e:
-            self.log_error(f"Failed to fetch symbols: {e}")
+            print(f"[bybit] ERROR: Failed to fetch symbols: {e}")
             return set()
 
     def normalize_candle(self, raw_data: dict) -> Optional[NormalizedCandle]:
@@ -125,76 +118,101 @@ class BybitKlineCollector(BaseKlineCollector):
                 low=Decimal(str(raw_data["low"])),
                 close=Decimal(str(raw_data["close"])),
                 base_volume=Decimal(str(raw_data["volume"])),
-                number_of_trades=0,  # Bybit doesn't provide trade count in kline
+                number_of_trades=0,
                 quote_volume=Decimal(str(raw_data["turnover"])),
                 taker_buy_base_volume=None,
                 taker_buy_quote_volume=None,
             )
         except (KeyError, ValueError, TypeError) as e:
-            self.log_error(f"Failed to normalize candle: {e}")
+            print(f"[bybit] ERROR: Failed to normalize candle: {e}")
             return None
-
-    def map_coingecko_symbol(self, coingecko_symbol: str) -> Optional[str]:
-        """Map CoinGecko symbol to Bybit format (add USDT suffix)."""
-        return f"{coingecko_symbol}USDT"
 
     def fetch_historical_klines(
         self, symbol: str, start_time_ms: int, end_time_ms: int
     ) -> List[NormalizedCandle]:
-        """Fetch historical klines via Bybit REST API.
+        """Fetch historical klines via Bybit REST API with retry logic."""
+        max_retries = 4
+        base_delay = 1
 
-        GET /v5/market/kline
-        Response format: result.list -> [startTime, open, high, low, close, volume, turnover]
-        """
-        try:
-            response = requests.get(
-                f"{BYBIT_API_BASE}/v5/market/kline",
-                params={
-                    "category": "linear",
-                    "symbol": symbol,
-                    "interval": "1",
-                    "start": start_time_ms,
-                    "end": end_time_ms,
-                    "limit": 1,
-                },
-                timeout=10,
-            )
-            response.raise_for_status()
-            data = response.json()
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(
+                    f"{BYBIT_API_BASE}/v5/market/kline",
+                    params={
+                        "category": "linear",
+                        "symbol": symbol,
+                        "interval": "1",
+                        "start": start_time_ms,
+                        "end": end_time_ms,
+                        "limit": 1,
+                    },
+                    timeout=10,
+                )
+                response.raise_for_status()
+                data = response.json()
 
-            if data.get("retCode") != 0:
-                self.log_error(
-                    f"Bybit API error for {symbol}: {data.get('retMsg')}"
+                ret_code = data.get("retCode")
+                # Handle rate limit via retCode (10006 = rate limit)
+                if ret_code == 10006:
+                    if attempt < max_retries - 1:
+                        wait_time = base_delay * (2**attempt)
+                        print(
+                            f"[bybit] Rate limit for {symbol}, waiting {wait_time}s (attempt {attempt + 1}/{max_retries})..."
+                        )
+                        time.sleep(wait_time)
+                        continue
+                    print(f"[bybit] ERROR: Rate limit exceeded for {symbol}")
+                    return []
+
+                if ret_code != 0:
+                    print(
+                        f"[bybit] ERROR: API error for {symbol}: {data.get('retMsg')}"
+                    )
+                    return []
+
+                result = []
+                for k in data.get("result", {}).get("list", []):
+                    open_time_ms = int(k[0])
+                    close_time_ms = open_time_ms + 60000 - 1
+
+                    candle = NormalizedCandle(
+                        open_time_ms=open_time_ms,
+                        close_time_ms=close_time_ms,
+                        symbol=symbol,
+                        open=Decimal(str(k[1])),
+                        high=Decimal(str(k[2])),
+                        low=Decimal(str(k[3])),
+                        close=Decimal(str(k[4])),
+                        base_volume=Decimal(str(k[5])),
+                        number_of_trades=0,
+                        quote_volume=Decimal(str(k[6])),
+                        taker_buy_base_volume=None,
+                        taker_buy_quote_volume=None,
+                    )
+                    result.append(candle)
+
+                return result
+
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code in (429, 403):
+                    if attempt < max_retries - 1:
+                        wait_time = base_delay * (2**attempt)
+                        print(
+                            f"[bybit] Rate limit for {symbol}, waiting {wait_time}s (attempt {attempt + 1}/{max_retries})..."
+                        )
+                        time.sleep(wait_time)
+                        continue
+                print(
+                    f"[bybit] ERROR: Failed to fetch historical klines for {symbol}: {e}"
+                )
+                return []
+            except Exception as e:
+                print(
+                    f"[bybit] ERROR: Failed to fetch historical klines for {symbol}: {e}"
                 )
                 return []
 
-            result = []
-            for k in data.get("result", {}).get("list", []):
-                # Bybit returns [startTime, open, high, low, close, volume, turnover]
-                open_time_ms = int(k[0])
-                close_time_ms = open_time_ms + 60000 - 1  # End of the minute
-
-                candle = NormalizedCandle(
-                    open_time_ms=open_time_ms,
-                    close_time_ms=close_time_ms,
-                    symbol=symbol,
-                    open=Decimal(str(k[1])),
-                    high=Decimal(str(k[2])),
-                    low=Decimal(str(k[3])),
-                    close=Decimal(str(k[4])),
-                    base_volume=Decimal(str(k[5])),
-                    number_of_trades=0,  # Bybit doesn't provide trade count in kline
-                    quote_volume=Decimal(str(k[6])),  # turnover
-                    taker_buy_base_volume=None,
-                    taker_buy_quote_volume=None,
-                )
-                result.append(candle)
-
-            return result
-
-        except Exception as e:
-            self.log_error(f"Failed to fetch historical klines for {symbol}: {e}")
-            return []
+        return []
 
     def _on_message(self, ws, message):
         """Handle incoming WebSocket message."""
@@ -205,30 +223,25 @@ class BybitKlineCollector(BaseKlineCollector):
                 self.last_pong_time = time.time()
                 if self.heartbeat_count % 10 == 0:
                     elapsed = int(time.time() - self.connection_start_time)
-                    print(
-                        f"[bybit] Pong received (uptime: {elapsed}s, heartbeats: {self.heartbeat_count})"
-                    )
+                    print(f"[bybit] Pong received (uptime: {elapsed}s)")
                 return
 
             if data.get("op") == "subscribe":
-                if data.get("success"):
-                    return
-                else:
-                    self.log_error(f"Subscription failed: {data.get('ret_msg')}")
-                    return
+                if not data.get("success"):
+                    print(f"[bybit] ERROR: Subscription failed: {data.get('ret_msg')}")
+                return
 
             topic = data.get("topic", "")
             if topic.startswith("kline.1."):
                 self._handle_kline(data)
 
         except Exception as e:
-            self.log_error(f"Message error: {e}")
+            print(f"[bybit] ERROR: Message error: {e}")
 
     def _handle_kline(self, data: dict):
         """Process incoming kline data."""
         try:
             topic = data.get("topic", "")
-            # Extract symbol from topic: "kline.1.BTCUSDT" -> "BTCUSDT"
             parts = topic.split(".")
             if len(parts) != 3:
                 return
@@ -239,21 +252,23 @@ class BybitKlineCollector(BaseKlineCollector):
                 return
 
             for kline_data in kline_list:
-                # Only process confirmed (closed) candles
                 if not kline_data.get("confirm", False):
                     continue
 
                 kline_data["s"] = symbol
                 candle = self.normalize_candle(kline_data)
                 if candle:
-                    self.process_kline(candle)
+                    self.save_kline(candle)
+                    print(
+                        f"[bybit] Stored kline: {candle.symbol} at {candle.open_time_ms}"
+                    )
 
         except Exception as e:
-            self.log_error(f"Error handling kline: {e}")
+            print(f"[bybit] ERROR: Error handling kline: {e}")
 
     def _on_error(self, ws, error):
         """Handle WebSocket errors."""
-        self.log_error(f"WebSocket error: {error}")
+        print(f"[bybit] ERROR: WebSocket error: {error}")
 
     def _on_close(self, ws, code, msg):
         """Handle WebSocket close."""
@@ -263,10 +278,7 @@ class BybitKlineCollector(BaseKlineCollector):
             if self.connection_start_time
             else 0
         )
-        print(
-            f"[bybit] WebSocket closed: code={code}, msg={msg}, "
-            f"duration={duration}s, heartbeats_sent={self.heartbeat_count}"
-        )
+        print(f"[bybit] WebSocket closed: code={code}, msg={msg}, duration={duration}s")
 
     def _on_open(self, ws):
         """Handle WebSocket open."""
@@ -274,10 +286,8 @@ class BybitKlineCollector(BaseKlineCollector):
         self.connection_start_time = time.time()
         self.last_pong_time = time.time()
         self.heartbeat_count = 0
-        self.subscribed_symbols.clear()
         print("[bybit] WebSocket connected")
 
-        # Start setup and heartbeat in background threads
         threading.Thread(target=self._setup, daemon=True).start()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
 
@@ -285,7 +295,6 @@ class BybitKlineCollector(BaseKlineCollector):
         """Subscribe to symbols."""
         print(f"[bybit] Subscribing to {len(self.symbols)} symbols...")
 
-        # Subscribe in batches to avoid overwhelming the connection
         symbol_list = list(self.symbols)
         for i in range(0, len(symbol_list), MAX_ARGS_PER_SUBSCRIBE):
             if not self.ws_connected or not self.ws:
@@ -296,12 +305,11 @@ class BybitKlineCollector(BaseKlineCollector):
 
             try:
                 self.ws.send(json.dumps({"op": "subscribe", "args": args}))
-                self.subscribed_symbols.update(batch)
                 time.sleep(SUBSCRIBE_DELAY)
             except Exception as e:
-                self.log_error(f"Subscribe batch failed: {e}")
+                print(f"[bybit] ERROR: Subscribe batch failed: {e}")
 
-        print(f"[bybit] Subscribed to {len(self.subscribed_symbols)} symbols")
+        print(f"[bybit] Subscribed to {len(self.symbols)} symbols")
 
     def _heartbeat_loop(self):
         """Send JSON ping every 20s and monitor pong responses."""
@@ -311,28 +319,23 @@ class BybitKlineCollector(BaseKlineCollector):
             if not self.ws_connected or not self.ws:
                 break
 
-            # Check for stale connection (no pong received recently)
             time_since_pong = time.time() - self.last_pong_time
             if time_since_pong > PONG_TIMEOUT_SECONDS:
-                self.log_error(
-                    f"No pong received in {time_since_pong:.0f}s, forcing reconnect"
-                )
+                print(f"[bybit] ERROR: No pong in {time_since_pong:.0f}s, closing")
                 self.ws.close()
                 break
 
             try:
                 self.ws.send(json.dumps({"op": "ping"}))
                 self.heartbeat_count += 1
-                self.last_heartbeat_time = time.time()
 
                 if self.heartbeat_count % 20 == 0:
                     elapsed = int(time.time() - self.connection_start_time)
                     print(
-                        f"[bybit] Heartbeat #{self.heartbeat_count} sent "
-                        f"(uptime: {elapsed}s / {elapsed // 60}m)"
+                        f"[bybit] Heartbeat #{self.heartbeat_count} (uptime: {elapsed}s)"
                     )
             except Exception as e:
-                self.log_error(f"Heartbeat failed: {e}")
+                print(f"[bybit] ERROR: Heartbeat failed: {e}")
 
     def connect_websocket(self) -> Optional[threading.Thread]:
         """Create and connect WebSocket."""
@@ -360,16 +363,11 @@ class BybitKlineCollector(BaseKlineCollector):
         thread.start()
         return thread
 
-    def on_symbols_changed(self):
-        """Called when symbols change - close WebSocket to reconnect with new symbols."""
+    def close_websocket(self):
+        """Close the WebSocket connection."""
         if self.ws:
             self.ws.close()
-
-    def stop(self):
-        """Stop the collector."""
-        super().stop()
-        if self.ws:
-            self.ws.close()
+            self.ws = None
 
 
 def main():
