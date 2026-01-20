@@ -1,9 +1,10 @@
+import os
 import time
 import threading
 from collections import deque
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone as dt_timezone
-from typing import List, Set, Optional
+from typing import Dict, List, Set, Optional
 
 from django.db import connection
 
@@ -12,8 +13,12 @@ from exchange_connections.services.klines_ingest import (
     bulk_insert_klines,
     build_model_from_ws,
 )
-from core.constants import Exchange
+from core.constants import Exchange, EXCHANGE_CONFIG
 from exchange_connections.constants import get_btc_symbol
+from exchange_connections.selectors import (
+    get_symbol_kline_data_at_timestamp,
+    get_symbol_kline_data_multi_hours,
+)
 from core.redis_config import get_redis_connection
 from core.redis_streams import publish_market_event
 
@@ -32,7 +37,8 @@ class BaseKlineCollector(ABC):
     - Auto-reconnect in-process (never exits)
     - On reconnect: detect gaps (via BTC) and backfill all symbols
     - Auto-subscribe to new symbols (reconnect when symbols change)
-    - Immediate DB save for each kline (no batching)
+    - Batched DB saves: buffers klines by timestamp, saves all klines for a
+      minute together when the next minute arrives, then publishes Redis event
 
     Subclasses must implement:
     - fetch_perpetual_symbols(): Get available symbols from exchange API
@@ -56,6 +62,15 @@ class BaseKlineCollector(ABC):
         self._recent_timestamp_set: Set[int] = set()
         self._recent_limit = 500
         self._primary_symbol = get_btc_symbol(self.exchange)
+        # Buffer for batching klines by timestamp before saving
+        self._kline_buffer: Dict[int, List[NormalizedCandle]] = {}
+        # Combined hours options for correlation and zscore services
+        config = EXCHANGE_CONFIG.get(self.exchange, {})
+        hours_opts = config.get("hours_options", {})
+        self._all_hours_options: List[int] = sorted(
+            set(hours_opts.get("correlation", {}).values())
+            | set(hours_opts.get("zscore", {}).values())
+        )
 
     @abstractmethod
     def fetch_perpetual_symbols(self) -> Set[str]:
@@ -140,18 +155,29 @@ class BaseKlineCollector(ABC):
             oldest = self._recent_timestamps.popleft()
             self._recent_timestamp_set.discard(oldest)
 
-    def _publish_kline_timestamp(self, timestamp_ms: int, source: str):
+    def _publish_kline_timestamp(
+        self,
+        timestamp_ms: int,
+        source: str,
+        newest_values: Optional[Dict] = None,
+        oldest_values: Optional[Dict] = None,
+    ):
         if timestamp_ms in self._recent_timestamp_set:
             return
         self._remember_timestamp(timestamp_ms)
+        payload = {
+            "timestamp_ms": timestamp_ms,
+            "source": source,
+        }
+        if newest_values is not None:
+            payload["newest_values"] = newest_values
+        if oldest_values is not None:
+            payload["oldest_values"] = oldest_values
         publish_market_event(
             exchange=self.exchange,
             contract_type=self.contract_type,
             event_type="kline",
-            payload={
-                "timestamp_ms": timestamp_ms,
-                "source": source,
-            },
+            payload=payload,
             redis_client=self.redis,
         )
 
@@ -162,7 +188,10 @@ class BaseKlineCollector(ABC):
         if not self._pending_timestamps:
             return
         for timestamp_ms in sorted(self._pending_timestamps):
-            self._publish_kline_timestamp(timestamp_ms, source="live")
+            newest, oldest = self._query_kline_data_for_timestamp(timestamp_ms)
+            self._publish_kline_timestamp(
+                timestamp_ms, source="live", newest_values=newest, oldest_values=oldest
+            )
         self._pending_timestamps.clear()
 
     def detect_btc_gaps(self) -> List[int]:
@@ -268,7 +297,13 @@ class BaseKlineCollector(ABC):
                 total_inserted += count
 
             try:
-                self._publish_kline_timestamp(timestamp_ms, source="backfill")
+                newest, oldest = self._query_kline_data_for_timestamp(timestamp_ms)
+                self._publish_kline_timestamp(
+                    timestamp_ms,
+                    source="backfill",
+                    newest_values=newest,
+                    oldest_values=oldest,
+                )
             except Exception as e:
                 print(f"[{self.exchange}] ERROR: Failed to publish backfill event: {e}")
 
@@ -277,22 +312,104 @@ class BaseKlineCollector(ABC):
         self._flush_pending_timestamps()
 
     def save_kline(self, candle: NormalizedCandle, source: str = "live"):
-        """Save single kline to database immediately."""
+        """Save kline - buffers live klines, saves backfill immediately."""
+        timestamp_ms = candle.open_time_ms
+
+        if source == "live":
+            # Buffer live klines for batch saving
+            self._kline_buffer.setdefault(timestamp_ms, []).append(candle)
+            self._flush_completed_minutes(timestamp_ms)
+        else:
+            # Backfill: save immediately (already complete data)
+            self._save_klines_batch([candle])
+
+    def _flush_completed_minutes(self, current_timestamp_ms: int):
+        """Flush all buffered minutes older than current timestamp."""
+        completed = [ts for ts in self._kline_buffer if ts < current_timestamp_ms]
+
+        for ts in sorted(completed):
+            candles = self._kline_buffer.pop(ts)
+            self._save_klines_batch(candles)
+            print(
+                f"[{self.exchange}] Batch saved {len(candles)} klines for timestamp {ts}"
+            )
+            # Publish event AFTER all klines for this minute are saved
+            if self._backfill_in_progress:
+                self._buffer_live_timestamp(ts)
+            else:
+                # Query for newest and oldest values to include in the stream
+                newest, oldest = self._query_kline_data_for_timestamp(ts)
+                self._publish_kline_timestamp(
+                    ts, source="live", newest_values=newest, oldest_values=oldest
+                )
+
+    def _query_kline_data_for_timestamp(
+        self, timestamp_ms: int
+    ) -> tuple[Optional[Dict], Optional[Dict]]:
+        """Query newest and oldest kline data for the given timestamp."""
+        if not self.symbols or not self._all_hours_options:
+            return None, None
+
         try:
-            model = build_model_from_ws(
-                kline_dict=candle.to_dict(),
+            symbols_list = list(self.symbols)
+            newest = get_symbol_kline_data_at_timestamp(
+                symbols=symbols_list,
                 exchange=self.exchange,
                 contract_type=self.contract_type,
+                kline_timestamp_ms=timestamp_ms,
             )
-            bulk_insert_klines([model])
-            if source == "live" and candle.symbol == self._primary_symbol:
-                if self._backfill_in_progress:
-                    self._buffer_live_timestamp(candle.open_time_ms)
-                else:
-                    self._publish_kline_timestamp(candle.open_time_ms, source="live")
+            oldest = get_symbol_kline_data_multi_hours(
+                symbols=symbols_list,
+                exchange=self.exchange,
+                contract_type=self.contract_type,
+                hours_list=self._all_hours_options,
+                kline_timestamp_ms=timestamp_ms,
+            )
+            return newest, oldest
         except Exception as e:
             print(
-                f"[{self.exchange}] ERROR: Failed to save kline for {candle.symbol}: {e}"
+                f"[{self.exchange}] ERROR: Failed to query kline data for stream: {e}"
+            )
+            return None, None
+        finally:
+            connection.close()
+
+    def _flush_all_buffered_klines(self):
+        """Flush all remaining buffered klines (called on disconnect)."""
+        if not self._kline_buffer:
+            return
+
+        for ts in sorted(self._kline_buffer.keys()):
+            candles = self._kline_buffer.pop(ts)
+            self._save_klines_batch(candles)
+            print(
+                f"[{self.exchange}] Flushed {len(candles)} buffered klines for timestamp {ts}"
+            )
+            if self._backfill_in_progress:
+                self._buffer_live_timestamp(ts)
+            else:
+                newest, oldest = self._query_kline_data_for_timestamp(ts)
+                self._publish_kline_timestamp(
+                    ts, source="live", newest_values=newest, oldest_values=oldest
+                )
+
+    def _save_klines_batch(self, candles: List[NormalizedCandle]):
+        """Batch save multiple klines to database."""
+        if not candles:
+            return
+        try:
+            models = [
+                build_model_from_ws(
+                    kline_dict=c.to_dict(),
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
+                )
+                for c in candles
+            ]
+            bulk_insert_klines(models)
+        except Exception as e:
+            print(
+                f"[{self.exchange}] ERROR: Failed to batch save {len(candles)} klines: {e}"
             )
 
     def run(self):
@@ -318,7 +435,10 @@ class BaseKlineCollector(ABC):
                 continue
 
             # On connect: detect gaps (via BTC) and backfill all symbols
-            self.backfill_gaps()
+            if os.environ.get("DISABLE_BACKFILL", "").lower() not in ("1", "true", "yes"):
+                self.backfill_gaps()
+            else:
+                print(f"[{self.exchange}] Backfill disabled via DISABLE_BACKFILL env var")
 
             # Wait for disconnect or symbol change
             last_symbol_check = time.time()
@@ -336,10 +456,13 @@ class BaseKlineCollector(ABC):
                         self.close_websocket()
                         break
 
+            # Flush any buffered klines before reconnecting
+            self._flush_all_buffered_klines()
             print(f"[{self.exchange}] Reconnecting in {WS_RECONNECT_DELAY}s...")
             time.sleep(WS_RECONNECT_DELAY)
 
     def stop(self):
         """Stop the collector."""
         self.should_run = False
+        self._flush_all_buffered_klines()
         self.close_websocket()

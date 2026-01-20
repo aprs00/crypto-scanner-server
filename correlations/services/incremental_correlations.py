@@ -15,7 +15,6 @@ from exchange_connections.selectors import (
     get_exchange_symbols,
     get_historical_kline_data,
     get_symbol_kline_data,
-    get_symbol_kline_data_at_timestamp,
     get_symbol_kline_data_multi_hours,
 )
 from core.constants import EXCHANGE_CONFIG, Exchange
@@ -435,22 +434,12 @@ class CorrelationCalculator:
 
             missing = [s for s in self.symbols if s not in newest]
             if missing:
+                # Don't fetch missing symbols - that would get data from a different
+                # timestamp and corrupt correlations. Log warning instead.
                 print(
-                    f"[{self.exchange}][DEBUG] Missing symbols in newest data: {len(missing)} - {missing[:5]}..."
+                    f"[{self.exchange}][WARN] Missing {len(missing)} symbols in kline data "
+                    f"(first 5: {missing[:5]}). Data should be complete after batch save."
                 )
-                try:
-                    extra = get_symbol_kline_data(
-                        symbols=missing,
-                        exchange=self.exchange,
-                        contract_type=self.contract_type,
-                    )
-                    newest.update(extra)
-                    print(
-                        f"[{self.exchange}][DEBUG] Fetched {len(extra)} missing symbols"
-                    )
-                except Exception as e:
-                    print(f"[{self.exchange}] Failed to fetch missing symbols: {e}")
-                    return
 
             sample_tracker = self.trackers.get((1, "close"))
             if sample_tracker:
@@ -755,19 +744,10 @@ class CorrelationCalculator:
                     self.redis.xack(stream_key, group_name, msg_id)
                     return
 
-                newest = get_symbol_kline_data_at_timestamp(
-                    symbols=self.symbols,
-                    exchange=self.exchange,
-                    contract_type=self.contract_type,
-                    kline_timestamp_ms=timestamp_ms,
-                )
-                oldest = get_symbol_kline_data_multi_hours(
-                    symbols=self.symbols,
-                    exchange=self.exchange,
-                    contract_type=self.contract_type,
-                    hours_list=self.hours_options,
-                    kline_timestamp_ms=timestamp_ms,
-                )
+                # Use data from stream payload
+                newest = payload.get("newest_values") or {}
+                oldest = payload.get("oldest_values") or {}
+
                 save_to_db = payload.get("source") != "backfill"
                 self.update_correlations(
                     newest=newest,
