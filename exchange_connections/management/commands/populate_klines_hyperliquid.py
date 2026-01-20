@@ -49,6 +49,16 @@ class Command(BasePopulateKlinesCommand):
                     time.sleep(self.request_delay)
                     continue
 
+                # Filter out current unfinished minute
+                current_minute_start_ms = (int(time.time()) // 60) * 60 * 1000
+                klines = [k for k in klines if k["T"] < current_minute_start_ms]
+
+                if not klines:
+                    print(f"All klines filtered out (current minute), advancing...")
+                    current_start_ms = chunk_end_ms + 1
+                    time.sleep(self.request_delay)
+                    continue
+
                 all_klines.extend(klines)
 
                 # Advance past the last kline's close time
