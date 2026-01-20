@@ -16,8 +16,8 @@ BINANCE_FUTURES_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeIn
 BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/stream"
 BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 
-WS_PING_INTERVAL = 0
-WS_PING_TIMEOUT = None
+WS_PING_INTERVAL = 180  # 3 minutes
+WS_PING_TIMEOUT = 10    # 10 seconds
 MAX_STREAMS_PER_CONNECTION = 1024
 
 
@@ -148,8 +148,8 @@ class BinanceKlineCollector(BaseKlineCollector):
 
         return []
 
-    def build_ws_url(self) -> str:
-        """Build WebSocket URL with all kline streams."""
+    def build_stream_list(self) -> List[str]:
+        """Build list of kline streams to subscribe to."""
         streams = [f"{symbol.lower()}@kline_1m" for symbol in self.symbols]
 
         if len(streams) > MAX_STREAMS_PER_CONNECTION:
@@ -158,8 +158,7 @@ class BinanceKlineCollector(BaseKlineCollector):
             )
             streams = streams[:MAX_STREAMS_PER_CONNECTION]
 
-        streams_param = "/".join(streams)
-        return f"{BINANCE_FUTURES_WS_URL}?streams={streams_param}"
+        return streams
 
     def on_message(self, _ws, message):
         """Handle incoming WebSocket message."""
@@ -176,7 +175,7 @@ class BinanceKlineCollector(BaseKlineCollector):
                         candle = self.normalize_candle(kline_data)
                         if candle:
                             self.save_kline(candle, source="live")
-                            print(f"[binance] Stored 1 kline at {candle.open_time_ms}")
+                            # print(f"[binance] Stored 1 kline at {candle.open_time_ms}")
 
         except Exception as e:
             print(f"[binance] ERROR: Error handling WebSocket message: {e}")
@@ -191,10 +190,17 @@ class BinanceKlineCollector(BaseKlineCollector):
         print(f"[binance] WebSocket closed: code={close_status_code}, msg={close_msg}")
 
     def on_open(self, _ws):
-        """Handle WebSocket open."""
+        """Handle WebSocket open - subscribe to all streams."""
+        streams = self.build_stream_list()
+        subscribe_msg = {
+            "method": "SUBSCRIBE",
+            "params": streams,
+            "id": 1
+        }
+        _ws.send(json.dumps(subscribe_msg))
         self.ws_connected = True
         print(
-            f"[binance] WebSocket connected, subscribed to {len(self.symbols)} streams"
+            f"[binance] WebSocket connected, subscribed to {len(streams)} streams"
         )
 
     def connect_websocket(self) -> Optional[threading.Thread]:
@@ -203,11 +209,10 @@ class BinanceKlineCollector(BaseKlineCollector):
             print("[binance] No symbols to connect to")
             return None
 
-        url = self.build_ws_url()
         print(f"[binance] Connecting to WebSocket with {len(self.symbols)} streams...")
 
         self.ws = websocket.WebSocketApp(
-            url,
+            BINANCE_FUTURES_WS_URL,
             on_open=self.on_open,
             on_message=self.on_message,
             on_error=self.on_error,

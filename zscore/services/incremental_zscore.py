@@ -9,8 +9,6 @@ from exchange_connections.selectors import (
     get_exchange_symbols,
     get_symbol_kline_data,
     get_historical_kline_data,
-    get_symbol_kline_data_at_timestamp,
-    get_symbol_kline_data_multi_hours,
 )
 from zscore.selectors.zscore import get_zscore_history_data
 from exchange_connections.constants import KLINE_FIELD_MAP
@@ -325,7 +323,9 @@ class ZScoreProcessor:
         # Reset consumer group to latest - we already processed historical data in run()
         # This skips any backlogged messages and only processes new ones
         r.xgroup_setid(stream_key, group_name, "$")
-        print(f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (reset to latest)")
+        print(
+            f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (reset to latest)"
+        )
 
         while True:
             messages = cast(
@@ -344,9 +344,7 @@ class ZScoreProcessor:
 
             for _, entries in messages:
                 for msg_id, fields in entries:
-                    self._process_message(
-                        msg_id, fields, stream_key, group_name
-                    )
+                    self._process_message(msg_id, fields, stream_key, group_name)
 
     def _process_message(
         self, msg_id: bytes, fields: dict, stream_key: str, group_name: str
@@ -369,26 +367,16 @@ class ZScoreProcessor:
                 if is_timestamp_processed(
                     r, "zscore", self.exchange, self.contract_type, timestamp_ms
                 ):
-                    print(f"[{self.exchange}] Skipping duplicate zscore timestamp {timestamp_ms}")
+                    print(
+                        f"[{self.exchange}] Skipping duplicate zscore timestamp {timestamp_ms}"
+                    )
                     r.xack(stream_key, group_name, msg_id)
                     return
 
-                newest = get_symbol_kline_data_at_timestamp(
-                    symbols=self.symbols,
-                    exchange=self.exchange,
-                    contract_type=self.contract_type,
-                    kline_timestamp_ms=timestamp_ms,
-                )
-                oldest = get_symbol_kline_data_multi_hours(
-                    symbols=self.symbols,
-                    exchange=self.exchange,
-                    contract_type=self.contract_type,
-                    hours_list=self.hours_options,
-                    kline_timestamp_ms=timestamp_ms,
-                )
-                oldest = cast(
-                    Dict[int | str, Dict[str, Dict[str, float]]], oldest
-                )
+                # Use data from stream payload
+                newest = payload.get("newest_values") or {}
+                oldest = payload.get("oldest_values") or {}
+                oldest = cast(Dict[int | str, Dict[str, Dict[str, float]]], oldest)
 
                 self.update_zscores(
                     newest_values=newest,
@@ -406,9 +394,7 @@ class ZScoreProcessor:
                 save_to_db = payload.get("source") != "backfill"
                 if save_to_db:
                     self.store_z_score_results(results)
-                self.fetch_and_store_zscore_history_data(
-                    redis_pipeline=pipeline
-                )
+                self.fetch_and_store_zscore_history_data(redis_pipeline=pipeline)
                 pipeline.execute()
 
                 # Mark as processed after successful update

@@ -33,6 +33,7 @@ def publish_market_event(
     payload: dict[str, Any],
     redis_client: redis.Redis | None = None,
 ) -> str:
+    print("PUBLISHING EVENT:", event_type, "FOR", exchange, contract_type)
     redis_client = redis_client or get_redis_connection()
     stream_key = get_market_stream_key(exchange, contract_type)
     fields: dict[str, Any] = {
