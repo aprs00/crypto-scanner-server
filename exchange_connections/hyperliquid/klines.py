@@ -264,6 +264,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
 
         if candle_minute > self.current_minute:
             self._flush_pending_candles()
+            self._flush_completed_minutes(candle_minute)
             self.current_minute = candle_minute
 
         if candle_minute < self.current_minute:

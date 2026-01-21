@@ -17,7 +17,7 @@ BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/stream"
 BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 
 WS_PING_INTERVAL = 180  # 3 minutes
-WS_PING_TIMEOUT = 10    # 10 seconds
+WS_PING_TIMEOUT = 10  # 10 seconds
 MAX_STREAMS_PER_CONNECTION = 1024
 
 
@@ -175,7 +175,8 @@ class BinanceKlineCollector(BaseKlineCollector):
                         candle = self.normalize_candle(kline_data)
                         if candle:
                             self.save_kline(candle, source="live")
-                            # print(f"[binance] Stored 1 kline at {candle.open_time_ms}")
+                            next_minute = candle.open_time_ms + 60000
+                            self._flush_completed_minutes(next_minute)
 
         except Exception as e:
             print(f"[binance] ERROR: Error handling WebSocket message: {e}")
@@ -190,18 +191,21 @@ class BinanceKlineCollector(BaseKlineCollector):
         print(f"[binance] WebSocket closed: code={close_status_code}, msg={close_msg}")
 
     def on_open(self, _ws):
-        """Handle WebSocket open - subscribe to all streams."""
+        """Handle WebSocket open - subscribe to all streams in batches."""
         streams = self.build_stream_list()
-        subscribe_msg = {
-            "method": "SUBSCRIBE",
-            "params": streams,
-            "id": 1
-        }
-        _ws.send(json.dumps(subscribe_msg))
+
+        batch_size = 100
+        for i in range(0, len(streams), batch_size):
+            batch = streams[i : i + batch_size]
+            subscribe_msg = {
+                "method": "SUBSCRIBE",
+                "params": batch,
+                "id": i // batch_size + 1,
+            }
+            _ws.send(json.dumps(subscribe_msg))
+
         self.ws_connected = True
-        print(
-            f"[binance] WebSocket connected, subscribed to {len(streams)} streams"
-        )
+        print(f"[binance] WebSocket connected, subscribed to {len(streams)} streams")
 
     def connect_websocket(self) -> Optional[threading.Thread]:
         """Create and connect WebSocket."""

@@ -330,10 +330,7 @@ class BaseKlineCollector(ABC):
         for ts in sorted(completed):
             candles = self._kline_buffer.pop(ts)
             self._save_klines_batch(candles)
-            print(
-                f"[{self.exchange}] Batch saved {len(candles)} klines for timestamp {ts}"
-            )
-            # Publish event AFTER all klines for this minute are saved
+
             if self._backfill_in_progress:
                 self._buffer_live_timestamp(ts)
             else:
@@ -435,10 +432,16 @@ class BaseKlineCollector(ABC):
                 continue
 
             # On connect: detect gaps (via BTC) and backfill all symbols
-            if os.environ.get("DISABLE_BACKFILL", "").lower() not in ("1", "true", "yes"):
+            if os.environ.get("DISABLE_BACKFILL", "").lower() not in (
+                "1",
+                "true",
+                "yes",
+            ):
                 self.backfill_gaps()
             else:
-                print(f"[{self.exchange}] Backfill disabled via DISABLE_BACKFILL env var")
+                print(
+                    f"[{self.exchange}] Backfill disabled via DISABLE_BACKFILL env var"
+                )
 
             # Wait for disconnect or symbol change
             last_symbol_check = time.time()
