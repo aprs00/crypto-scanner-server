@@ -3,7 +3,7 @@ Bybit Perpetual Futures Kline Collector
 
 Features:
 - Auto-reconnect in-process (never exits)
-- Robust heartbeat monitoring (20s ping, 90s pong timeout)
+- Heartbeat via JSON ping (20s interval)
 - On reconnect: detect gaps (via BTC) and backfill all symbols
 """
 
@@ -30,7 +30,6 @@ WS_PING_TIMEOUT = None
 
 # Heartbeat configuration (Bybit recommends 20s ping interval)
 HEARTBEAT_INTERVAL = 20
-PONG_TIMEOUT_SECONDS = 90
 
 # Subscription limits
 MAX_ARGS_PER_SUBSCRIBE = 10
@@ -53,7 +52,6 @@ class BybitKlineCollector(BaseKlineCollector):
 
         # Heartbeat tracking
         self.connection_start_time = 0
-        self.last_pong_time = 0
         self.heartbeat_count = 0
 
     def fetch_perpetual_symbols(self) -> Set[str]:
@@ -220,7 +218,6 @@ class BybitKlineCollector(BaseKlineCollector):
             data = json.loads(message)
 
             if data.get("op") == "pong" or data.get("ret_msg") == "pong":
-                self.last_pong_time = time.time()
                 if self.heartbeat_count % 10 == 0:
                     elapsed = int(time.time() - self.connection_start_time)
                     print(f"[bybit] Pong received (uptime: {elapsed}s)")
@@ -251,8 +248,6 @@ class BybitKlineCollector(BaseKlineCollector):
             if not kline_list:
                 return
 
-            stored_count = 0
-            last_timestamp = None
             for kline_data in kline_list:
                 if not kline_data.get("confirm", False):
                     continue
@@ -263,11 +258,6 @@ class BybitKlineCollector(BaseKlineCollector):
                     self.save_kline(candle, source="live")
                     next_minute = candle.open_time_ms + 60000
                     self._flush_completed_minutes(next_minute)
-                    stored_count += 1
-                    last_timestamp = candle.open_time_ms
-
-            if stored_count > 0:
-                print(f"[bybit] Stored {stored_count} klines at {last_timestamp}")
 
         except Exception as e:
             print(f"[bybit] ERROR: Error handling kline: {e}")
@@ -290,7 +280,6 @@ class BybitKlineCollector(BaseKlineCollector):
         """Handle WebSocket open."""
         self.ws_connected = True
         self.connection_start_time = time.time()
-        self.last_pong_time = time.time()
         self.heartbeat_count = 0
         print("[bybit] WebSocket connected")
 
@@ -318,17 +307,11 @@ class BybitKlineCollector(BaseKlineCollector):
         print(f"[bybit] Subscribed to {len(self.symbols)} symbols")
 
     def _heartbeat_loop(self):
-        """Send JSON ping every 20s and monitor pong responses."""
+        """Send JSON ping every 20s to keep connection alive."""
         while self.ws_connected:
             time.sleep(HEARTBEAT_INTERVAL)
 
             if not self.ws_connected or not self.ws:
-                break
-
-            time_since_pong = time.time() - self.last_pong_time
-            if time_since_pong > PONG_TIMEOUT_SECONDS:
-                print(f"[bybit] ERROR: No pong in {time_since_pong:.0f}s, closing")
-                self.ws.close()
                 break
 
             try:
