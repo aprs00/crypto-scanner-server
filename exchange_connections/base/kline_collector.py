@@ -445,11 +445,15 @@ class BaseKlineCollector(ABC):
 
             # Wait for disconnect or symbol change
             last_symbol_check = time.time()
-            while self.should_run and self.ws_thread.is_alive():
-                time.sleep(SYMBOL_CHECK_INTERVAL)
+            poll_interval = 5
+            while self.should_run:
+                if not self.ws_thread or not self.ws_thread.is_alive():
+                    break
+
+                time.sleep(poll_interval)
 
                 # Check for symbol changes periodically
-                if time.time() - last_symbol_check > SYMBOL_CHECK_INTERVAL:
+                if time.time() - last_symbol_check >= SYMBOL_CHECK_INTERVAL:
                     last_symbol_check = time.time()
                     old_symbols = self.symbols.copy()
                     self.update_symbols()
