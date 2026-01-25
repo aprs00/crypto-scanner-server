@@ -2,10 +2,9 @@ from django.utils import timezone
 from datetime import timedelta, timezone as dt_timezone
 from typing import Optional, List, Sequence, cast
 from django.db import connection
-from collections import defaultdict
 from datetime import datetime
+import math
 
-from exchange_connections.constants import KLINE_FIELD_MAP
 from core.redis_config import get_redis_connection
 
 r = get_redis_connection()
@@ -16,39 +15,59 @@ def get_exchange_symbols(exchange, contract_type="perpetual"):
     return sorted([symbol.decode("utf-8") for symbol in symbols_b])
 
 
-def get_historical_kline_data(hours, symbols, exchange):
-    """Get historical ticker data from the database for all KLINE fields."""
+def get_historical_kline_data(
+    hours, symbols, exchange, contract_type: str = "perpetual"
+):
+    """Get historical ticker data from the database for all KLINE fields.
+
+    Returns time-aligned data with NaN for missing minutes to ensure
+    data continuity. This prevents correlation calculations from mixing
+    data from different time periods when there are gaps in the database.
+    """
 
     end_time = timezone.now().replace(second=0, microsecond=0)
     start_time = end_time - timedelta(hours=hours)
+    total_minutes = hours * 60
 
     symbol_placeholders = ",".join(["%s"] * len(symbols))
 
     query = f"""
         SELECT
             s.name AS symbol_name,
+            k.start_time,
             k.close,
             k.base_volume,
             k.number_of_trades
         FROM cs_klines_1m k
         JOIN cs_symbols s ON k.symbol_id = s.id
         JOIN cs_exchanges e ON k.exchange_id = e.id
+        JOIN cs_contract_types ct ON s.contract_type_id = ct.id
         WHERE
             e.name = %s
+            AND ct.name = %s
             AND s.name IN ({symbol_placeholders})
             AND k.start_time >= %s
             AND k.start_time < %s
         ORDER BY s.name, k.start_time
     """
 
-    klines_data = defaultdict(lambda: {field: [] for field in KLINE_FIELD_MAP.keys()})
+    # Initialize with NaN for all minutes to handle gaps
+    klines_data = {}
+    for sym in symbols:
+        klines_data[sym] = {
+            "price": [math.nan] * total_minutes,
+            "volume": [math.nan] * total_minutes,
+            "trades": [math.nan] * total_minutes,
+        }
+
+    start_time_utc = start_time.astimezone(dt_timezone.utc)
 
     with connection.cursor() as cursor:
         params = (
-            [exchange]
+            [exchange, contract_type]
             + symbols
             + [
-                start_time.astimezone(dt_timezone.utc),
+                start_time_utc,
                 end_time.astimezone(dt_timezone.utc),
             ]
         )
@@ -56,12 +75,17 @@ def get_historical_kline_data(hours, symbols, exchange):
 
         for row in cursor.fetchall():
             symbol_name = row[0]
-            symbol_data = klines_data[symbol_name]
-            symbol_data["price"].append(float(row[1]))
-            symbol_data["volume"].append(float(row[2]))
-            symbol_data["trades"].append(float(row[3]))
+            row_time = row[1]
+            # Calculate the minute index from start_time
+            minute_idx = int((row_time - start_time_utc).total_seconds() // 60)
 
-    return dict(klines_data)
+            if 0 <= minute_idx < total_minutes and symbol_name in klines_data:
+                symbol_data = klines_data[symbol_name]
+                symbol_data["price"][minute_idx] = float(row[2])
+                symbol_data["volume"][minute_idx] = float(row[3])
+                symbol_data["trades"][minute_idx] = float(row[4])
+
+    return klines_data
 
 
 def get_symbol_kline_data(
@@ -214,9 +238,7 @@ def get_symbol_kline_data_multi_hours(
             WHERE
                 k.symbol_id = s.id
                 AND k.exchange_id = e.id
-                AND k.start_time >= %s - (h.hours_offset || ' hours')::interval
-            ORDER BY k.start_time ASC
-            LIMIT 1
+                AND k.start_time = %s - (h.hours_offset || ' hours')::interval
         ) k
         WHERE
             e.name = %s
