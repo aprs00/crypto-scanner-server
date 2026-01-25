@@ -23,6 +23,7 @@ from core.redis_streams import (
     decode_stream_fields,
     is_timestamp_processed,
     mark_timestamp_processed,
+    get_stream_last_id,
 )
 
 r = get_redis_connection()
@@ -277,6 +278,14 @@ class ZScoreProcessor:
         """Initialize and process Z-scores using Redis streams."""
         print(f"[{self.exchange}] Starting ZScore processor (streams enabled)")
 
+        # BEFORE initialization - capture stream position to avoid losing messages
+        # published during the (potentially long) init phase
+        stream_key = get_market_stream_key(self.exchange, self.contract_type)
+        pre_init_stream_id = get_stream_last_id(r, stream_key)
+        print(
+            f"[{self.exchange}] Captured stream position before init: {pre_init_stream_id}"
+        )
+
         print(f"[{self.exchange}] Initializing zscore trackers...")
         self.incremental_zscores = self.initialize_zscores()
         self.initialized = True
@@ -310,9 +319,10 @@ class ZScoreProcessor:
         notification_service.send_zscore_update()
         print(f"[{self.exchange}] ZScore snapshot complete (marked ts={current_ts})")
 
-        self._consume_stream()
+        # Resume from captured position to process messages published during init
+        self._consume_stream(resume_from_id=pre_init_stream_id)
 
-    def _consume_stream(self):
+    def _consume_stream(self, resume_from_id: str = "$"):
         stream_key = get_market_stream_key(self.exchange, self.contract_type)
         group_name = f"zscore:{self.exchange}:{self.contract_type}"
         # Use fixed consumer name to take over pending messages on restart
@@ -320,11 +330,11 @@ class ZScoreProcessor:
 
         ensure_consumer_group(r, stream_key, group_name)
 
-        # Reset consumer group to latest - we already processed historical data in run()
-        # This skips any backlogged messages and only processes new ones
-        r.xgroup_setid(stream_key, group_name, "$")
+        # Resume from the captured stream position (before init) to process any
+        # messages published during the initialization phase
+        r.xgroup_setid(stream_key, group_name, resume_from_id)
         print(
-            f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (reset to latest)"
+            f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (resuming from {resume_from_id})"
         )
 
         while True:

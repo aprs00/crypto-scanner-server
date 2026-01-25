@@ -116,3 +116,24 @@ def is_timestamp_processed(
     """
     key = get_idempotency_key(service, exchange, contract_type)
     return redis_client.zscore(key, str(timestamp_ms)) is not None
+
+
+def get_stream_last_id(redis_client: redis.Redis, stream_key: str) -> str:
+    """
+    Get the last message ID in a stream, or "0" if empty/non-existent.
+
+    Use this to capture the stream position before long-running initialization,
+    then resume from that position to avoid losing messages published during init.
+    """
+    try:
+        info = redis_client.xinfo_stream(stream_key)
+        last_id = info.get("last-generated-id") or info.get(b"last-generated-id")  # type: ignore[misc]
+        if last_id:
+            return (
+                last_id.decode("utf-8") if isinstance(last_id, bytes) else str(last_id)
+            )
+    except ResponseError as exc:
+        if "no such key" in str(exc).lower():
+            return "0"
+        raise
+    return "0"
