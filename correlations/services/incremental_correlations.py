@@ -73,14 +73,13 @@ class CorrelationTracker:
             ]
         )
 
-        self.sum_x = np.nansum(arr, axis=1)
-        self.sum_xx = np.nansum(arr * arr, axis=1)
+        all_valid_mask = ~np.any(np.isnan(arr), axis=0)
+        arr_aligned = arr[:, all_valid_mask]
 
-        arr_zeroed = np.nan_to_num(arr, nan=0.0)
-        self.sum_xy = arr_zeroed @ arr_zeroed.T
-
-        valid_counts = np.sum(~np.isnan(arr), axis=1)
-        self.count = int(np.max(valid_counts))
+        self.sum_x = np.sum(arr_aligned, axis=1)
+        self.sum_xx = np.sum(arr_aligned * arr_aligned, axis=1)
+        self.sum_xy = arr_aligned @ arr_aligned.T
+        self.count = int(np.sum(all_valid_mask))
 
     def update(self, new_vals: np.ndarray, old_vals: Optional[np.ndarray] = None):
         """Update running sums with new values, removing old if window full."""
@@ -200,8 +199,8 @@ class CorrelationCalculator:
 
                 indexed = {}
                 for sym in self.symbols:
+                    idx = self.symbol_to_idx[sym]
                     if sym in all_data and data_type in all_data[sym]:
-                        idx = self.symbol_to_idx[sym]
                         data = np.asarray(all_data[sym][data_type], dtype=np.float64)
                         if len(data) >= window:
                             indexed[idx] = data[-window:]
@@ -209,6 +208,8 @@ class CorrelationCalculator:
                             padded = np.full(window, np.nan, dtype=np.float64)
                             padded[-len(data) :] = data
                             indexed[idx] = padded
+                    else:
+                        indexed[idx] = np.full(window, np.nan, dtype=np.float64)
 
                 if indexed:
                     tracker.initialize(indexed)
@@ -334,9 +335,6 @@ class CorrelationCalculator:
             sol_prices = np.array(data[sol_sym]["price"], dtype=np.float64)
 
             min_len = min(len(btc_prices), len(sol_prices))
-            if min_len < 10:
-                print(f"[VALIDATION] Not enough data points: {min_len}")
-                return
 
             btc_prices = btc_prices[-min_len:]
             sol_prices = sol_prices[-min_len:]

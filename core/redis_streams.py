@@ -60,7 +60,7 @@ def decode_stream_fields(fields: dict) -> dict:
     for key, value in fields.items():
         key_str = key.decode("utf-8") if isinstance(key, (bytes, bytearray)) else key
         if key_str == "payload" and value is not None:
-            decoded[key_str] = msgpack.unpackb(value, raw=False)
+            decoded[key_str] = msgpack.unpackb(value, raw=False, strict_map_key=False)
         else:
             decoded[key_str] = (
                 value.decode("utf-8")
