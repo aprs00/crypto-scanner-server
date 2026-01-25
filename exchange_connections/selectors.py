@@ -24,6 +24,8 @@ def get_historical_kline_data(
     data continuity. This prevents correlation calculations from mixing
     data from different time periods when there are gaps in the database.
     """
+    if not symbols or hours <= 0:
+        return {}
 
     end_time = timezone.now().replace(second=0, microsecond=0)
     start_time = end_time - timedelta(hours=hours)
@@ -95,6 +97,8 @@ def get_symbol_kline_data(
     hours: Optional[int] = None,
     kline_timestamp_ms: Optional[int] = None,
 ):
+    if not symbols:
+        return {}
     symbol_placeholders = ",".join(["%s"] * len(symbols))
 
     if hours is not None:

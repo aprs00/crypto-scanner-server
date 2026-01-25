@@ -1,7 +1,6 @@
 import time
 import threading
 import gc
-from collections import deque
 import numpy as np
 import msgpack
 from typing import Dict, List, Optional, cast
@@ -164,32 +163,11 @@ class CorrelationCalculator:
 
         self._validation_symbols = self._get_validation_symbols()
 
-        # Buffer to store last 60 price points for validation
-        self._pubsub_prices: Dict[str, deque] = {}
-        self._pubsub_timestamps: deque = deque(maxlen=60)
-
     def _get_validation_symbols(self) -> List[str]:
         """Get validation symbol pair for the exchange."""
         btc = get_btc_symbol(self.exchange)
         sol = get_sol_symbol(self.exchange)
         return [btc, sol]
-
-    def _store_pubsub_prices(self, newest: Dict, timestamp: int):
-        """Store latest pubsub prices for validation symbols."""
-        for sym in self._validation_symbols:
-            if sym not in self._pubsub_prices:
-                self._pubsub_prices[sym] = deque(maxlen=60)
-
-            if sym in newest and "price" in newest[sym]:
-                price = newest[sym]["price"]
-                self._pubsub_prices[sym].append(
-                    {
-                        "price": price,
-                        "timestamp": timestamp,
-                    }
-                )
-
-        self._pubsub_timestamps.append(timestamp)
 
     def _rebuild_indices(self):
         """Rebuild symbol index mapping."""
@@ -633,60 +611,6 @@ class CorrelationCalculator:
             self._cache_correlations(save_to_db=False)
             print(f"[{self.exchange}][DEBUG] remove_symbol completed for {symbol}")
 
-    def _validate_newest_values(self, newest: Dict, timestamp: int) -> bool:
-        """Validate the newest_values payload for issues."""
-        issues = []
-
-        # Check symbol count
-        if len(newest) != len(self.symbols):
-            issues.append(
-                f"Symbol count mismatch: payload has {len(newest)}, tracking {len(self.symbols)}"
-            )
-
-        # Check for missing symbols
-        missing_from_payload = set(self.symbols) - set(newest.keys())
-        if missing_from_payload:
-            issues.append(
-                f"Missing from payload: {list(missing_from_payload)[:10]}{'...' if len(missing_from_payload) > 10 else ''}"
-            )
-
-        # Check for extra symbols in payload
-        extra_in_payload = set(newest.keys()) - set(self.symbols)
-        if extra_in_payload:
-            issues.append(
-                f"Extra in payload: {list(extra_in_payload)[:10]}{'...' if len(extra_in_payload) > 10 else ''}"
-            )
-
-        # Check for invalid values
-        invalid_values = []
-        for sym, vals in newest.items():
-            if not isinstance(vals, dict):
-                invalid_values.append(f"{sym}: not a dict")
-                continue
-            for key in ["price", "volume", "trades"]:
-                if key not in vals:
-                    invalid_values.append(f"{sym}: missing {key}")
-                elif vals[key] is None or (
-                    isinstance(vals[key], float) and (vals[key] != vals[key])
-                ):  # NaN check
-                    invalid_values.append(f"{sym}: {key} is None/NaN")
-
-        if invalid_values:
-            issues.append(
-                f"Invalid values: {invalid_values[:5]}{'...' if len(invalid_values) > 5 else ''}"
-            )
-
-        if issues:
-            print(f"[PAYLOAD VALIDATION] Issues found in update (ts={timestamp}):")
-            for issue in issues:
-                print(f"  - {issue}")
-            self.redis.lpush(
-                "error_log", f"[PAYLOAD VALIDATION] ts={timestamp}: {'; '.join(issues)}"
-            )
-            return False
-
-        return True
-
     def run(self):
         """Run correlation updates using Redis streams."""
         print(f"[{self.exchange}] Starting correlation calculator (streams enabled)...")
@@ -736,11 +660,11 @@ class CorrelationCalculator:
         # Use fixed consumer name to take over pending messages on restart
         consumer_name = f"correlations-{self.exchange}-worker"
 
-        ensure_consumer_group(self.redis, stream_key, group_name)
+        created = ensure_consumer_group(self.redis, stream_key, group_name)
 
-        # Resume from the captured stream position (before init) to process any
-        # messages published during the initialization phase
-        self.redis.xgroup_setid(stream_key, group_name, resume_from_id)
+        # Resume from the captured stream position (before init) only for new groups
+        if created:
+            self.redis.xgroup_setid(stream_key, group_name, resume_from_id)
         print(
             f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (resuming from {resume_from_id})"
         )

@@ -17,13 +17,15 @@ def get_market_stream_key(exchange: str, contract_type: str) -> str:
 
 def ensure_consumer_group(
     redis_client: redis.Redis, stream_key: str, group_name: str
-) -> None:
+) -> bool:
     try:
         # Use "$" to start from latest message, not stream beginning
         redis_client.xgroup_create(stream_key, group_name, id="$", mkstream=True)
+        return True
     except ResponseError as exc:
         if "BUSYGROUP" not in str(exc):
             raise
+    return False
 
 
 def publish_market_event(
