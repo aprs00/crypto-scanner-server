@@ -57,7 +57,13 @@ class CorrelationTracker:
         self.sum_xy = np.zeros((n_symbols, n_symbols), dtype=np.float64)
 
     def initialize(self, symbol_data: Dict[int, np.ndarray]):
-        """Initialize from historical data keyed by symbol index."""
+        """Initialize from historical data keyed by symbol index.
+
+        Only uses timestamps where ALL symbols have valid data to ensure
+        mathematical consistency in the correlation formula. With sparse data,
+        this may result in fewer initial data points, but real-time updates
+        will accumulate more data over time.
+        """
         if not symbol_data:
             return
 
@@ -74,33 +80,46 @@ class CorrelationTracker:
             ]
         )
 
+        # Only use timestamps where ALL symbols have valid data
+        # This ensures mathematical consistency in the correlation formula
         all_valid_mask = ~np.any(np.isnan(arr), axis=0)
+        valid_count = int(np.sum(all_valid_mask))
+
+        if valid_count == 0:
+            # No timestamps with complete data - start with empty tracker
+            # Real-time updates will accumulate data over time
+            return
+
         arr_aligned = arr[:, all_valid_mask]
 
         self.sum_x = np.sum(arr_aligned, axis=1)
         self.sum_xx = np.sum(arr_aligned * arr_aligned, axis=1)
         self.sum_xy = arr_aligned @ arr_aligned.T
-        self.count = int(np.sum(all_valid_mask))
+        self.count = valid_count
 
     def update(self, new_vals: np.ndarray, old_vals: Optional[np.ndarray] = None):
-        """Update running sums with new values, removing old if window full."""
+        """Update running sums with new values, removing old if window full.
+
+        Only updates count when ALL symbols have valid data to maintain
+        mathematical consistency in the correlation formula.
+        """
+        new_all_valid = not np.any(np.isnan(new_vals))
+
+        # Remove old values if window is full and old data had all valid values
         if self.count >= self.window_size and old_vals is not None:
-            mask = ~np.isnan(old_vals)
-            if mask.any():
-                vals = old_vals[mask]
-                self.sum_x[mask] -= vals
-                self.sum_xx[mask] -= vals * vals
-                self.sum_xy[np.ix_(mask, mask)] -= np.outer(vals, vals)
+            old_all_valid = not np.any(np.isnan(old_vals))
+            if old_all_valid:
+                self.sum_x -= old_vals
+                self.sum_xx -= old_vals * old_vals
+                self.sum_xy -= np.outer(old_vals, old_vals)
                 self.count -= 1
 
-        mask = ~np.isnan(new_vals)
-        if mask.any():
-            vals = new_vals[mask]
-            self.sum_x[mask] += vals
-            self.sum_xx[mask] += vals * vals
-            self.sum_xy[np.ix_(mask, mask)] += np.outer(vals, vals)
-
-        self.count = min(self.count + 1, self.window_size)
+        # Add new values only if all are valid
+        if new_all_valid:
+            self.sum_x += new_vals
+            self.sum_xx += new_vals * new_vals
+            self.sum_xy += np.outer(new_vals, new_vals)
+            self.count = min(self.count + 1, self.window_size)
 
     def get_correlations(self) -> List[float]:
         """Return upper triangle of correlation matrix as flat list."""
@@ -188,7 +207,10 @@ class CorrelationCalculator:
 
         start = time.time()
         all_data = get_historical_kline_data(
-            hours=max_hours, symbols=self.symbols, exchange=self.exchange
+            hours=max_hours,
+            symbols=self.symbols,
+            exchange=self.exchange,
+            contract_type=self.contract_type,
         )
         print(f"[{self.exchange}] Data fetch: {time.time() - start:.2f}s")
 
@@ -289,7 +311,10 @@ class CorrelationCalculator:
                 return
 
             data = get_historical_kline_data(
-                hours=1, symbols=[btc_sym, sol_sym], exchange=self.exchange
+                hours=1,
+                symbols=[btc_sym, sol_sym],
+                exchange=self.exchange,
+                contract_type=self.contract_type,
             )
 
             if btc_sym not in data or sol_sym not in data:
@@ -340,7 +365,18 @@ class CorrelationCalculator:
             btc_prices = btc_prices[-min_len:]
             sol_prices = sol_prices[-min_len:]
 
-            manual_corr = np.corrcoef(btc_prices, sol_prices)[0, 1]
+            # Filter out NaN values (both arrays must have valid data at same index)
+            valid_mask = ~np.isnan(btc_prices) & ~np.isnan(sol_prices)
+            btc_valid = btc_prices[valid_mask]
+            sol_valid = sol_prices[valid_mask]
+
+            if len(btc_valid) < 2:
+                print(
+                    f"[VALIDATION] Not enough valid data points: {len(btc_valid)} (need at least 2)"
+                )
+                return
+
+            manual_corr = np.corrcoef(btc_valid, sol_valid)[0, 1]
 
             diff = abs(incremental_corr - manual_corr)
 
@@ -349,8 +385,12 @@ class CorrelationCalculator:
             print(
                 f"[VALIDATION] BTC-SOL 1h price - Incremental={incremental_corr:.6f}, Numpy={manual_corr:.6f}, Diff={diff:.6f}"
             )
-            print(f"  DB BTC ({len(btc_prices)}): {btc_prices.tolist()}")
-            print(f"  DB SOL ({len(sol_prices)}): {sol_prices.tolist()}")
+            print(
+                f"  DB BTC ({len(btc_valid)} valid of {len(btc_prices)}): {btc_valid.tolist()}"
+            )
+            print(
+                f"  DB SOL ({len(sol_valid)} valid of {len(sol_prices)}): {sol_valid.tolist()}"
+            )
             print("=" * 80)
 
         except Exception as e:
@@ -485,7 +525,10 @@ class CorrelationCalculator:
 
             min_points = min(self.hours_options) * 60
             data = get_historical_kline_data(
-                hours=max(self.hours_options), symbols=[symbol], exchange=self.exchange
+                hours=max(self.hours_options),
+                symbols=[symbol],
+                exchange=self.exchange,
+                contract_type=self.contract_type,
             )
 
             if symbol not in data:

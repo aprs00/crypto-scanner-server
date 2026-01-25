@@ -113,7 +113,10 @@ class ZScoreProcessor:
         zscore_dict = {}
         data_by_hours = {
             hours: get_historical_kline_data(
-                hours=hours, symbols=self.symbols, exchange=self.exchange
+                hours=hours,
+                symbols=self.symbols,
+                exchange=self.exchange,
+                contract_type=self.contract_type,
             )
             for hours in self.hours_options
         }
@@ -236,7 +239,10 @@ class ZScoreProcessor:
                 )[hours] = IncrementalZScore(hours * 60)
 
                 historical_data = get_historical_kline_data(
-                    hours=hours, symbols=[symbol_name], exchange=self.exchange
+                    hours=hours,
+                    symbols=[symbol_name],
+                    exchange=self.exchange,
+                    contract_type=self.contract_type,
                 )
                 series = historical_data.get(symbol_name, {}).get(data_type, [])
 
