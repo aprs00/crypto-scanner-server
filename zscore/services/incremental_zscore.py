@@ -334,11 +334,11 @@ class ZScoreProcessor:
         # Use fixed consumer name to take over pending messages on restart
         consumer_name = f"zscore-{self.exchange}-worker"
 
-        ensure_consumer_group(r, stream_key, group_name)
+        created = ensure_consumer_group(r, stream_key, group_name)
 
-        # Resume from the captured stream position (before init) to process any
-        # messages published during the initialization phase
-        r.xgroup_setid(stream_key, group_name, resume_from_id)
+        # Resume from the captured stream position (before init) only for new groups
+        if created:
+            r.xgroup_setid(stream_key, group_name, resume_from_id)
         print(
             f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (resuming from {resume_from_id})"
         )
