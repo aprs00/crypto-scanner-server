@@ -37,31 +37,33 @@ class CorrelationTracker:
     Maintains running statistics for O(1) correlation updates.
 
     For N symbols, stores:
-    - sum_x[N]: sum of values per symbol
-    - sum_xx[N]: sum of squared values per symbol
-    - sum_xy[N,N]: sum of products for each pair
-    - count: number of data points in window
+    - sum_x[N,N]: sum of values per symbol per pair (pairwise-valid)
+    - sum_xx[N,N]: sum of squared values per symbol per pair (pairwise-valid)
+    - sum_xy[N,N]: sum of products for each pair (pairwise-valid)
+    - counts[N,N]: number of pairwise-valid data points in window
+    - steps: number of timestamps in window
     """
 
     sum_x: np.ndarray
     sum_xx: np.ndarray
     sum_xy: np.ndarray
+    counts: np.ndarray
+    steps: int
 
     def __init__(self, window_size: int, n_symbols: int):
         self.window_size = window_size
         self.n_symbols = n_symbols
-        self.count = 0
-        self.sum_x = np.zeros(n_symbols, dtype=np.float64)
-        self.sum_xx = np.zeros(n_symbols, dtype=np.float64)
+        self.steps = 0
+        self.sum_x = np.zeros((n_symbols, n_symbols), dtype=np.float64)
+        self.sum_xx = np.zeros((n_symbols, n_symbols), dtype=np.float64)
         self.sum_xy = np.zeros((n_symbols, n_symbols), dtype=np.float64)
+        self.counts = np.zeros((n_symbols, n_symbols), dtype=np.int32)
 
     def initialize(self, symbol_data: Dict[int, np.ndarray]):
         """Initialize from historical data keyed by symbol index.
 
-        Only uses timestamps where ALL symbols have valid data to ensure
-        mathematical consistency in the correlation formula. With sparse data,
-        this may result in fewer initial data points, but real-time updates
-        will accumulate more data over time.
+        Uses pairwise-valid timestamps to avoid discarding data when some
+        symbols have missing values.
         """
         if not symbol_data:
             return
@@ -79,65 +81,90 @@ class CorrelationTracker:
             ]
         )
 
-        # Only use timestamps where ALL symbols have valid data
-        # This ensures mathematical consistency in the correlation formula
-        all_valid_mask = ~np.any(np.isnan(arr), axis=0)
-        valid_count = int(np.sum(all_valid_mask))
+        valid = ~np.isnan(arr)
+        x_filled = np.where(valid, arr, 0.0)
+        v = valid.astype(np.float64)
 
-        if valid_count == 0:
-            # No timestamps with complete data - start with empty tracker
-            # Real-time updates will accumulate data over time
-            return
-
-        arr_aligned = arr[:, all_valid_mask]
-
-        self.sum_x = np.sum(arr_aligned, axis=1)
-        self.sum_xx = np.sum(arr_aligned * arr_aligned, axis=1)
-        self.sum_xy = arr_aligned @ arr_aligned.T
-        self.count = valid_count
+        # Pairwise sums/counts
+        self.sum_xy = x_filled @ x_filled.T
+        self.sum_x = x_filled @ v.T
+        self.sum_xx = (x_filled * x_filled) @ v.T
+        self.counts = (v @ v.T).astype(np.int32)
+        self.steps = effective_length
 
     def update(self, new_vals: np.ndarray, old_vals: Optional[np.ndarray] = None):
         """Update running sums with new values, removing old if window full.
 
-        Only updates count when ALL symbols have valid data to maintain
-        mathematical consistency in the correlation formula.
+        Updates pairwise sums/counts based on validity masks.
         """
-        new_all_valid = not np.any(np.isnan(new_vals))
+        new_valid = ~np.isnan(new_vals)
+        new_vals_filled = np.where(new_valid, new_vals, 0.0)
+        new_valid_i = new_valid.astype(np.int32)
+        new_valid_f = new_valid.astype(np.float64)
 
-        # Remove old values if window is full and old data had all valid values
-        if self.count >= self.window_size and old_vals is not None:
-            old_all_valid = not np.any(np.isnan(old_vals))
-            if old_all_valid:
-                self.sum_x -= old_vals
-                self.sum_xx -= old_vals * old_vals
-                self.sum_xy -= np.outer(old_vals, old_vals)
-                self.count -= 1
+        if self.steps >= self.window_size and old_vals is not None:
+            old_valid = ~np.isnan(old_vals)
+            old_vals_filled = np.where(old_valid, old_vals, 0.0)
+            old_valid_i = old_valid.astype(np.int32)
+            old_valid_f = old_valid.astype(np.float64)
 
-        # Add new values only if all are valid
-        if new_all_valid:
-            self.sum_x += new_vals
-            self.sum_xx += new_vals * new_vals
-            self.sum_xy += np.outer(new_vals, new_vals)
-            self.count = min(self.count + 1, self.window_size)
+            self.counts -= np.outer(old_valid_i, old_valid_i)
+            self.sum_xy -= np.outer(old_vals_filled, old_vals_filled)
+            self.sum_x -= np.outer(old_vals_filled, old_valid_f)
+            self.sum_xx -= np.outer(old_vals_filled * old_vals_filled, old_valid_f)
+
+        self.counts += np.outer(new_valid_i, new_valid_i)
+        self.sum_xy += np.outer(new_vals_filled, new_vals_filled)
+        self.sum_x += np.outer(new_vals_filled, new_valid_f)
+        self.sum_xx += np.outer(new_vals_filled * new_vals_filled, new_valid_f)
+
+        if self.steps < self.window_size:
+            self.steps += 1
 
     def get_correlations(self) -> List[float]:
         """Return upper triangle of correlation matrix as flat list."""
-        if self.count <= 1 or self.n_symbols <= 1:
+        if self.n_symbols <= 1:
             return []
 
-        c = np.float64(self.count)
-        means = self.sum_x / c
-        var = (self.sum_xx / c) - means * means
-        var = np.where(var <= 0, np.nan, var)
+        counts = self.counts.astype(np.float64)
+        valid = counts > 1
 
-        cov = (self.sum_xy / c) - np.outer(means, means)
-        denom = np.sqrt(np.outer(var, var))
+        means_x = np.divide(
+            self.sum_x,
+            counts,
+            out=np.zeros_like(self.sum_x),
+            where=valid,
+        )
+        means_y = means_x.T
+
+        var_x = (
+            np.divide(
+                self.sum_xx,
+                counts,
+                out=np.zeros_like(self.sum_xx),
+                where=valid,
+            )
+            - means_x * means_x
+        )
+        var_y = var_x.T
+
+        cov = (
+            np.divide(
+                self.sum_xy,
+                counts,
+                out=np.zeros_like(self.sum_xy),
+                where=valid,
+            )
+            - means_x * means_y
+        )
+
+        denom = np.sqrt(var_x * var_y)
+        corr = np.zeros_like(self.sum_xy)
 
         with np.errstate(invalid="ignore", divide="ignore"):
-            corr = cov / denom
+            np.divide(cov, denom, out=corr, where=valid & (denom > 0))
 
         corr = np.clip(corr, -1.0, 1.0)
-        corr = np.nan_to_num(corr, nan=0.0)
         np.fill_diagonal(corr, 1.0)
 
         # Extract upper triangle
@@ -252,28 +279,28 @@ class CorrelationCalculator:
                     else:
                         missing_new += 1
                     if (
-                        tracker.count >= window
+                        tracker.steps >= window
                         and sym in oldest
                         and data_type in oldest[sym]
                     ):
                         old_arr[idx] = oldest[sym][data_type]
-                    elif tracker.count >= window:
+                    elif tracker.steps >= window:
                         missing_old += 1
 
                 if (
                     hours == 1
-                    and data_type == "close"
+                    and data_type == "price"
                     and (missing_new > 0 or missing_old > 0)
                 ):
                     new_valid = np.sum(~np.isnan(new_arr))
                     old_valid = (
-                        np.sum(~np.isnan(old_arr)) if tracker.count >= window else 0
+                        np.sum(~np.isnan(old_arr)) if tracker.steps >= window else 0
                     )
                     print(
                         f"[DEBUG] _update_trackers(1h,close): new_valid={new_valid}/{n}, old_valid={old_valid}/{n}, missing_new={missing_new}, missing_old={missing_old}"
                     )
 
-                tracker.update(new_arr, old_arr if tracker.count >= window else None)
+                tracker.update(new_arr, old_arr if tracker.steps >= window else None)
 
     def _validate_btc_sol_correlation(self):
         """Validate incremental correlation against manual numpy calculation to detect drift."""
@@ -458,10 +485,10 @@ class CorrelationCalculator:
                     f"(first 5: {missing[:5]}). Data should be complete after batch save."
                 )
 
-            sample_tracker = self.trackers.get((1, "close"))
+            sample_tracker = self.trackers.get((1, "price"))
             if sample_tracker:
                 print(
-                    f"[{self.exchange}][DEBUG] Before update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}"
+                    f"[{self.exchange}][DEBUG] Before update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
 
             # Use passed oldest_values from Redis message or empty dict as fallback
@@ -471,7 +498,7 @@ class CorrelationCalculator:
 
             if sample_tracker:
                 print(
-                    f"[{self.exchange}][DEBUG] After update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}"
+                    f"[{self.exchange}][DEBUG] After update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
 
             self._cache_correlations(save_to_db)
@@ -540,10 +567,10 @@ class CorrelationCalculator:
             )
             self._init_trackers()
 
-            sample_tracker = self.trackers.get((1, "close"))
+            sample_tracker = self.trackers.get((1, "price"))
             if sample_tracker:
                 print(
-                    f"[{self.exchange}][DEBUG] After add_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}"
+                    f"[{self.exchange}][DEBUG] After add_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
 
             self.update_correlations()
@@ -584,10 +611,14 @@ class CorrelationCalculator:
             )
 
             for key, tracker in self.trackers.items():
-                tracker.sum_x = np.delete(tracker.sum_x, idx)
-                tracker.sum_xx = np.delete(tracker.sum_xx, idx)
+                tracker.sum_x = np.delete(tracker.sum_x, idx, axis=0)
+                tracker.sum_x = np.delete(tracker.sum_x, idx, axis=1)
+                tracker.sum_xx = np.delete(tracker.sum_xx, idx, axis=0)
+                tracker.sum_xx = np.delete(tracker.sum_xx, idx, axis=1)
                 tracker.sum_xy = np.delete(tracker.sum_xy, idx, axis=0)
                 tracker.sum_xy = np.delete(tracker.sum_xy, idx, axis=1)
+                tracker.counts = np.delete(tracker.counts, idx, axis=0)
+                tracker.counts = np.delete(tracker.counts, idx, axis=1)
                 tracker.n_symbols = len(self.symbols)
 
                 if tracker.sum_x.shape[0] != tracker.n_symbols:
@@ -599,10 +630,10 @@ class CorrelationCalculator:
                         f"[{self.exchange}][DEBUG] MISMATCH in tracker {key}: sum_xy shape {tracker.sum_xy.shape} != n_symbols {tracker.n_symbols}"
                     )
 
-            sample_tracker = self.trackers.get((1, "close"))
+            sample_tracker = self.trackers.get((1, "price"))
             if sample_tracker:
                 print(
-                    f"[{self.exchange}][DEBUG] After remove_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, count={sample_tracker.count}"
+                    f"[{self.exchange}][DEBUG] After remove_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
                 print(
                     f"[{self.exchange}][DEBUG] Array shapes - sum_x: {sample_tracker.sum_x.shape}, sum_xy: {sample_tracker.sum_xy.shape}"
