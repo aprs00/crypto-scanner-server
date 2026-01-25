@@ -26,6 +26,7 @@ from core.redis_streams import (
     decode_stream_fields,
     is_timestamp_processed,
     mark_timestamp_processed,
+    get_stream_last_id,
 )
 from correlations.services.save_correlations import (
     save_correlation_matrices_batch_to_db,
@@ -654,6 +655,14 @@ class CorrelationCalculator:
         )
         self._rebuild_indices()
 
+        # BEFORE initialization - capture stream position to avoid losing messages
+        # published during the (potentially long) init phase
+        stream_key = get_market_stream_key(self.exchange, self.contract_type)
+        pre_init_stream_id = get_stream_last_id(self.redis, stream_key)
+        print(
+            f"[{self.exchange}] Captured stream position before init: {pre_init_stream_id}"
+        )
+
         # Initialize trackers from historical data
         print(f"[{self.exchange}] Initializing correlation trackers...")
         start = time.time()
@@ -675,9 +684,10 @@ class CorrelationCalculator:
             f"[{self.exchange}] Correlation snapshot complete (marked ts={current_ts})"
         )
 
-        self._consume_stream()
+        # Resume from captured position to process messages published during init
+        self._consume_stream(resume_from_id=pre_init_stream_id)
 
-    def _consume_stream(self):
+    def _consume_stream(self, resume_from_id: str = "$"):
         stream_key = get_market_stream_key(self.exchange, self.contract_type)
         group_name = f"correlations:{self.exchange}:{self.contract_type}"
         # Use fixed consumer name to take over pending messages on restart
@@ -685,11 +695,11 @@ class CorrelationCalculator:
 
         ensure_consumer_group(self.redis, stream_key, group_name)
 
-        # Reset consumer group to latest - we already processed historical data in run()
-        # This skips any backlogged messages and only processes new ones
-        self.redis.xgroup_setid(stream_key, group_name, "$")
+        # Resume from the captured stream position (before init) to process any
+        # messages published during the initialization phase
+        self.redis.xgroup_setid(stream_key, group_name, resume_from_id)
         print(
-            f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (reset to latest)"
+            f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (resuming from {resume_from_id})"
         )
 
         while True:
