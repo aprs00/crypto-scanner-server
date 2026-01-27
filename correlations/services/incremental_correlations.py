@@ -793,6 +793,11 @@ class CorrelationCalculator:
                 newest = payload.get("newest_values") or {}
                 oldest = payload.get("oldest_values") or {}
 
+                # print length of newest/oldest for debugging
+                print(
+                    f"[{self.exchange}] Processing kline message {msg_id.decode('utf-8')} - newest symbols: {len(newest)}, oldest_by_hours: { {k: len(v) for k, v in oldest.items()} }"
+                )
+
                 # Temporarily disable DB saves to avoid timeout crashes - TODO: fix DB performance
                 save_to_db = False  # payload.get("source") != "backfill"
                 self.update_correlations(
