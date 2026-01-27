@@ -3,6 +3,7 @@ import threading
 import gc
 import numpy as np
 import msgpack
+import traceback
 from typing import Dict, List, Optional, cast
 
 from exchange_connections.constants import (
@@ -158,13 +159,12 @@ class CorrelationTracker:
             - means_x * means_y
         )
 
-        denom = np.sqrt(var_x * var_y)
-        corr = np.zeros_like(self.sum_xy)
-
         with np.errstate(invalid="ignore", divide="ignore"):
+            # Clip to avoid sqrt of tiny negative numbers from floating point errors
+            denom = np.sqrt(np.maximum(var_x * var_y, 0.0))
+            corr = np.zeros_like(self.sum_xy)
             np.divide(cov, denom, out=corr, where=valid & (denom > 0))
 
-        corr = np.clip(corr, -1.0, 1.0)
         np.fill_diagonal(corr, 1.0)
 
         # Extract upper triangle
@@ -400,8 +400,6 @@ class CorrelationCalculator:
 
         except Exception as e:
             print(f"[VALIDATION] Error during BTC-SOL validation: {e}")
-            import traceback
-
             traceback.print_exc()
 
     def _cache_correlations(self, save_to_db: bool = True):
@@ -440,6 +438,7 @@ class CorrelationCalculator:
                 )
             except Exception as e:
                 print(f"[{self.exchange}] DB batch save failed: {e}")
+                traceback.print_exc()
 
         pipe.execute()
         notification_service.send_correlation_update()
@@ -488,7 +487,7 @@ class CorrelationCalculator:
             sample_tracker = self.trackers.get((1, "price"))
             if sample_tracker:
                 print(
-                    f"[{self.exchange}][DEBUG] Before update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
+                    f"[{self.exchange}][DEBUG] Before update - tracker(1h,price): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
 
             # Use passed oldest_values from Redis message or empty dict as fallback
@@ -498,7 +497,7 @@ class CorrelationCalculator:
 
             if sample_tracker:
                 print(
-                    f"[{self.exchange}][DEBUG] After update - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
+                    f"[{self.exchange}][DEBUG] After update - tracker(1h,price): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
 
             self._cache_correlations(save_to_db)
@@ -570,7 +569,7 @@ class CorrelationCalculator:
             sample_tracker = self.trackers.get((1, "price"))
             if sample_tracker:
                 print(
-                    f"[{self.exchange}][DEBUG] After add_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
+                    f"[{self.exchange}][DEBUG] After add_symbol - tracker(1h,price): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
 
             self.update_correlations()
@@ -633,7 +632,7 @@ class CorrelationCalculator:
             sample_tracker = self.trackers.get((1, "price"))
             if sample_tracker:
                 print(
-                    f"[{self.exchange}][DEBUG] After remove_symbol - tracker(1h,close): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
+                    f"[{self.exchange}][DEBUG] After remove_symbol - tracker(1h,price): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
                 print(
                     f"[{self.exchange}][DEBUG] Array shapes - sum_x: {sample_tracker.sum_x.shape}, sum_xy: {sample_tracker.sum_xy.shape}"
@@ -669,9 +668,8 @@ class CorrelationCalculator:
             f"[{self.exchange}] Initialization completed in {time.time() - start:.2f}s"
         )
 
-        # Mark as initialized and compute one update snapshot
         self.initialized = True
-        self._cache_correlations(save_to_db=True)
+        self._cache_correlations(save_to_db=False)
 
         # Mark the initial timestamp as processed to prevent duplicate processing
         current_ts = (int(time.time() * 1000) // 60000) * 60000 - 60000
@@ -700,6 +698,16 @@ class CorrelationCalculator:
             f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (resuming from {resume_from_id})"
         )
 
+        # If we just created the group, explicitly catch up on messages that
+        # arrived during initialization.
+        if created and resume_from_id != "$":
+            self._consume_stream_catchup(
+                stream_key=stream_key,
+                group_name=group_name,
+                consumer_name=consumer_name,
+                resume_from_id=resume_from_id,
+            )
+
         while True:
             messages = cast(
                 list,
@@ -717,6 +725,37 @@ class CorrelationCalculator:
 
             for _, entries in messages:
                 for msg_id, fields in entries:
+                    self._process_message(msg_id, fields, stream_key, group_name)
+
+    def _consume_stream_catchup(
+        self,
+        stream_key: str,
+        group_name: str,
+        consumer_name: str,
+        resume_from_id: str,
+    ):
+        """Drain messages from resume_from_id for newly created groups."""
+        while True:
+            messages = cast(
+                list,
+                self.redis.xreadgroup(
+                    group_name,
+                    consumer_name,
+                    {stream_key: resume_from_id},
+                    count=100,
+                    block=2000,
+                ),
+            )
+
+            if not messages:
+                break
+
+            for _, entries in messages:
+                for msg_id, fields in entries:
+                    # Skip the resume marker itself (last seen before init)
+                    if msg_id.decode("utf-8") == resume_from_id:
+                        self.redis.xack(stream_key, group_name, msg_id)
+                        continue
                     self._process_message(msg_id, fields, stream_key, group_name)
 
     def _process_message(
@@ -754,7 +793,8 @@ class CorrelationCalculator:
                 newest = payload.get("newest_values") or {}
                 oldest = payload.get("oldest_values") or {}
 
-                save_to_db = payload.get("source") != "backfill"
+                # Temporarily disable DB saves to avoid timeout crashes - TODO: fix DB performance
+                save_to_db = False  # payload.get("source") != "backfill"
                 self.update_correlations(
                     newest=newest,
                     oldest_values=oldest,
