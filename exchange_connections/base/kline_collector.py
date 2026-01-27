@@ -318,18 +318,46 @@ class BaseKlineCollector(ABC):
         if source == "live":
             # Buffer live klines for batch saving
             self._kline_buffer.setdefault(timestamp_ms, []).append(candle)
-            self._flush_completed_minutes(timestamp_ms)
+
+            expected_count = len(self.symbols) if self.symbols else None
+            # Flush completed minutes once we have all symbols for a timestamp
+            # Use current candle's minute as cutoff to avoid wall-clock timing
+            self._flush_completed_minutes(
+                timestamp_ms + 1, expected_count=expected_count
+            )
         else:
             # Backfill: save immediately (already complete data)
             self._save_klines_batch([candle])
 
-    def _flush_completed_minutes(self, current_timestamp_ms: int):
-        """Flush all buffered minutes older than current timestamp."""
-        completed = [ts for ts in self._kline_buffer if ts < current_timestamp_ms]
+    def _flush_completed_minutes(
+        self,
+        cutoff_timestamp_ms: int,
+        expected_count: Optional[int] = None,
+        force: bool = False,
+    ):
+        """Flush buffered minutes older than cutoff timestamp.
+
+        If expected_count is provided, only flush minutes that have all symbols.
+        When force=True, flush regardless of completeness but only publish when complete.
+        """
+        completed = [ts for ts in self._kline_buffer if ts < cutoff_timestamp_ms]
+        if not completed:
+            return
 
         for ts in sorted(completed):
+            candles = self._kline_buffer.get(ts)
+            if not candles:
+                continue
+
+            is_complete = expected_count is None or len(candles) >= expected_count
+            if not is_complete and not force:
+                continue
+
             candles = self._kline_buffer.pop(ts)
             self._save_klines_batch(candles)
+
+            if not is_complete:
+                continue
 
             if self._backfill_in_progress:
                 self._buffer_live_timestamp(ts)
@@ -376,19 +404,11 @@ class BaseKlineCollector(ABC):
         if not self._kline_buffer:
             return
 
-        for ts in sorted(self._kline_buffer.keys()):
-            candles = self._kline_buffer.pop(ts)
-            self._save_klines_batch(candles)
-            print(
-                f"[{self.exchange}] Flushed {len(candles)} buffered klines for timestamp {ts}"
-            )
-            if self._backfill_in_progress:
-                self._buffer_live_timestamp(ts)
-            else:
-                newest, oldest = self._query_kline_data_for_timestamp(ts)
-                self._publish_kline_timestamp(
-                    ts, source="live", newest_values=newest, oldest_values=oldest
-                )
+        expected_count = len(self.symbols) if self.symbols else None
+        max_ts = max(self._kline_buffer.keys())
+        self._flush_completed_minutes(
+            max_ts + 1, expected_count=expected_count, force=True
+        )
 
     def _save_klines_batch(self, candles: List[NormalizedCandle]):
         """Batch save multiple klines to database."""

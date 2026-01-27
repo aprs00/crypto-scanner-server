@@ -256,8 +256,6 @@ class BybitKlineCollector(BaseKlineCollector):
                 candle = self.normalize_candle(kline_data)
                 if candle:
                     self.save_kline(candle, source="live")
-                    next_minute = candle.open_time_ms + 60000
-                    self._flush_completed_minutes(next_minute)
 
         except Exception as e:
             print(f"[bybit] ERROR: Error handling kline: {e}")
