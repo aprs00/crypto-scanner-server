@@ -1,8 +1,7 @@
 from django.utils import timezone
-from datetime import timedelta, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Optional, List, Sequence, cast
 from django.db import connection
-from datetime import datetime
 import math
 
 from core.redis_config import get_redis_connection
@@ -16,7 +15,11 @@ def get_exchange_symbols(exchange, contract_type="perpetual"):
 
 
 def get_historical_kline_data(
-    hours, symbols, exchange, contract_type: str = "perpetual"
+    hours,
+    symbols,
+    exchange,
+    contract_type: str = "perpetual",
+    end_time: Optional[datetime] = None,
 ):
     """Get historical ticker data from the database for all KLINE fields.
 
@@ -27,7 +30,11 @@ def get_historical_kline_data(
     if not symbols or hours <= 0:
         return {}
 
-    end_time = timezone.now().replace(second=0, microsecond=0)
+    if end_time is None:
+        end_time = timezone.now().replace(second=0, microsecond=0)
+    elif end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=dt_timezone.utc)
+    end_time = end_time.replace(second=0, microsecond=0)
     start_time = end_time - timedelta(hours=hours)
     total_minutes = hours * 60
 
@@ -63,15 +70,13 @@ def get_historical_kline_data(
         }
 
     start_time_utc = start_time.astimezone(dt_timezone.utc)
+    end_time_utc = end_time.astimezone(dt_timezone.utc)
 
     with connection.cursor() as cursor:
         params = (
             [exchange, contract_type]
             + symbols
-            + [
-                start_time_utc,
-                end_time.astimezone(dt_timezone.utc),
-            ]
+            + [start_time_utc, end_time_utc]
         )
         cursor.execute(query, params)
 

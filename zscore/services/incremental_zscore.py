@@ -1,6 +1,7 @@
 import time
 import numpy as np
 import msgpack
+from datetime import datetime, timezone as dt_timezone
 from typing import Dict, cast
 from django.utils import timezone
 from django.conf import settings
@@ -119,7 +120,7 @@ class ZScoreProcessor:
         self.incremental_zscores: dict = {}
         self.initialized = False
 
-    def initialize_zscores(self):
+    def initialize_zscores(self, end_time: datetime | None = None):
         """Initialize Z-score objects using historical kline data from DB"""
         zscore_dict = {}
         data_by_hours = {
@@ -128,6 +129,7 @@ class ZScoreProcessor:
                 symbols=self.symbols,
                 exchange=self.exchange,
                 contract_type=self.contract_type,
+                end_time=end_time,
             )
             for hours in self.hours_options
         }
@@ -305,17 +307,19 @@ class ZScoreProcessor:
             f"[{self.exchange}] Captured stream position before init: {pre_init_stream_id}"
         )
 
+        snapshot_time = time.time()
+        snapshot_end_time = datetime.fromtimestamp(
+            snapshot_time, tz=dt_timezone.utc
+        ).replace(second=0, microsecond=0)
+        snapshot_last_complete_minute_ms = (
+            int(snapshot_end_time.timestamp() * 1000) - 60000
+        )
+
         print(f"[{self.exchange}] Initializing zscore trackers...")
-        self.incremental_zscores = self.initialize_zscores()
+        self.incremental_zscores = self.initialize_zscores(end_time=snapshot_end_time)
         self.initialized = True
         print(f"[{self.exchange}] ZScore initialization complete")
 
-        newest_values = get_symbol_kline_data(
-            symbols=self.symbols,
-            exchange=self.exchange,
-            contract_type=self.contract_type,
-        )
-        self.update_zscores(newest_values=newest_values, oldest_values={})
         results = self.create_z_score_results()
 
         pipeline = r.pipeline()
@@ -330,13 +334,18 @@ class ZScoreProcessor:
         pipeline.execute()
 
         # Mark the initial timestamp as processed to prevent duplicate processing
-        current_ts = (int(time.time() * 1000) // 60000) * 60000 - 60000
         mark_timestamp_processed(
-            r, "zscore", self.exchange, self.contract_type, current_ts
+            r,
+            "zscore",
+            self.exchange,
+            self.contract_type,
+            snapshot_last_complete_minute_ms,
         )
 
         notification_service.send_zscore_update()
-        print(f"[{self.exchange}] ZScore snapshot complete (marked ts={current_ts})")
+        print(
+            f"[{self.exchange}] ZScore snapshot complete (marked ts={snapshot_last_complete_minute_ms})"
+        )
 
         # Resume from captured position to process messages published during init
         self._consume_stream(resume_from_id=pre_init_stream_id)
