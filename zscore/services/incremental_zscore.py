@@ -24,6 +24,8 @@ from core.redis_streams import (
     is_timestamp_processed,
     mark_timestamp_processed,
     get_stream_last_id,
+    compare_stream_ids,
+    get_consumer_group_last_id,
 )
 
 r = get_redis_connection()
@@ -41,12 +43,21 @@ class IncrementalZScore:
 
     def initialize_from_data(self, data):
         arr = np.array(data, dtype=np.float64)
+        if arr.size == 0:
+            return
 
-        if arr.size > 0:
-            self.count = arr.size
-            self.mean = np.mean(arr)
-            self.M2 = np.sum((arr - self.mean) ** 2)
-            self.current_value = arr[-1]
+        valid = np.isfinite(arr)
+        if not np.any(valid):
+            return
+
+        arr = arr[valid]
+        if arr.size > self.window_size:
+            arr = arr[-self.window_size :]
+
+        self.count = arr.size
+        self.mean = float(np.mean(arr))
+        self.M2 = float(np.sum((arr - self.mean) ** 2))
+        self.current_value = float(arr[-1])
 
     def remove_data_point(self, value):
         if self.count <= 1:
@@ -164,9 +175,11 @@ class ZScoreProcessor:
                     if not symbol_new_values or data_type not in symbol_new_values:
                         continue
                     new_val = symbol_new_values[data_type]
+                    if new_val is None or not np.isfinite(new_val):
+                        continue
                     old_val = oldest_for_hours.get(symbol, {}).get(data_type)
 
-                    if old_val is not None:
+                    if old_val is not None and np.isfinite(old_val):
                         zscore_obj.update_data_point(old_val, new_val)
                     else:
                         zscore_obj.add_data_point(new_val)
@@ -336,11 +349,16 @@ class ZScoreProcessor:
 
         created = ensure_consumer_group(r, stream_key, group_name)
 
-        # Resume from the captured stream position (before init) only for new groups
-        if created:
-            r.xgroup_setid(stream_key, group_name, resume_from_id)
+        current_last_id = get_consumer_group_last_id(r, stream_key, group_name)
+        target_id = resume_from_id
+        if current_last_id and compare_stream_ids(current_last_id, resume_from_id) > 0:
+            target_id = current_last_id
+
+        if created or current_last_id is None or compare_stream_ids(target_id, current_last_id) != 0:
+            r.xgroup_setid(stream_key, group_name, target_id)
+            current_last_id = target_id
         print(
-            f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (resuming from {resume_from_id})"
+            f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (resuming from {resume_from_id}, group last id {current_last_id})"
         )
 
         while True:
