@@ -25,7 +25,6 @@ from core.redis_streams import publish_market_event
 
 WS_RECONNECT_DELAY = 5
 BACKFILL_MINUTES = 30
-BACKFILL_RATE_LIMIT = 0.001
 SYMBOL_CHECK_INTERVAL = 900  # 15 minutes
 
 
@@ -54,7 +53,6 @@ class BaseKlineCollector(ABC):
         self.symbols: Set[str] = set()
         self.should_run = True
         self.ws_thread: Optional[threading.Thread] = None
-        self.backfill_rate_limit: float = BACKFILL_RATE_LIMIT
         self.redis = get_redis_connection()
         self._backfill_in_progress = False
         self._pending_timestamps: Set[int] = set()
@@ -203,18 +201,14 @@ class BaseKlineCollector(ABC):
         current_minute_ms = (current_time_ms // 60000) * 60000
         start_time_ms = current_minute_ms - (BACKFILL_MINUTES * 60000)
 
-        expected_timestamps = set()
-        ts = start_time_ms
-        while ts < current_minute_ms:
-            expected_timestamps.add(ts)
-            ts += 60000
+        expected_timestamps = set(range(start_time_ms, current_minute_ms, 60000))
 
         if not expected_timestamps:
             return []
 
         start_dt = datetime.fromtimestamp(start_time_ms / 1000, tz=dt_timezone.utc)
         end_dt = datetime.fromtimestamp(current_minute_ms / 1000, tz=dt_timezone.utc)
-        btc_symbol = get_btc_symbol(self.exchange)
+        btc_symbol = self._primary_symbol
 
         query = """
             SELECT EXTRACT(EPOCH FROM k.start_time)::bigint * 1000 AS ts_ms
@@ -257,11 +251,9 @@ class BaseKlineCollector(ABC):
                 start_time_ms=timestamp_ms,
                 end_time_ms=timestamp_ms + 60000,
             )
-            count = 0
-            for candle in candles:
-                self.save_kline(candle, source="backfill")
-                count += 1
-            return count
+            if candles:
+                self._save_klines_batch(candles)
+            return len(candles)
         except Exception as e:
             print(
                 f"[{self.exchange}] ERROR: Backfill failed for {symbol} "

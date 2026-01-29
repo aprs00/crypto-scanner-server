@@ -45,7 +45,6 @@ class HyperliquidKlineCollector(BaseKlineCollector):
         self.connection_start_time = 0
         self.last_pong_time = 0
         self.heartbeat_count = 0
-        self.backfill_rate_limit = 0.1
 
         # Pending candle accumulation
         self.pending_candles: Dict[str, dict] = {}
