@@ -62,6 +62,7 @@ class CorrelationTracker:
         self.sum_xx = np.zeros((n_symbols, n_symbols), dtype=np.float64)
         self.sum_xy = np.zeros((n_symbols, n_symbols), dtype=np.float64)
         self.counts = np.zeros((n_symbols, n_symbols), dtype=np.int32)
+        self._triu_indices = np.triu_indices(n_symbols, k=1)
 
     def initialize(self, symbol_data: Dict[int, np.ndarray]):
         """Initialize from historical data keyed by symbol index.
@@ -171,8 +172,30 @@ class CorrelationTracker:
         np.fill_diagonal(corr, 1.0)
 
         # Extract upper triangle
-        i, j = np.triu_indices(self.n_symbols, k=1)
-        return [float(x) for x in corr[i, j]]
+        i, j = self._triu_indices
+        return cast(List[float], corr[i, j].tolist())
+
+    def get_pair_correlation(self, i: int, j: int) -> float:
+        """Return correlation for a single pair using pairwise-valid stats."""
+        if i == j:
+            return 1.0
+
+        count = float(self.counts[i, j])
+        if count <= 1:
+            return 0.0
+
+        mean_x = self.sum_x[i, j] / count
+        mean_y = self.sum_x[j, i] / count
+
+        var_x = self.sum_xx[i, j] / count - mean_x * mean_x
+        var_y = self.sum_xx[j, i] / count - mean_y * mean_y
+        cov = self.sum_xy[i, j] / count - mean_x * mean_y
+
+        denom = var_x * var_y
+        if denom <= 0.0:
+            return 0.0
+
+        return float(cov / np.sqrt(denom))
 
 
 class CorrelationCalculator:
@@ -190,6 +213,7 @@ class CorrelationCalculator:
         self.initialized = False
         self.last_update_time: float = 0
         self.update_count: int = 0
+        self._data_types = tuple(KLINE_FIELD_MAP)
 
         self._validation_symbols = self._get_validation_symbols()
 
@@ -226,7 +250,7 @@ class CorrelationCalculator:
         for hours in sorted(self.hours_options, reverse=True):
             window = hours * 60
 
-            for data_type in KLINE_FIELD_MAP:
+            for data_type in self._data_types:
                 tracker = CorrelationTracker(window, n)
 
                 indexed = {}
@@ -253,15 +277,31 @@ class CorrelationCalculator:
         del all_data
         gc.collect()
 
+    def _build_value_arrays(self, source: Dict, n: int) -> Dict[str, np.ndarray]:
+        arrays = {
+            data_type: np.full(n, np.nan, dtype=np.float64)
+            for data_type in self._data_types
+        }
+        for sym, values in source.items():
+            idx = self.symbol_to_idx.get(sym)
+            if idx is None:
+                continue
+            for data_type, value in values.items():
+                if data_type in arrays:
+                    arrays[data_type][idx] = value
+        return arrays
+
     def _update_trackers(self, newest: Dict, oldest_by_hours: Dict):
         """Update all trackers with new/old values."""
         n = len(self.symbols)
+        new_arr_by_type = self._build_value_arrays(newest, n)
 
         for hours in self.hours_options:
             oldest = oldest_by_hours.get(hours) or oldest_by_hours.get(str(hours), {})
             window = hours * 60
+            old_arr_by_type = None
 
-            for data_type in KLINE_FIELD_MAP:
+            for data_type in self._data_types:
                 tracker = self.trackers.get((hours, data_type))
                 if not tracker:
                     print(f"[DEBUG] No tracker found for ({hours}, {data_type})")
@@ -272,39 +312,27 @@ class CorrelationCalculator:
                     )
                     continue
 
-                new_arr = np.full(n, np.nan, dtype=np.float64)
-                old_arr = np.full(n, np.nan, dtype=np.float64)
+                new_arr = new_arr_by_type[data_type]
 
-                missing_new = 0
-                missing_old = 0
-                for sym, idx in self.symbol_to_idx.items():
-                    if sym in newest and data_type in newest[sym]:
-                        new_arr[idx] = newest[sym][data_type]
-                    else:
-                        missing_new += 1
-                    if (
-                        tracker.steps >= window
-                        and sym in oldest
-                        and data_type in oldest[sym]
-                    ):
-                        old_arr[idx] = oldest[sym][data_type]
-                    elif tracker.steps >= window:
-                        missing_old += 1
+                old_arr = None
+                if tracker.steps >= window:
+                    if old_arr_by_type is None:
+                        old_arr_by_type = self._build_value_arrays(oldest, n)
+                    old_arr = old_arr_by_type[data_type]
 
-                if (
-                    hours == 1
-                    and data_type == "price"
-                    and (missing_new > 0 or missing_old > 0)
-                ):
-                    new_valid = np.sum(~np.isnan(new_arr))
+                if hours == 1 and data_type == "price":
+                    new_valid = np.count_nonzero(~np.isnan(new_arr))
+                    missing_new = n - new_valid
                     old_valid = (
-                        np.sum(~np.isnan(old_arr)) if tracker.steps >= window else 0
+                        np.count_nonzero(~np.isnan(old_arr)) if old_arr is not None else 0
                     )
-                    print(
-                        f"[DEBUG] _update_trackers(1h,close): new_valid={new_valid}/{n}, old_valid={old_valid}/{n}, missing_new={missing_new}, missing_old={missing_old}"
-                    )
+                    missing_old = n - old_valid if old_arr is not None else 0
+                    if missing_new > 0 or missing_old > 0:
+                        print(
+                            f"[DEBUG] _update_trackers(1h,close): new_valid={new_valid}/{n}, old_valid={old_valid}/{n}, missing_new={missing_new}, missing_old={missing_old}"
+                        )
 
-                tracker.update(new_arr, old_arr if tracker.steps >= window else None)
+                tracker.update(new_arr, old_arr)
 
     def _validate_btc_sol_correlation(self):
         """Validate incremental correlation against manual numpy calculation to detect drift."""
@@ -338,33 +366,7 @@ class CorrelationCalculator:
             btc_idx = self.symbol_to_idx[btc_sym]
             sol_idx = self.symbol_to_idx[sol_sym]
 
-            incremental_matrix = tracker.get_correlations()
-            if not incremental_matrix:
-                print("[VALIDATION] Empty incremental matrix")
-                return
-
-            # Upper triangle flat index: pair (i,j) where i<j = i*n - i*(i+1)/2 + (j-i-1)
-            n = tracker.n_symbols
-            if btc_idx < sol_idx:
-                flat_idx = (
-                    btc_idx * n
-                    - (btc_idx * (btc_idx + 1)) // 2
-                    + (sol_idx - btc_idx - 1)
-                )
-            else:
-                flat_idx = (
-                    sol_idx * n
-                    - (sol_idx * (sol_idx + 1)) // 2
-                    + (btc_idx - sol_idx - 1)
-                )
-
-            if flat_idx >= len(incremental_matrix):
-                print(
-                    f"[VALIDATION] flat_idx {flat_idx} out of bounds for matrix len {len(incremental_matrix)}"
-                )
-                return
-
-            incremental_corr = incremental_matrix[flat_idx]
+            incremental_corr = tracker.get_pair_correlation(btc_idx, sol_idx)
 
             btc_prices = np.array(data[btc_sym]["price"], dtype=np.float64)
             sol_prices = np.array(data[sol_sym]["price"], dtype=np.float64)
@@ -412,7 +414,7 @@ class CorrelationCalculator:
         matrices_for_db: Dict[str, List[float]] = {}
 
         for hours in self.hours_options:
-            for data_type in KLINE_FIELD_MAP:
+            for data_type in self._data_types:
                 tracker = self.trackers.get((hours, data_type))
                 if not tracker:
                     print(f"NOT TRACKER FOR {hours} {data_type}")
@@ -421,8 +423,7 @@ class CorrelationCalculator:
                 matrix = tracker.get_correlations()
                 key = f"correlations:{data_type}:{hours}:{self.exchange}:{self.contract_type}"
                 packed_data = msgpack.packb(matrix)
-                if packed_data is not None:
-                    pipe.set(key, packed_data)
+                pipe.set(key, packed_data)
 
                 if save_to_db and hours == 1:
                     matrices_for_db[data_type] = matrix
@@ -545,7 +546,7 @@ class CorrelationCalculator:
                 print(f"[{self.exchange}] No data for {symbol}")
                 return
 
-            points = min(len(data[symbol].get(dt, [])) for dt in KLINE_FIELD_MAP)
+            points = min(len(data[symbol].get(dt, [])) for dt in self._data_types)
             if points < min_points:
                 print(
                     f"[{self.exchange}] Limited data for {symbol}: {points}/{min_points}, adding anyway"
@@ -625,6 +626,7 @@ class CorrelationCalculator:
                 tracker.counts = np.delete(tracker.counts, idx, axis=0)
                 tracker.counts = np.delete(tracker.counts, idx, axis=1)
                 tracker.n_symbols = len(self.symbols)
+                tracker._triu_indices = np.triu_indices(tracker.n_symbols, k=1)
 
                 if tracker.sum_x.shape[0] != tracker.n_symbols:
                     print(
