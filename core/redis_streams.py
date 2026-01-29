@@ -28,6 +28,63 @@ def ensure_consumer_group(
     return False
 
 
+def _parse_stream_id(stream_id: str) -> tuple[int, int]:
+    if not stream_id:
+        return (0, 0)
+    if stream_id in ("$", ">"):
+        return (2**63 - 1, 2**63 - 1)
+    parts = stream_id.split("-", 1)
+    try:
+        ms = int(parts[0])
+    except ValueError:
+        ms = 0
+    seq = 0
+    if len(parts) > 1:
+        try:
+            seq = int(parts[1])
+        except ValueError:
+            seq = 0
+    return (ms, seq)
+
+
+def compare_stream_ids(left: str, right: str) -> int:
+    left_id = _parse_stream_id(left)
+    right_id = _parse_stream_id(right)
+    if left_id < right_id:
+        return -1
+    if left_id > right_id:
+        return 1
+    return 0
+
+
+def get_consumer_group_last_id(
+    redis_client: redis.Redis, stream_key: str, group_name: str
+) -> str | None:
+    try:
+        groups = redis_client.xinfo_groups(stream_key)
+    except ResponseError as exc:
+        if "no such key" in str(exc).lower():
+            return None
+        raise
+
+    for group in groups:
+        name = group.get("name") or group.get(b"name")
+        if name is None:
+            continue
+        name_str = name.decode("utf-8") if isinstance(name, (bytes, bytearray)) else str(name)
+        if name_str != group_name:
+            continue
+        last_id = group.get("last-delivered-id") or group.get(b"last-delivered-id")
+        if last_id is None:
+            return None
+        return (
+            last_id.decode("utf-8")
+            if isinstance(last_id, (bytes, bytearray))
+            else str(last_id)
+        )
+    return None
+
+
 def publish_market_event(
     exchange: str,
     contract_type: str,

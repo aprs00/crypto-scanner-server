@@ -27,6 +27,8 @@ from core.redis_streams import (
     is_timestamp_processed,
     mark_timestamp_processed,
     get_stream_last_id,
+    compare_stream_ids,
+    get_consumer_group_last_id,
 )
 from correlations.services.save_correlations import (
     save_correlation_matrices_batch_to_db,
@@ -402,7 +404,7 @@ class CorrelationCalculator:
             print(f"[VALIDATION] Error during BTC-SOL validation: {e}")
             traceback.print_exc()
 
-    def _cache_correlations(self, save_to_db: bool = True):
+    def _cache_correlations(self, save_to_db: bool = True, validate: bool = True):
         """Cache correlation matrices to Redis and optionally DB."""
         pipe = self.redis.pipeline()
         matrices_for_db: Dict[str, List[float]] = {}
@@ -442,13 +444,15 @@ class CorrelationCalculator:
 
         pipe.execute()
         notification_service.send_correlation_update()
-        self._validate_btc_sol_correlation()
+        if validate:
+            self._validate_btc_sol_correlation()
 
     def update_correlations(
         self,
         newest: Optional[Dict] = None,
         oldest_values: Optional[Dict] = None,
         save_to_db: bool = True,
+        validate: bool = True,
     ):
         """Main update method - fetch data, update trackers, cache results."""
         with self.lock:
@@ -500,7 +504,7 @@ class CorrelationCalculator:
                     f"[{self.exchange}][DEBUG] After update - tracker(1h,price): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
 
-            self._cache_correlations(save_to_db)
+            self._cache_correlations(save_to_db, validate=validate)
 
     def add_symbol(self, symbol: str):
         """Add new symbol to tracking."""
@@ -691,11 +695,20 @@ class CorrelationCalculator:
 
         created = ensure_consumer_group(self.redis, stream_key, group_name)
 
-        # Resume from the captured stream position (before init) only for new groups
-        if created:
-            self.redis.xgroup_setid(stream_key, group_name, resume_from_id)
+        current_last_id = get_consumer_group_last_id(self.redis, stream_key, group_name)
+        target_id = resume_from_id
+        if current_last_id and compare_stream_ids(current_last_id, resume_from_id) > 0:
+            target_id = current_last_id
+
+        if (
+            created
+            or current_last_id is None
+            or compare_stream_ids(target_id, current_last_id) != 0
+        ):
+            self.redis.xgroup_setid(stream_key, group_name, target_id)
+            current_last_id = target_id
         print(
-            f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (resuming from {resume_from_id})"
+            f"[{self.exchange}] Listening to stream {stream_key} as {consumer_name} (resuming from {resume_from_id}, group last id {current_last_id})"
         )
 
         # If we just created the group, explicitly catch up on messages that
@@ -798,12 +811,20 @@ class CorrelationCalculator:
                     f"[{self.exchange}] Processing kline message {msg_id.decode('utf-8')} - newest symbols: {len(newest)}, oldest_by_hours: { {k: len(v) for k, v in oldest.items()} }"
                 )
 
-                # Temporarily disable DB saves to avoid timeout crashes - TODO: fix DB performance
-                save_to_db = False  # payload.get("source") != "backfill"
+                save_to_db = payload.get("source") != "backfill"
+
+                # Only validate against the latest complete minute; during catch-up,
+                # validations will compare against the current 60m window and drift.
+                latest_complete_minute_ms = (
+                    int(time.time() * 1000) // 60000
+                ) * 60000 - 60000
+                validate = timestamp_ms >= latest_complete_minute_ms
+
                 self.update_correlations(
                     newest=newest,
                     oldest_values=oldest,
                     save_to_db=save_to_db,
+                    validate=validate,
                 )
 
                 # Mark as processed after successful update
