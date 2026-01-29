@@ -1,6 +1,7 @@
 import time
 import threading
 import gc
+from datetime import datetime, timezone as dt_timezone
 import numpy as np
 import msgpack
 import traceback
@@ -202,7 +203,7 @@ class CorrelationCalculator:
         """Rebuild symbol index mapping."""
         self.symbol_to_idx = {s: i for i, s in enumerate(self.symbols)}
 
-    def _init_trackers(self):
+    def _init_trackers(self, end_time: Optional[datetime] = None):
         """Initialize all correlation trackers from historical data."""
         n = len(self.symbols)
         print(
@@ -218,7 +219,9 @@ class CorrelationCalculator:
             symbols=self.symbols,
             exchange=self.exchange,
             contract_type=self.contract_type,
+            end_time=end_time,
         )
+        time.sleep(60)
         print(f"[{self.exchange}] Data fetch: {time.time() - start:.2f}s")
 
         for hours in sorted(self.hours_options, reverse=True):
@@ -656,6 +659,14 @@ class CorrelationCalculator:
         )
         self._rebuild_indices()
 
+        snapshot_time = time.time()
+        snapshot_end_time = datetime.fromtimestamp(
+            snapshot_time, tz=dt_timezone.utc
+        ).replace(second=0, microsecond=0)
+        snapshot_last_complete_minute_ms = (
+            int(snapshot_end_time.timestamp() * 1000) - 60000
+        )
+
         # BEFORE initialization - capture stream position to avoid losing messages
         # published during the (potentially long) init phase
         stream_key = get_market_stream_key(self.exchange, self.contract_type)
@@ -667,7 +678,7 @@ class CorrelationCalculator:
         # Initialize trackers from historical data
         print(f"[{self.exchange}] Initializing correlation trackers...")
         start = time.time()
-        self._init_trackers()
+        self._init_trackers(end_time=snapshot_end_time)
         print(
             f"[{self.exchange}] Initialization completed in {time.time() - start:.2f}s"
         )
@@ -676,12 +687,15 @@ class CorrelationCalculator:
         self._cache_correlations(save_to_db=False)
 
         # Mark the initial timestamp as processed to prevent duplicate processing
-        current_ts = (int(time.time() * 1000) // 60000) * 60000 - 60000
         mark_timestamp_processed(
-            self.redis, "correlations", self.exchange, self.contract_type, current_ts
+            self.redis,
+            "correlations",
+            self.exchange,
+            self.contract_type,
+            snapshot_last_complete_minute_ms,
         )
         print(
-            f"[{self.exchange}] Correlation snapshot complete (marked ts={current_ts})"
+            f"[{self.exchange}] Correlation snapshot complete (marked ts={snapshot_last_complete_minute_ms})"
         )
 
         # Resume from captured position to process messages published during init
