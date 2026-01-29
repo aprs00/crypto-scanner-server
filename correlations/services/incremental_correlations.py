@@ -221,7 +221,6 @@ class CorrelationCalculator:
             contract_type=self.contract_type,
             end_time=end_time,
         )
-        time.sleep(60)
         print(f"[{self.exchange}] Data fetch: {time.time() - start:.2f}s")
 
         for hours in sorted(self.hours_options, reverse=True):
