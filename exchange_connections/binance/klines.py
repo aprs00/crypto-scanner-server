@@ -13,7 +13,7 @@ from core.constants import Exchange
 
 
 BINANCE_FUTURES_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/stream"
+BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/ws"
 BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 
 WS_PING_INTERVAL = 180  # 3 minutes
@@ -162,6 +162,7 @@ class BinanceKlineCollector(BaseKlineCollector):
 
     def on_message(self, _ws, message):
         """Handle incoming WebSocket message."""
+        # print(message)
         try:
             data = json.loads(message)
 
