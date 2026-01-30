@@ -19,6 +19,7 @@ BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 WS_PING_INTERVAL = 180  # 3 minutes
 WS_PING_TIMEOUT = 10  # 10 seconds
 MAX_STREAMS_PER_CONNECTION = 1024
+SUBSCRIBE_DELAY = 0.2  # seconds between subscribe batches
 
 
 class BinanceKlineCollector(BaseKlineCollector):
@@ -34,7 +35,6 @@ class BinanceKlineCollector(BaseKlineCollector):
     def __init__(self):
         super().__init__(exchange=Exchange.BINANCE, contract_type="perpetual")
         self.ws: Optional[websocket.WebSocketApp] = None
-        self.ws_connected = False
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         """Fetch all perpetual futures symbols from Binance API."""
@@ -151,31 +151,26 @@ class BinanceKlineCollector(BaseKlineCollector):
     def build_stream_list(self) -> List[str]:
         """Build list of kline streams to subscribe to."""
         streams = [f"{symbol.lower()}@kline_1m" for symbol in self.symbols]
-
         if len(streams) > MAX_STREAMS_PER_CONNECTION:
             print(
                 f"[binance] WARNING: {len(streams)} streams exceed limit of {MAX_STREAMS_PER_CONNECTION}"
             )
             streams = streams[:MAX_STREAMS_PER_CONNECTION]
-
         return streams
 
     def on_message(self, _ws, message):
         """Handle incoming WebSocket message."""
-        # print(message)
         try:
             data = json.loads(message)
 
-            if "stream" in data and "data" in data:
-                stream = data["stream"]
-                if "@kline_1m" in stream:
-                    kline_data = data["data"].get("k", {})
-                    is_closed = kline_data.get("x", False)
+            if data.get("e") == "kline":
+                kline_data = data.get("k", {})
+                is_closed = kline_data.get("x", False)
 
-                    if is_closed:
-                        candle = self.normalize_candle(kline_data)
-                        if candle:
-                            self.save_kline(candle, source="live")
+                if is_closed:
+                    candle = self.normalize_candle(kline_data)
+                    if candle:
+                        self.save_kline(candle, source="live")
 
         except Exception as e:
             print(f"[binance] ERROR: Error handling WebSocket message: {e}")
@@ -186,12 +181,12 @@ class BinanceKlineCollector(BaseKlineCollector):
 
     def on_close(self, _ws, close_status_code, close_msg):
         """Handle WebSocket close."""
-        self.ws_connected = False
         print(f"[binance] WebSocket closed: code={close_status_code}, msg={close_msg}")
 
-    def on_open(self, _ws):
+    def on_open(self, _ws, streams: Optional[List[str]] = None):
         """Handle WebSocket open - subscribe to all streams in batches."""
-        streams = self.build_stream_list()
+        if streams is None:
+            streams = self.build_stream_list()
 
         batch_size = 100
         for i in range(0, len(streams), batch_size):
@@ -202,8 +197,8 @@ class BinanceKlineCollector(BaseKlineCollector):
                 "id": i // batch_size + 1,
             }
             _ws.send(json.dumps(subscribe_msg))
+            time.sleep(SUBSCRIBE_DELAY)
 
-        self.ws_connected = True
         print(f"[binance] WebSocket connected, subscribed to {len(streams)} streams")
 
     def connect_websocket(self) -> Optional[threading.Thread]:
@@ -212,27 +207,26 @@ class BinanceKlineCollector(BaseKlineCollector):
             print("[binance] No symbols to connect to")
             return None
 
-        print(f"[binance] Connecting to WebSocket with {len(self.symbols)} streams...")
+        streams = self.build_stream_list()
 
         self.ws = websocket.WebSocketApp(
             BINANCE_FUTURES_WS_URL,
-            on_open=self.on_open,
+            on_open=lambda ws: self.on_open(ws, streams),
             on_message=self.on_message,
             on_error=self.on_error,
             on_close=self.on_close,
         )
 
-        ws = self.ws
-        ws_thread = threading.Thread(
-            target=lambda: ws.run_forever(
+        thread = threading.Thread(
+            target=lambda w=self.ws: w.run_forever(
                 ping_interval=WS_PING_INTERVAL,
                 ping_timeout=WS_PING_TIMEOUT,
             ),
             daemon=True,
         )
-        ws_thread.start()
 
-        return ws_thread
+        thread.start()
+        return thread
 
     def close_websocket(self):
         """Close the WebSocket connection."""
