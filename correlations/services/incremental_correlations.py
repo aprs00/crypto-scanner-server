@@ -324,7 +324,9 @@ class CorrelationCalculator:
                     new_valid = np.count_nonzero(~np.isnan(new_arr))
                     missing_new = n - new_valid
                     old_valid = (
-                        np.count_nonzero(~np.isnan(old_arr)) if old_arr is not None else 0
+                        np.count_nonzero(~np.isnan(old_arr))
+                        if old_arr is not None
+                        else 0
                     )
                     missing_old = n - old_valid if old_arr is not None else 0
                     if missing_new > 0 or missing_old > 0:
