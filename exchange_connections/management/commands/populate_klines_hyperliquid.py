@@ -17,7 +17,7 @@ class Command(BasePopulateKlinesCommand):
 
     exchange = Exchange.HYPERLIQUID
     contract_type = "perpetual"
-    request_delay = 3
+    request_delay = 5
 
     def fetch_all_klines_paginated(self, symbol, start_date, end_date) -> List:
         """Fetch all klines using Hyperliquid API in 24-hour chunks."""
