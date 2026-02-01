@@ -21,9 +21,9 @@ x-env-common: &env-common
 services:
   db:
     container_name: cs-db
-    image: timescale/timescaledb:2.14.2-pg15
+    image: postgres:18
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata18:/var/lib/postgresql
     environment:
       - POSTGRES_DB=${POSTGRES_NAME}
       - POSTGRES_USER=${POSTGRES_USER}
@@ -207,4 +207,4 @@ services:
       retries: 3
 
 volumes:
-  pgdata:
+  pgdata18:
