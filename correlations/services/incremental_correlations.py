@@ -604,6 +604,27 @@ class CorrelationCalculator:
             self.symbols = get_exchange_symbols(
                 exchange=self.exchange, contract_type=self.contract_type
             )
+            expected_symbols = [s for s in old_symbols if s != symbol]
+            if self.symbols != expected_symbols:
+                print(
+                    f"[{self.exchange}][DEBUG] Symbol list changed beyond removal; rebuilding trackers to avoid index misalignment"
+                )
+                added = set(self.symbols) - set(old_symbols)
+                removed = set(old_symbols) - set(self.symbols)
+                if added:
+                    print(
+                        f"[{self.exchange}][DEBUG] Symbols added to list: {added}"
+                    )
+                if removed:
+                    print(
+                        f"[{self.exchange}][DEBUG] Symbols removed from list: {removed}"
+                    )
+                self._rebuild_indices()
+                self._init_trackers()
+                self._cache_correlations(save_to_db=False)
+                print(f"[{self.exchange}][DEBUG] remove_symbol completed for {symbol}")
+                return
+
             self._rebuild_indices()
 
             added = set(self.symbols) - set(old_symbols)
