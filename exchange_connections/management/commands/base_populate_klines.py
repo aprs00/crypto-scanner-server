@@ -2,11 +2,12 @@
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
 from django.core.management.base import BaseCommand
 from django.db import IntegrityError
+
+from core.constants import Exchange
 
 from exchange_connections.selectors import get_exchange_symbols
 from exchange_connections.services.klines_ingest import (
@@ -19,7 +20,7 @@ class BasePopulateKlinesCommand(BaseCommand, ABC):
     """Abstract base class for populating klines from exchange APIs."""
 
     # Subclasses must define these
-    exchange: str
+    exchange: Exchange
     contract_type: str = "perpetual"
     request_delay: float = 0.1  # seconds between API requests
 
@@ -72,27 +73,18 @@ class BasePopulateKlinesCommand(BaseCommand, ABC):
         return get_exchange_symbols(self.exchange, self.contract_type)
 
     def populate_all_klines_1m(self, start_date, end_date, batch):
-        """Populate 1-minute klines for all symbols using threading."""
+        """Populate 1-minute klines for all symbols sequentially."""
         print(
             f"Starting {self.exchange} 1m kline population from {start_date} to {end_date}"
         )
 
         symbols = self.get_symbols()
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {
-                executor.submit(
-                    self.populate_kline_1m, symbol, start_date, end_date, batch
-                ): symbol
-                for symbol in symbols
-            }
-
-            for future in as_completed(futures):
-                symbol = futures[future]
-                try:
-                    future.result()
-                except Exception as exc:
-                    print(f"{symbol} generated an exception: {exc}")
+        for symbol in symbols:
+            try:
+                self.populate_kline_1m(symbol, start_date, end_date, batch)
+            except Exception as exc:
+                print(f"{symbol} generated an exception: {exc}")
 
         print(f"Completed {self.exchange} 1m kline population for all symbols")
 
