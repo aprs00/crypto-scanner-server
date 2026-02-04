@@ -106,6 +106,21 @@ services:
       timeout: 10s
       retries: 3
 
+  binance-cointegration:
+    <<: *app-common
+    container_name: cs-binance-cointegration
+    command: python manage.py cointegration_scan --exchange binance --window-minutes 1440 --cadence-minutes 15
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - binance-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'cointegration_scan.*binance' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   hyperliquid-klines:
     <<: *app-common
     container_name: cs-hyperliquid-klines
@@ -150,6 +165,21 @@ services:
       timeout: 10s
       retries: 3
 
+  hyperliquid-cointegration:
+    <<: *app-common
+    container_name: cs-hyperliquid-cointegration
+    command: python manage.py cointegration_scan --exchange hyperliquid --window-minutes 1440 --cadence-minutes 15
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - hyperliquid-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'cointegration_scan.*hyperliquid' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   bybit-klines:
     <<: *app-common
     container_name: cs-bybit-klines
@@ -190,6 +220,21 @@ services:
       - bybit-klines
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'incremental_zscore.*bybit' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  bybit-cointegration:
+    <<: *app-common
+    container_name: cs-bybit-cointegration
+    command: python manage.py cointegration_scan --exchange bybit --window-minutes 1440 --cadence-minutes 15
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - bybit-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'cointegration_scan.*bybit' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
