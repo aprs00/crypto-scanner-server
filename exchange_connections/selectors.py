@@ -73,11 +73,7 @@ def get_historical_kline_data(
     end_time_utc = end_time.astimezone(dt_timezone.utc)
 
     with connection.cursor() as cursor:
-        params = (
-            [exchange, contract_type]
-            + symbols
-            + [start_time_utc, end_time_utc]
-        )
+        params = [exchange, contract_type] + symbols + [start_time_utc, end_time_utc]
         cursor.execute(query, params)
 
         for row in cursor.fetchall():

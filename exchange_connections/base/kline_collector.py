@@ -1,6 +1,8 @@
+import json
 import os
 import time
 import threading
+import urllib.request
 from collections import deque
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone as dt_timezone
@@ -26,6 +28,12 @@ from core.redis_streams import publish_market_event
 WS_RECONNECT_DELAY = 5
 BACKFILL_MINUTES = 30
 SYMBOL_CHECK_INTERVAL = 900  # 15 minutes
+COINGECKO_MARKET_CAP_URL = (
+    "https://api.coingecko.com/api/v3/coins/markets"
+    "?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false"
+)
+MARKET_CAP_REFRESH_INTERVAL = 14400
+MARKET_CAP_MAX_SYMBOLS = 100
 
 
 class BaseKlineCollector(ABC):
@@ -60,6 +68,7 @@ class BaseKlineCollector(ABC):
         self._recent_timestamp_set: Set[int] = set()
         self._recent_limit = 500
         self._primary_symbol = get_btc_symbol(self.exchange)
+        self._last_market_cap_refresh = 0
         # Buffer for batching klines by timestamp before saving
         self._kline_buffer: Dict[int, List[NormalizedCandle]] = {}
         # Combined hours options for correlation and zscore services
@@ -143,6 +152,100 @@ class BaseKlineCollector(ABC):
             return old_count > 0  # Only trigger reconnect if we had symbols before
 
         return False
+
+    def _market_cap_redis_key(self) -> str:
+        return f"market_cap:{self.exchange}:{self.contract_type}"
+
+    def _map_market_cap_symbol(self, coingecko_symbol: str) -> Optional[str]:
+        symbol = coingecko_symbol.upper()
+        exchange_symbol = symbol if self.exchange == Exchange.HYPERLIQUID else f"{symbol}USDT"
+        return exchange_symbol if exchange_symbol in self.symbols else None
+
+    def _get_coingecko_rankings(self) -> Dict[str, int]:
+        """Fetch CoinGecko market cap data, using Redis cache if available."""
+        cache_key = "coingecko:market_cap_rankings"
+
+        try:
+            cached = self.redis.get(cache_key)
+            if cached:
+                cached_text = (
+                    cached.decode("utf-8")
+                    if isinstance(cached, (bytes, bytearray))
+                    else cached
+                )
+                if isinstance(cached_text, str):
+                    return json.loads(cached_text)
+        except Exception as e:
+            print(f"[{self.exchange}] ERROR: Failed to read CoinGecko cache: {e}")
+
+        try:
+            request = urllib.request.Request(
+                COINGECKO_MARKET_CAP_URL,
+                headers={"User-Agent": "crypto-scanner-server/1.0"},
+            )
+            with urllib.request.urlopen(request, timeout=30) as response:
+                coins = json.loads(response.read().decode("utf-8"))
+
+            coin_ranks: Dict[str, int] = {}
+            for rank, coin in enumerate(coins, 1):
+                coin_symbol = coin.get("symbol", "").upper()
+                if coin_symbol:
+                    coin_ranks[coin_symbol] = rank
+
+            try:
+                self.redis.setex(
+                    cache_key, MARKET_CAP_REFRESH_INTERVAL, json.dumps(coin_ranks)
+                )
+            except Exception as e:
+                print(f"[{self.exchange}] ERROR: Failed to cache CoinGecko data: {e}")
+
+            print(
+                f"[{self.exchange}] Fetched fresh CoinGecko market cap data: {len(coin_ranks)} coins"
+            )
+            return coin_ranks
+        except Exception as e:
+            print(f"[{self.exchange}] ERROR: Failed to fetch CoinGecko market cap: {e}")
+            return {}
+
+    def fetch_market_cap_ranking(self):
+        """Update market cap ranking for this exchange using CoinGecko data."""
+        if not self.symbols:
+            return
+
+        coin_ranks = self._get_coingecko_rankings()
+        if not coin_ranks:
+            return
+
+        matched: List[tuple[str, int]] = []
+        for coingecko_symbol, rank in coin_ranks.items():
+            exchange_symbol = self._map_market_cap_symbol(coingecko_symbol)
+            if exchange_symbol:
+                matched.append((exchange_symbol, rank))
+
+        matched.sort(key=lambda x: x[1])
+        top = matched[:MARKET_CAP_MAX_SYMBOLS]
+
+        try:
+            pipe = self.redis.pipeline()
+            pipe.delete(self._market_cap_redis_key())
+            if top:
+                pipe.zadd(
+                    self._market_cap_redis_key(),
+                    {symbol: -rank for symbol, rank in top},
+                )
+            pipe.execute()
+            self._last_market_cap_refresh = time.time()
+            print(f"[{self.exchange}] Updated market cap ranking: {len(top)} symbols")
+        except Exception as e:
+            print(f"[{self.exchange}] ERROR: Failed to update market cap ranking: {e}")
+
+    def _maybe_refresh_market_cap(self, force: bool = False):
+        if not self.symbols:
+            return
+        if force or (
+            time.time() - self._last_market_cap_refresh > MARKET_CAP_REFRESH_INTERVAL
+        ):
+            self.fetch_market_cap_ranking()
 
     def _remember_timestamp(self, timestamp_ms: int):
         if timestamp_ms in self._recent_timestamp_set:
@@ -428,6 +531,7 @@ class BaseKlineCollector(ABC):
         while self.should_run:
             # Update symbols from exchange
             self.update_symbols()
+            self._maybe_refresh_market_cap(force=True)
 
             if not self.symbols:
                 print(f"[{self.exchange}] No symbols available, waiting 60s...")
@@ -469,6 +573,7 @@ class BaseKlineCollector(ABC):
                     last_symbol_check = time.time()
                     old_symbols = self.symbols.copy()
                     self.update_symbols()
+                    self._maybe_refresh_market_cap(force=True)
 
                     if self.symbols != old_symbols:
                         print(f"[{self.exchange}] Symbols changed, reconnecting...")
