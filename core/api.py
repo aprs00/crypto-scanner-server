@@ -2,6 +2,7 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
 from core.constants import EXCHANGE_CONFIG
+from cointegration.constants import COINTEGRATION_LIVE_TABLE_CONFIG
 from exchange_connections.constants import get_btc_symbol
 from exchange_connections.selectors import (
     get_exchange_symbols,
@@ -58,9 +59,18 @@ def bootstrap(request):
         for market_cap_symbols in [get_top_market_cap_symbols(limit=100, exchange=exchange_id, contract_type=contract_type)]
     }
 
+    cointegration_live_table = {
+        **COINTEGRATION_LIVE_TABLE_CONFIG,
+        "window_options": {
+            key: str(value)
+            for key, value in COINTEGRATION_LIVE_TABLE_CONFIG["window_options"].items()
+        },
+    }
+
     data = {
         "exchanges": [{"id": k, "name": v["name"]} for k, v in EXCHANGE_CONFIG.items()],
         "exchange_data": exchange_data,
+        "cointegration_live_table": cointegration_live_table,
     }
 
     return JsonResponse(data, safe=False)

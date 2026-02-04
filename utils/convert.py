@@ -1,5 +1,4 @@
 from datetime import datetime, timezone as dt_timezone
-from django.utils import timezone
 
 
 def ms_to_aware_datetime(ms) -> datetime:
@@ -7,4 +6,4 @@ def ms_to_aware_datetime(ms) -> datetime:
 
     Accepts int/float/Decimal/str. Returns django timezone-aware datetime in UTC.
     """
-    return timezone.make_aware(datetime.fromtimestamp(int(ms) / 1000), dt_timezone.utc)
+    return datetime.fromtimestamp(int(ms) / 1000, tz=dt_timezone.utc)

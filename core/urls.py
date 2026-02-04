@@ -6,5 +6,6 @@ urlpatterns = [
     path("", include("correlations.urls")),
     path("", include("zscore.urls")),
     path("", include("averages.urls")),
+    path("", include("cointegration.urls")),
     path("bootstrap", bootstrap),
 ]
