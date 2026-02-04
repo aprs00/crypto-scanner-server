@@ -42,7 +42,7 @@ class CointegrationPair(models.Model):
     class Meta:
         db_table = "cs_cointegration_pair"
         ordering = ["-calculated_at"]
-        constraints = [¤
+        constraints = [
             UniqueConstraint(
                 fields=[
                     "exchange",
