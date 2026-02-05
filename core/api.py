@@ -17,6 +17,13 @@ def get_chart_defaults(exchange: str, market_cap_symbols: list[str]) -> dict:
     """
     default_symbol = get_btc_symbol(exchange)
 
+    default_window = next(
+        iter(COINTEGRATION_LIVE_TABLE_CONFIG["window_options"].values()), 1440
+    )
+    comparison_symbols = [
+        symbol for symbol in market_cap_symbols if symbol != default_symbol
+    ][:5]
+
     return {
         "heatmap": {
             "symbols": market_cap_symbols[:50],
@@ -29,6 +36,11 @@ def get_chart_defaults(exchange: str, market_cap_symbols: list[str]) -> dict:
             "comparison_symbols": [
                 s for s in market_cap_symbols if s != default_symbol
             ][:10],
+        },
+        "cointegration_pair_history": {
+            "base_symbol": default_symbol,
+            "comparison_symbols": comparison_symbols,
+            "window": str(default_window),
         },
     }
 

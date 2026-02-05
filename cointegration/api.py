@@ -1,3 +1,4 @@
+import json
 import math
 
 from django.http import HttpResponse, JsonResponse
@@ -5,6 +6,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.db.models.functions import Abs
 
 from cointegration.models import CointegrationPair
+from cointegration.selectors import get_cointegration_pair_history as fetch_cointegration_pair_history
 
 
 @csrf_exempt
@@ -97,3 +99,129 @@ def get_cointegration_live_table(request):
         )
 
     return JsonResponse({"data": data}, safe=False)
+
+
+@csrf_exempt
+def get_cointegration_pair_history(request):
+    if request.method != "POST":
+        return HttpResponse(status=405)
+
+    try:
+        body = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+
+    exchange = body.get("exchange")
+    contract_type = body.get("contractType", "perpetual")
+    base_symbol = body.get("baseSymbol") or body.get("symbol1")
+    comparison_symbols = body.get("comparisonSymbols")
+    if comparison_symbols is None:
+        symbol2 = body.get("symbol2")
+        comparison_symbols = [symbol2] if symbol2 else []
+    window = body.get("window")
+    hours = body.get("hours")
+    metric = body.get("metric", "spread_z")
+
+    if (
+        not exchange
+        or not base_symbol
+        or window is None
+        or hours is None
+        or comparison_symbols is None
+    ):
+        return JsonResponse(
+            {
+                "error": "Parameters 'exchange', 'baseSymbol', 'comparisonSymbols', 'window', and 'hours' are required"
+            },
+            status=400,
+        )
+
+    if not isinstance(comparison_symbols, list):
+        return JsonResponse(
+            {"error": "comparisonSymbols must be a list"}, status=400
+        )
+
+    cleaned_comparisons = []
+    seen = set()
+    for symbol in comparison_symbols:
+        if not symbol or symbol == base_symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        cleaned_comparisons.append(symbol)
+
+    try:
+        window_minutes = int(window)
+        hours_value = int(hours)
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "Invalid window or hours value"}, status=400)
+
+    if hours_value <= 0:
+        return JsonResponse({"error": "Hours must be greater than 0"}, status=400)
+
+    allowed_metrics = {
+        "spread_z",
+        "half_life",
+        "adf_t",
+        "hedge_ratio",
+        "spread_std",
+    }
+
+    if metric not in allowed_metrics:
+        return JsonResponse({"error": "Invalid metric value"}, status=400)
+
+    try:
+        if not cleaned_comparisons:
+            return JsonResponse(
+                {
+                    "history": [],
+                    "metric": metric,
+                    "base_symbol": base_symbol,
+                    "comparison_symbols": [],
+                    "window_minutes": window_minutes,
+                },
+                safe=False,
+            )
+
+        rows_by_pair = fetch_cointegration_pair_history(
+            exchange=exchange,
+            contract_type=contract_type,
+            base_symbol=base_symbol,
+            comparison_symbols=cleaned_comparisons,
+            window_minutes=window_minutes,
+            hours=hours_value,
+        )
+
+        metric_decimals = {
+            "spread_z": 3,
+            "half_life": 2,
+            "adf_t": 3,
+            "hedge_ratio": 3,
+            "spread_std": 3,
+        }
+
+        history = []
+        for rows in rows_by_pair:
+            series = []
+            for row in rows:
+                value = row.get(metric)
+                if value is None or not math.isfinite(value):
+                    value = None
+                else:
+                    value = round(value, metric_decimals.get(metric, 3))
+                series.append([row["calculated_at"].isoformat(), value])
+            history.append(series)
+
+        return JsonResponse(
+            {
+                "history": history,
+                "metric": metric,
+                "base_symbol": base_symbol,
+                "comparison_symbols": cleaned_comparisons,
+                "window_minutes": window_minutes,
+            },
+            safe=False,
+        )
+
+    except Exception as exc:
+        print("Error in get_cointegration_pair_history:", exc)
+        return JsonResponse({"error": "Internal server error"}, status=500)
