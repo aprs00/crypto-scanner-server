@@ -158,7 +158,9 @@ class BaseKlineCollector(ABC):
 
     def _map_market_cap_symbol(self, coingecko_symbol: str) -> Optional[str]:
         symbol = coingecko_symbol.upper()
-        exchange_symbol = symbol if self.exchange == Exchange.HYPERLIQUID else f"{symbol}USDT"
+        exchange_symbol = (
+            symbol if self.exchange == Exchange.HYPERLIQUID else f"{symbol}USDT"
+        )
         return exchange_symbol if exchange_symbol in self.symbols else None
 
     def _get_coingecko_rankings(self) -> Dict[str, int]:
