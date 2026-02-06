@@ -8,15 +8,14 @@ import traceback
 from typing import Dict, List, Optional, cast
 
 from exchange_connections.constants import (
-    KLINE_FIELD_MAP,
     get_btc_symbol,
     get_sol_symbol,
 )
 from exchange_connections.selectors import (
     get_exchange_symbols,
-    get_historical_kline_data,
     get_symbol_kline_data,
     get_symbol_kline_data_multi_hours,
+    get_historical_kline_data,
 )
 from core.constants import EXCHANGE_CONFIG, Exchange
 from core.redis_config import get_redis_connection
@@ -34,6 +33,7 @@ from core.redis_streams import (
 from correlations.services.save_correlations import (
     save_correlation_matrices_batch_to_db,
 )
+from correlations.selectors import get_historical_correlation_matrix
 
 
 class CorrelationTracker:
@@ -81,10 +81,25 @@ class CorrelationTracker:
 
         arr = np.vstack(
             [
-                symbol_data[i][-effective_length:].astype(np.float64)
+                symbol_data[i][-effective_length:].astype(np.float64, copy=False)
                 for i in range(self.n_symbols)
             ]
         )
+        self.initialize_from_matrix(arr)
+
+    def initialize_from_matrix(self, arr: np.ndarray):
+        """Initialize from a 2D matrix of shape [symbols, minutes]."""
+        if arr.size == 0:
+            return
+
+        if arr.ndim != 2:
+            raise ValueError("Expected 2D matrix for tracker initialization")
+
+        effective_length = min(arr.shape[1], self.window_size)
+        if effective_length <= 0:
+            return
+
+        arr = arr[:, -effective_length:].astype(np.float64, copy=False)
 
         valid = ~np.isnan(arr)
         x_filled = np.where(valid, arr, 0.0)
@@ -235,47 +250,34 @@ class CorrelationCalculator:
         )
 
         max_hours = max(self.hours_options)
-        print(f"[{self.exchange}] Fetching {max_hours}h of historical data...")
+        self.trackers = {}
 
-        start = time.time()
-        all_data = get_historical_kline_data(
-            hours=max_hours,
-            symbols=self.symbols,
-            exchange=self.exchange,
-            contract_type=self.contract_type,
-            end_time=end_time,
-        )
-        print(f"[{self.exchange}] Data fetch: {time.time() - start:.2f}s")
+        for data_type in self._data_types:
+            fetch_start = time.time()
+            historical_matrix = get_historical_correlation_matrix(
+                hours=max_hours,
+                symbols=self.symbols,
+                symbol_to_idx=self.symbol_to_idx,
+                exchange=self.exchange,
+                contract_type=self.contract_type,
+                data_type=data_type,
+                end_time=end_time,
+            )
+            print(
+                f"[{self.exchange}] Loaded {data_type} matrix {historical_matrix.shape} in {time.time() - fetch_start:.2f}s"
+            )
 
-        for hours in sorted(self.hours_options, reverse=True):
-            window = hours * 60
-
-            for data_type in self._data_types:
+            for hours in sorted(self.hours_options, reverse=True):
+                window = hours * 60
                 tracker = CorrelationTracker(window, n)
-
-                indexed = {}
-                for sym in self.symbols:
-                    idx = self.symbol_to_idx[sym]
-                    if sym in all_data and data_type in all_data[sym]:
-                        data = np.asarray(all_data[sym][data_type], dtype=np.float64)
-                        if len(data) >= window:
-                            indexed[idx] = data[-window:]
-                        else:
-                            padded = np.full(window, np.nan, dtype=np.float64)
-                            padded[-len(data) :] = data
-                            indexed[idx] = padded
-                    else:
-                        indexed[idx] = np.full(window, np.nan, dtype=np.float64)
-
-                if indexed:
-                    tracker.initialize(indexed)
-
+                if n > 0:
+                    tracker.initialize_from_matrix(historical_matrix[:, -window:])
                 self.trackers[(hours, data_type)] = tracker
 
-            print(f"[{self.exchange}] Initialized {hours}h timeframe")
+            del historical_matrix
+            gc.collect()
 
-        del all_data
-        gc.collect()
+        print(f"[{self.exchange}] Initialized trackers for {len(self.trackers)} windows")
 
     def _build_value_arrays(self, source: Dict, n: int) -> Dict[str, np.ndarray]:
         arrays = {
@@ -394,17 +396,12 @@ class CorrelationCalculator:
             diff = abs(incremental_corr - manual_corr)
 
             # Print comparison
-            print("\n" + "=" * 80)
             print(
                 f"[VALIDATION] BTC-SOL 1h price - Incremental={incremental_corr:.6f}, Numpy={manual_corr:.6f}, Diff={diff:.6f}"
             )
             print(
-                f"  DB BTC ({len(btc_valid)} valid of {len(btc_prices)}): {btc_valid.tolist()}"
+                f"[VALIDATION] points={len(btc_valid)} btc_last={btc_valid[-1]:.6f} sol_last={sol_valid[-1]:.6f}"
             )
-            print(
-                f"  DB SOL ({len(sol_valid)} valid of {len(sol_prices)}): {sol_valid.tolist()}"
-            )
-            print("=" * 80)
 
         except Exception as e:
             print(f"[VALIDATION] Error during BTC-SOL validation: {e}")
@@ -424,7 +421,13 @@ class CorrelationCalculator:
 
                 matrix = tracker.get_correlations()
                 key = f"correlations:{data_type}:{hours}:{self.exchange}:{self.contract_type}"
-                packed_data = msgpack.packb(matrix)
+                packed_data = msgpack.packb(
+                    {
+                        "symbols": self.symbols,
+                        "values": matrix,
+                    },
+                    use_bin_type=True,
+                )
                 pipe.set(key, packed_data)
 
                 if save_to_db and hours == 1:

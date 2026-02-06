@@ -21,6 +21,22 @@ def _flatten_upper_index(i: int, j: int, size: int) -> int:
     return i * size - (i * (i + 1)) // 2 + j - i - 1
 
 
+def _decode_correlation_blob(correlation_blob):
+    """Decode backward/forward compatible correlation payloads from Redis."""
+    unpacked = msgpack.unpackb(correlation_blob, use_list=True, raw=False)
+
+    if isinstance(unpacked, dict):
+        values = unpacked.get("values")
+        symbols = unpacked.get("symbols")
+        if isinstance(values, list):
+            return values, symbols if isinstance(symbols, list) else None
+
+    if isinstance(unpacked, list):
+        return unpacked, None
+
+    return [], None
+
+
 @csrf_exempt
 def get_pearson_correlation(request):
     if request.method != "POST":
@@ -60,13 +76,11 @@ def get_pearson_correlation(request):
                 status=503,
             )
 
-        pearson_correlations = [
-            round(v, 3)
-            for v in msgpack.unpackb(correlation_blob, use_list=True, raw=False)
-        ]
-        axis = list(symbols)
+        raw_correlations, packed_symbols = _decode_correlation_blob(correlation_blob)
+        pearson_correlations = [round(v, 3) for v in raw_correlations]
+        axis = list(packed_symbols) if packed_symbols else list(symbols)
 
-        symbol_lookup = {ticker: idx for idx, ticker in enumerate(symbols)}
+        symbol_lookup = {ticker: idx for idx, ticker in enumerate(axis)}
 
         selected_indices = [
             symbol_lookup[symbol]
@@ -74,11 +88,12 @@ def get_pearson_correlation(request):
             if symbol in symbol_lookup
         ]
 
-        total_symbols = len(symbols)
+        total_symbols = len(axis)
         expected_length = total_symbols * (total_symbols - 1) // 2
         if len(pearson_correlations) != expected_length:
             print(
-                f"Correlation vector size mismatch: expected {expected_length}, got {len(pearson_correlations)}",
+                f"Correlation vector size mismatch: expected {expected_length}, got {len(pearson_correlations)} "
+                f"(axis={len(axis)} exchange_symbols={len(symbols)})",
             )
             return JsonResponse({"error": "Correlation data invalid"}, status=503)
 
