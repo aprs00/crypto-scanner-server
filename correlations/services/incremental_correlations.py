@@ -8,6 +8,7 @@ import traceback
 from typing import Dict, List, Optional, cast
 
 from exchange_connections.constants import (
+    KLINE_FIELD_MAP,
     get_btc_symbol,
     get_sol_symbol,
 )
@@ -277,7 +278,9 @@ class CorrelationCalculator:
             del historical_matrix
             gc.collect()
 
-        print(f"[{self.exchange}] Initialized trackers for {len(self.trackers)} windows")
+        print(
+            f"[{self.exchange}] Initialized trackers for {len(self.trackers)} windows"
+        )
 
     def _build_value_arrays(self, source: Dict, n: int) -> Dict[str, np.ndarray]:
         arrays = {
@@ -615,9 +618,7 @@ class CorrelationCalculator:
                 added = set(self.symbols) - set(old_symbols)
                 removed = set(old_symbols) - set(self.symbols)
                 if added:
-                    print(
-                        f"[{self.exchange}][DEBUG] Symbols added to list: {added}"
-                    )
+                    print(f"[{self.exchange}][DEBUG] Symbols added to list: {added}")
                 if removed:
                     print(
                         f"[{self.exchange}][DEBUG] Symbols removed from list: {removed}"
