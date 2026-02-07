@@ -1,10 +1,11 @@
 import time
-from datetime import timedelta
-from typing import List, Tuple
+from datetime import datetime, timedelta, timezone as dt_timezone
+from typing import List
 
 import numpy as np
 from django.utils import timezone
 
+from exchange_connections.constants import get_btc_symbol
 from exchange_connections.models import Symbol
 from exchange_connections.selectors import (
     get_historical_kline_data,
@@ -41,9 +42,12 @@ class CointegrationScanner:
         self.last_timestamp = None
         self.pair_i: np.ndarray | None = None
         self.pair_j: np.ndarray | None = None
+        self.last_empty_fetch_timestamp: datetime | None = None
 
         self.exchange_id: int | None = None
         self.contract_type_id: int | None = None
+        self.readiness_symbol = get_btc_symbol(self.exchange)
+        self.readiness_poll_seconds = 5
 
     def _load_symbols(self) -> None:
         qs = (
@@ -141,12 +145,18 @@ class CointegrationScanner:
         n = self.buffer.shape[0]
         self.pair_i, self.pair_j = np.triu_indices(n, k=1)
 
-    def _update_to_latest(self) -> None:
+    def _update_to_latest(self, target_time: datetime | None = None) -> bool:
         if self.buffer is None or self.last_values is None or self.last_timestamp is None:
-            return
+            return False
 
-        target_time = timezone.now().replace(second=0, microsecond=0) - timedelta(
-            minutes=1
+        if target_time is None:
+            target_time = timezone.now().replace(second=0, microsecond=0) - timedelta(
+                minutes=1
+            )
+        elif target_time.tzinfo is None:
+            target_time = target_time.replace(tzinfo=dt_timezone.utc)
+        target_time = target_time.astimezone(dt_timezone.utc).replace(
+            second=0, microsecond=0
         )
 
         while self.last_timestamp < target_time:
@@ -158,6 +168,15 @@ class CointegrationScanner:
                 kline_timestamp_ms=int(next_ts.timestamp() * 1000),
             )
 
+            if not data:
+                if self.last_empty_fetch_timestamp != next_ts:
+                    print(
+                        f"[{self.exchange}] Missing kline rows for {next_ts.isoformat()}, retrying."
+                    )
+                    self.last_empty_fetch_timestamp = next_ts
+                return False
+
+            self.last_empty_fetch_timestamp = None
             new_vals = self.last_values.copy()
             for idx, symbol in enumerate(self.symbols):
                 row = data.get(symbol)
@@ -172,6 +191,28 @@ class CointegrationScanner:
             self.last_values = new_vals
             self.pos = (self.pos + 1) % self.window_len
             self.last_timestamp = next_ts
+        return True
+
+    def _wait_for_btc_kline(self, target_time: datetime) -> bool:
+        if target_time.tzinfo is None:
+            target_time = target_time.replace(tzinfo=dt_timezone.utc)
+        target_time = target_time.astimezone(dt_timezone.utc).replace(
+            second=0, microsecond=0
+        )
+        target_timestamp_ms = int(target_time.timestamp() * 1000)
+
+        while True:
+            data = get_symbol_kline_data_at_timestamp(
+                symbols=[self.readiness_symbol],
+                exchange=self.exchange,
+                contract_type=self.contract_type,
+                kline_timestamp_ms=target_timestamp_ms,
+            )
+            row = data.get(self.readiness_symbol)
+            price = row.get("price") if row else None
+            if price is not None and price > 0:
+                return True
+            time.sleep(self.readiness_poll_seconds)
 
     def _get_window_matrix(self) -> np.ndarray:
         if self.buffer is None:
@@ -314,10 +355,17 @@ class CointegrationScanner:
 
         while True:
             try:
-                self._update_to_latest()
-
                 now = timezone.now()
                 if now >= next_compute:
+                    required_data_time = next_compute - timedelta(minutes=1)
+                    self._wait_for_btc_kline(required_data_time)
+                    if not self._update_to_latest(target_time=required_data_time):
+                        print(
+                            f"[{self.exchange}] BTC minute ready but DB minute "
+                            f"{required_data_time.isoformat()} is not ready. Retrying."
+                        )
+                        continue
+
                     if try_acquire_lock(
                         self.exchange, self.contract_type, self.window_minutes
                     ):
