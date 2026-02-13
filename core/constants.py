@@ -15,7 +15,6 @@ class Exchange(str, Enum):
         return self.value
 
 
-# Per-exchange configuration
 EXCHANGE_CONFIG = {
     Exchange.BINANCE: {
         "name": "Binance",

@@ -9,6 +9,8 @@ from core.redis_config import get_redis_connection
 
 
 STREAM_PREFIX = "stream:market"
+STREAM_MAXLEN = 60
+STREAM_TRIM_APPROXIMATE = False
 
 
 def get_market_stream_key(exchange: str, contract_type: str) -> str:
@@ -71,7 +73,9 @@ def get_consumer_group_last_id(
         name = group.get("name") or group.get(b"name")
         if name is None:
             continue
-        name_str = name.decode("utf-8") if isinstance(name, (bytes, bytearray)) else str(name)
+        name_str = (
+            name.decode("utf-8") if isinstance(name, (bytes, bytearray)) else str(name)
+        )
         if name_str != group_name:
             continue
         last_id = group.get("last-delivered-id") or group.get(b"last-delivered-id")
@@ -105,7 +109,12 @@ def publish_market_event(
         try:
             return cast(
                 str,
-                redis_client.xadd(stream_key, fields, maxlen=10000, approximate=True),  # type: ignore[arg-type]
+                redis_client.xadd(
+                    stream_key,
+                    fields,  # type: ignore[arg-type]
+                    maxlen=STREAM_MAXLEN,
+                    approximate=STREAM_TRIM_APPROXIMATE,
+                ),
             )
         except RedisError:
             if attempt == 2:

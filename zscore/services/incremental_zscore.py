@@ -5,6 +5,7 @@ from datetime import datetime, timezone as dt_timezone
 from typing import Dict, cast
 from django.utils import timezone
 from django.conf import settings
+from redis.exceptions import RedisError
 
 from exchange_connections.selectors import (
     get_exchange_symbols,
@@ -348,7 +349,12 @@ class ZScoreProcessor:
         )
 
         # Resume from captured position to process messages published during init
-        self._consume_stream(resume_from_id=pre_init_stream_id)
+        while True:
+            try:
+                self._consume_stream(resume_from_id=pre_init_stream_id)
+            except RedisError as exc:
+                print(f"[{self.exchange}] ERROR: Redis stream read failed: {exc}. Retrying in 2s")
+                time.sleep(2)
 
     def _consume_stream(self, resume_from_id: str = "$"):
         stream_key = get_market_stream_key(self.exchange, self.contract_type)

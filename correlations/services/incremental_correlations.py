@@ -6,6 +6,7 @@ import numpy as np
 import msgpack
 import traceback
 from typing import Dict, List, Optional, cast
+from redis.exceptions import RedisError
 
 from exchange_connections.constants import (
     KLINE_FIELD_MAP,
@@ -727,7 +728,12 @@ class CorrelationCalculator:
         )
 
         # Resume from captured position to process messages published during init
-        self._consume_stream(resume_from_id=pre_init_stream_id)
+        while True:
+            try:
+                self._consume_stream(resume_from_id=pre_init_stream_id)
+            except RedisError as exc:
+                print(f"[{self.exchange}] ERROR: Redis stream read failed: {exc}. Retrying in 2s")
+                time.sleep(2)
 
     def _consume_stream(self, resume_from_id: str = "$"):
         stream_key = get_market_stream_key(self.exchange, self.contract_type)
