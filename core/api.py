@@ -42,6 +42,9 @@ def get_chart_defaults(exchange: str, market_cap_symbols: list[str]) -> dict:
             "comparison_symbols": comparison_symbols,
             "window": str(default_window),
         },
+        "cointegration_live_table": {
+            "symbols": market_cap_symbols[:75],
+        },
     }
 
 
@@ -67,8 +70,14 @@ def bootstrap(request):
             "chart_defaults": get_chart_defaults(exchange_id, market_cap_symbols),
         }
         for exchange_id, exchange_config in EXCHANGE_CONFIG.items()
-        for symbols in [get_exchange_symbols(exchange=exchange_id, contract_type=contract_type)]
-        for market_cap_symbols in [get_top_market_cap_symbols(limit=100, exchange=exchange_id, contract_type=contract_type)]
+        for symbols in [
+            get_exchange_symbols(exchange=exchange_id, contract_type=contract_type)
+        ]
+        for market_cap_symbols in [
+            get_top_market_cap_symbols(
+                limit=100, exchange=exchange_id, contract_type=contract_type
+            )
+        ]
     }
 
     cointegration_live_table = {
