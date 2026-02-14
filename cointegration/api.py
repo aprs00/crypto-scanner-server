@@ -10,13 +10,16 @@ from cointegration.selectors import get_cointegration_pair_history as fetch_coin
 
 
 def _parse_symbols_param(params):
-    raw_values = params.getlist("symbols")
+    raw_values = []
+    if hasattr(params, "getlist"):
+        raw_values = params.getlist("symbols") or params.getlist("symbols[]")
+
     if not raw_values:
-        raw_values = params.getlist("symbols[]")
-    if not raw_values:
-        single_value = params.get("symbols")
-        if single_value:
-            raw_values = [single_value]
+        value = params.get("symbols") or params.get("symbols[]")
+        if isinstance(value, list):
+            raw_values = value
+        elif value:
+            raw_values = [value]
 
     symbols = []
     seen = set()
@@ -32,27 +35,37 @@ def _parse_symbols_param(params):
 
 @csrf_exempt
 def get_cointegration_live_table(request):
-    if request.method != "GET":
+    if request.method != "POST":
         return HttpResponse(status=405)
 
-    exchange = request.GET.get("exchange")
-    window = request.GET.get("window")
-    contract_type = request.GET.get("contractType", "perpetual")
-    limit = int(request.GET.get("limit", 200))
-    offset = int(request.GET.get("offset", 0))
-    sort = request.GET.get("sort", "abs_z")
-    sort_direction = request.GET.get("sortDirection") or request.GET.get("sortDir")
-    symbols = _parse_symbols_param(request.GET)
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    if not isinstance(payload, dict):
+        return JsonResponse({"error": "Invalid JSON body"}, status=400)
 
-    if not exchange or not window:
+    exchange = payload.get("exchange")
+    window = payload.get("window")
+    limit = payload.get("limit")
+    offset = payload.get("offset")
+    contract_type = payload.get("contractType", "perpetual")
+    sort = payload.get("sort", "abs_z")
+    sort_direction = payload.get("sortDirection")
+    symbols = _parse_symbols_param(payload)
+
+    if not exchange or window is None or limit is None or offset is None:
         return JsonResponse(
-            {"error": "Required parameters are: exchange, window"}, status=400
+            {"error": "Required parameters are: exchange, window, limit, offset"},
+            status=400,
         )
 
     try:
+        limit = int(limit)
+        offset = int(offset)
         window_minutes = int(window)
-    except ValueError:
-        return JsonResponse({"error": "Invalid window value"}, status=400)
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "Invalid window, limit, or offset value"}, status=400)
 
     if not symbols:
         return JsonResponse({"data": []}, safe=False)
