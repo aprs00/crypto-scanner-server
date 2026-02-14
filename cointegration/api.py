@@ -9,6 +9,27 @@ from cointegration.models import CointegrationPair
 from cointegration.selectors import get_cointegration_pair_history as fetch_cointegration_pair_history
 
 
+def _parse_symbols_param(params):
+    raw_values = params.getlist("symbols")
+    if not raw_values:
+        raw_values = params.getlist("symbols[]")
+    if not raw_values:
+        single_value = params.get("symbols")
+        if single_value:
+            raw_values = [single_value]
+
+    symbols = []
+    seen = set()
+    for raw_value in raw_values:
+        for symbol in str(raw_value).split(","):
+            cleaned_symbol = symbol.strip()
+            if not cleaned_symbol or cleaned_symbol in seen:
+                continue
+            seen.add(cleaned_symbol)
+            symbols.append(cleaned_symbol)
+    return symbols
+
+
 @csrf_exempt
 def get_cointegration_live_table(request):
     if request.method != "GET":
@@ -21,6 +42,7 @@ def get_cointegration_live_table(request):
     offset = int(request.GET.get("offset", 0))
     sort = request.GET.get("sort", "abs_z")
     sort_direction = request.GET.get("sortDirection") or request.GET.get("sortDir")
+    symbols = _parse_symbols_param(request.GET)
 
     if not exchange or not window:
         return JsonResponse(
@@ -32,10 +54,15 @@ def get_cointegration_live_table(request):
     except ValueError:
         return JsonResponse({"error": "Invalid window value"}, status=400)
 
+    if not symbols:
+        return JsonResponse({"data": []}, safe=False)
+
     qs = CointegrationPair.objects.filter(
         exchange__name=exchange,
         contract_type__name=contract_type,
         window_minutes=window_minutes,
+        symbol1__name__in=symbols,
+        symbol2__name__in=symbols,
     ).select_related("symbol1", "symbol2")
 
     if sort_direction:
