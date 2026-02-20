@@ -15,6 +15,7 @@ from core.constants import Exchange
 BINANCE_FUTURES_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/ws"
 BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
+BINANCE_MAX_KLINES_PER_REQUEST = 1500
 
 WS_PING_INTERVAL = 180  # 3 minutes
 WS_PING_TIMEOUT = 10  # 10 seconds
@@ -35,6 +36,9 @@ class BinanceKlineCollector(BaseKlineCollector):
     def __init__(self):
         super().__init__(exchange=Exchange.BINANCE, contract_type="perpetual")
         self.ws: Optional[websocket.WebSocketApp] = None
+
+    def get_backfill_chunk_minutes(self) -> int:
+        return BINANCE_MAX_KLINES_PER_REQUEST
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         """Fetch all perpetual futures symbols from Binance API."""
@@ -85,6 +89,8 @@ class BinanceKlineCollector(BaseKlineCollector):
         """Fetch historical klines via Binance REST API with retry logic."""
         max_retries = 4
         base_delay = 1
+        requested_minutes = max(1, (end_time_ms - start_time_ms) // 60000)
+        limit = min(requested_minutes, BINANCE_MAX_KLINES_PER_REQUEST)
 
         for attempt in range(max_retries):
             try:
@@ -95,7 +101,7 @@ class BinanceKlineCollector(BaseKlineCollector):
                         "interval": "1m",
                         "startTime": start_time_ms,
                         "endTime": end_time_ms,
-                        "limit": 1,
+                        "limit": limit,
                     },
                     timeout=10,
                 )
@@ -120,6 +126,7 @@ class BinanceKlineCollector(BaseKlineCollector):
                     )
                     result.append(candle)
 
+                result.sort(key=lambda c: c.open_time_ms)
                 return result
 
             except requests.exceptions.HTTPError as e:

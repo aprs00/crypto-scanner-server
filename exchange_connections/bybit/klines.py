@@ -23,6 +23,7 @@ from core.constants import Exchange
 BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
 BYBIT_API_BASE = "https://api.bybit.com"
 BYBIT_INSTRUMENTS_URL = f"{BYBIT_API_BASE}/v5/market/instruments-info"
+BYBIT_MAX_KLINES_PER_REQUEST = 1000
 
 # WebSocket configuration - disable websocket-client's ping, we use JSON ping
 WS_PING_INTERVAL = 0
@@ -53,6 +54,9 @@ class BybitKlineCollector(BaseKlineCollector):
         # Heartbeat tracking
         self.connection_start_time = 0
         self.heartbeat_count = 0
+
+    def get_backfill_chunk_minutes(self) -> int:
+        return BYBIT_MAX_KLINES_PER_REQUEST
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         """Fetch all USDT linear perpetual symbols from Bybit API with pagination."""
@@ -131,6 +135,8 @@ class BybitKlineCollector(BaseKlineCollector):
         """Fetch historical klines via Bybit REST API with retry logic."""
         max_retries = 4
         base_delay = 1
+        requested_minutes = max(1, (end_time_ms - start_time_ms) // 60000)
+        limit = min(requested_minutes, BYBIT_MAX_KLINES_PER_REQUEST)
 
         for attempt in range(max_retries):
             try:
@@ -142,7 +148,7 @@ class BybitKlineCollector(BaseKlineCollector):
                         "interval": "1",
                         "start": start_time_ms,
                         "end": end_time_ms,
-                        "limit": 1,
+                        "limit": limit,
                     },
                     timeout=10,
                 )
@@ -189,6 +195,7 @@ class BybitKlineCollector(BaseKlineCollector):
                     )
                     result.append(candle)
 
+                result.sort(key=lambda c: c.open_time_ms)
                 return result
 
             except requests.exceptions.HTTPError as e:

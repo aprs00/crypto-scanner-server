@@ -26,7 +26,12 @@ from core.redis_streams import publish_market_event
 
 
 WS_RECONNECT_DELAY = 5
-BACKFILL_MINUTES = 30
+# Detect recent sparse gaps even when no disconnect happened.
+RECENT_GAP_LOOKBACK_MINUTES = 30
+# Safety cap for reconnect catch-up to avoid unbounded backfill workloads.
+MAX_BACKFILL_LOOKBACK_MINUTES = 7 * 24 * 60
+# Default per-request backfill chunk size (subclasses can override).
+DEFAULT_BACKFILL_CHUNK_MINUTES = 1000
 SYMBOL_CHECK_INTERVAL = 900  # 15 minutes
 COINGECKO_MARKET_CAP_URL = (
     "https://api.coingecko.com/api/v3/coins/markets"
@@ -105,6 +110,89 @@ class BaseKlineCollector(ABC):
     ) -> List[NormalizedCandle]:
         """Fetch historical klines via REST API for backfill."""
         pass
+
+    def get_recent_gap_lookback_minutes(self) -> int:
+        """Minutes to scan for sparse recent gaps on reconnect."""
+        value = os.environ.get("BACKFILL_RECENT_LOOKBACK_MINUTES")
+        if value is None:
+            return RECENT_GAP_LOOKBACK_MINUTES
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else RECENT_GAP_LOOKBACK_MINUTES
+        except ValueError:
+            return RECENT_GAP_LOOKBACK_MINUTES
+
+    def get_max_backfill_minutes(self) -> int:
+        """Maximum reconnect catch-up window in minutes."""
+        value = os.environ.get("MAX_BACKFILL_MINUTES")
+        if value is None:
+            return MAX_BACKFILL_LOOKBACK_MINUTES
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else MAX_BACKFILL_LOOKBACK_MINUTES
+        except ValueError:
+            return MAX_BACKFILL_LOOKBACK_MINUTES
+
+    def get_backfill_chunk_minutes(self) -> int:
+        """Max candles requested per backfill REST call."""
+        return DEFAULT_BACKFILL_CHUNK_MINUTES
+
+    def _should_disable_backfill(self) -> bool:
+        disable = os.environ.get("DISABLE_BACKFILL", "").lower() in ("1", "true", "yes")
+        if not disable:
+            return False
+
+        allow_disable = os.environ.get("ALLOW_DISABLE_BACKFILL", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if allow_disable:
+            print(
+                f"[{self.exchange}] WARNING: Backfill disabled "
+                f"(DISABLE_BACKFILL + ALLOW_DISABLE_BACKFILL)"
+            )
+            return True
+
+        print(
+            f"[{self.exchange}] WARNING: Ignoring DISABLE_BACKFILL; "
+            f"set ALLOW_DISABLE_BACKFILL=1 to disable backfill explicitly"
+        )
+        return False
+
+    @staticmethod
+    def _build_contiguous_ranges(timestamps: List[int]) -> List[tuple[int, int]]:
+        """Convert sorted minute timestamps into contiguous [start, end) ranges."""
+        if not timestamps:
+            return []
+
+        ordered = sorted(set(timestamps))
+        ranges: List[tuple[int, int]] = []
+        start = ordered[0]
+        prev = ordered[0]
+
+        for ts in ordered[1:]:
+            if ts - prev != 60000:
+                ranges.append((start, prev + 60000))
+                start = ts
+            prev = ts
+
+        ranges.append((start, prev + 60000))
+        return ranges
+
+    def _chunk_ranges(self, ranges: List[tuple[int, int]]) -> List[tuple[int, int]]:
+        chunk_minutes = max(1, self.get_backfill_chunk_minutes())
+        chunk_ms = chunk_minutes * 60000
+        chunks: List[tuple[int, int]] = []
+
+        for start_ms, end_ms in ranges:
+            cursor = start_ms
+            while cursor < end_ms:
+                chunk_end = min(cursor + chunk_ms, end_ms)
+                chunks.append((cursor, chunk_end))
+                cursor = chunk_end
+
+        return chunks
 
     def update_symbols(self) -> bool:
         """Update symbols from exchange API. Returns True if symbols changed."""
@@ -298,13 +386,45 @@ class BaseKlineCollector(ABC):
         self._pending_timestamps.clear()
 
     def detect_btc_gaps(self) -> List[int]:
-        """Detect missing BTC kline timestamps in the last N minutes.
-
-        Returns list of missing timestamp_ms values that need backfilling.
-        """
+        """Detect missing BTC minute timestamps in reconnect catch-up window."""
         current_time_ms = int(time.time() * 1000)
         current_minute_ms = (current_time_ms // 60000) * 60000
-        start_time_ms = current_minute_ms - (BACKFILL_MINUTES * 60000)
+        recent_lookback_minutes = self.get_recent_gap_lookback_minutes()
+        max_backfill_minutes = self.get_max_backfill_minutes()
+        recent_window_start_ms = current_minute_ms - (recent_lookback_minutes * 60000)
+        max_window_start_ms = current_minute_ms - (max_backfill_minutes * 60000)
+        btc_symbol = self._primary_symbol
+
+        latest_btc_query = """
+            SELECT MAX(k.start_time) AS latest_start_time
+            FROM cs_klines_1m k
+            JOIN cs_exchanges e ON k.exchange_id = e.id
+            JOIN cs_symbols s ON k.symbol_id = s.id
+            WHERE e.name = %s
+              AND s.name = %s
+        """
+
+        latest_btc_dt = None
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(latest_btc_query, [self.exchange, btc_symbol])
+                row = cursor.fetchone()
+                latest_btc_dt = row[0] if row and row[0] else None
+        except Exception as e:
+            print(f"[{self.exchange}] ERROR: Failed to query latest BTC timestamp: {e}")
+            return []
+        finally:
+            connection.close()
+
+        if latest_btc_dt is None:
+            start_time_ms = recent_window_start_ms
+        else:
+            latest_btc_ms = int(latest_btc_dt.timestamp() * 1000)
+            # Cover both reconnect-tail outage and sparse recent gaps.
+            start_time_ms = min(recent_window_start_ms, latest_btc_ms + 60000)
+
+        if start_time_ms < max_window_start_ms:
+            start_time_ms = max_window_start_ms
 
         expected_timestamps = set(range(start_time_ms, current_minute_ms, 60000))
 
@@ -313,7 +433,6 @@ class BaseKlineCollector(ABC):
 
         start_dt = datetime.fromtimestamp(start_time_ms / 1000, tz=dt_timezone.utc)
         end_dt = datetime.fromtimestamp(current_minute_ms / 1000, tz=dt_timezone.utc)
-        btc_symbol = self._primary_symbol
 
         query = """
             SELECT EXTRACT(EPOCH FROM k.start_time)::bigint * 1000 AS ts_ms
@@ -341,28 +460,33 @@ class BaseKlineCollector(ABC):
         missing = sorted(expected_timestamps - existing_timestamps)
 
         if missing:
+            scanned_minutes = (current_minute_ms - start_time_ms) // 60000
             print(
                 f"[{self.exchange}] Gap detection: {len(missing)} missing BTC minutes "
-                f"in last {BACKFILL_MINUTES} minutes"
+                f"in last {scanned_minutes} minutes "
+                f"(oldest={missing[0]}, newest={missing[-1]})"
             )
 
         return missing
 
-    def _backfill_symbol(self, symbol: str, timestamp_ms: int) -> int:
-        """Fetch and save a single symbol's kline for a timestamp. Returns count inserted."""
+    def _backfill_symbol_range(self, symbol: str, start_ms: int, end_ms: int) -> int:
+        """Fetch and save a symbol's klines for [start_ms, end_ms)."""
         try:
             candles = self.fetch_historical_klines(
                 symbol=symbol,
-                start_time_ms=timestamp_ms,
-                end_time_ms=timestamp_ms + 60000,
+                start_time_ms=start_ms,
+                end_time_ms=end_ms,
             )
             if candles:
-                self._save_klines_batch(candles)
-            return len(candles)
+                filtered = [c for c in candles if start_ms <= c.open_time_ms < end_ms]
+                if filtered:
+                    self._save_klines_batch(filtered)
+                return len(filtered)
+            return 0
         except Exception as e:
             print(
                 f"[{self.exchange}] ERROR: Backfill failed for {symbol} "
-                f"at ts={timestamp_ms}: {e}"
+                f"in [{start_ms}, {end_ms}): {e}"
             )
             return 0
         finally:
@@ -374,39 +498,52 @@ class BaseKlineCollector(ABC):
         if not missing_timestamps:
             return
 
-        self._backfill_in_progress = True
+        ranges = self._build_contiguous_ranges(missing_timestamps)
+        chunks = self._chunk_ranges(ranges)
         symbols_list = list(self.symbols)
-        total_requests = len(missing_timestamps) * len(symbols_list)
-        print(
-            f"[{self.exchange}] Backfilling {len(missing_timestamps)} gaps "
-            f"for {len(symbols_list)} symbols ({total_requests} requests)..."
-        )
+        total_requests = len(chunks) * len(symbols_list)
 
-        total_inserted = 0
-        for timestamp_ms in missing_timestamps:
-            if not self.should_run:
-                break
+        self._backfill_in_progress = True
+        try:
+            print(
+                f"[{self.exchange}] Backfilling {len(missing_timestamps)} gaps "
+                f"across {len(chunks)} chunk(s) for {len(symbols_list)} symbols "
+                f"({total_requests} requests)..."
+            )
 
-            for symbol in symbols_list:
+            total_inserted = 0
+            for chunk_start_ms, chunk_end_ms in chunks:
                 if not self.should_run:
                     break
-                count = self._backfill_symbol(symbol, timestamp_ms)
-                total_inserted += count
 
-            try:
-                newest, oldest = self._query_kline_data_for_timestamp(timestamp_ms)
-                self._publish_kline_timestamp(
-                    timestamp_ms,
-                    source="backfill",
-                    newest_values=newest,
-                    oldest_values=oldest,
-                )
-            except Exception as e:
-                print(f"[{self.exchange}] ERROR: Failed to publish backfill event: {e}")
+                for symbol in symbols_list:
+                    if not self.should_run:
+                        break
+                    count = self._backfill_symbol_range(
+                        symbol=symbol,
+                        start_ms=chunk_start_ms,
+                        end_ms=chunk_end_ms,
+                    )
+                    total_inserted += count
 
-        print(f"[{self.exchange}] Backfill complete: {total_inserted} klines inserted")
-        self._backfill_in_progress = False
-        self._flush_pending_timestamps()
+                for timestamp_ms in range(chunk_start_ms, chunk_end_ms, 60000):
+                    try:
+                        newest, oldest = self._query_kline_data_for_timestamp(timestamp_ms)
+                        self._publish_kline_timestamp(
+                            timestamp_ms,
+                            source="backfill",
+                            newest_values=newest,
+                            oldest_values=oldest,
+                        )
+                    except Exception as e:
+                        print(
+                            f"[{self.exchange}] ERROR: Failed to publish backfill event: {e}"
+                        )
+
+            print(f"[{self.exchange}] Backfill complete: {total_inserted} klines inserted")
+        finally:
+            self._backfill_in_progress = False
+            self._flush_pending_timestamps()
 
     def save_kline(self, candle: NormalizedCandle, source: str = "live"):
         """Save kline - buffers live klines, saves backfill immediately."""
@@ -550,16 +687,8 @@ class BaseKlineCollector(ABC):
                 continue
 
             # On connect: detect gaps (via BTC) and backfill all symbols
-            if os.environ.get("DISABLE_BACKFILL", "").lower() not in (
-                "1",
-                "true",
-                "yes",
-            ):
+            if not self._should_disable_backfill():
                 self.backfill_gaps()
-            else:
-                print(
-                    f"[{self.exchange}] Backfill disabled via DISABLE_BACKFILL env var"
-                )
 
             # Wait for disconnect or symbol change
             last_symbol_check = time.time()

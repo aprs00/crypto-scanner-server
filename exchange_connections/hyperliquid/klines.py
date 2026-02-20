@@ -27,6 +27,7 @@ WS_PING_INTERVAL = 0
 WS_PING_TIMEOUT = None
 HEARTBEAT_INTERVAL = 50
 PONG_TIMEOUT_SECONDS = 90
+HYPERLIQUID_MAX_BACKFILL_MINUTES = 5000
 
 
 class HyperliquidKlineCollector(BaseKlineCollector):
@@ -52,6 +53,12 @@ class HyperliquidKlineCollector(BaseKlineCollector):
 
         # Price tracking for synthetic candles
         self.last_prices: Dict[str, Decimal] = {}
+
+    def get_backfill_chunk_minutes(self) -> int:
+        return HYPERLIQUID_MAX_BACKFILL_MINUTES
+
+    def get_max_backfill_minutes(self) -> int:
+        return min(super().get_max_backfill_minutes(), HYPERLIQUID_MAX_BACKFILL_MINUTES)
 
     def fetch_perpetual_symbols(self) -> Set[str]:
         """Fetch all perpetual symbols from Hyperliquid API."""
@@ -139,6 +146,7 @@ class HyperliquidKlineCollector(BaseKlineCollector):
                     if candle:
                         result.append(candle)
 
+                result.sort(key=lambda c: c.open_time_ms)
                 return result
 
             except requests.exceptions.HTTPError as e:
