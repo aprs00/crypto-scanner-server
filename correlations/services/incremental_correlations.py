@@ -580,7 +580,10 @@ class CorrelationCalculator:
             print(
                 f"[{self.exchange}][DEBUG] Reinitializing trackers for {len(self.symbols)} symbols"
             )
-            self._init_trackers()
+            snapshot_end_time = datetime.now(dt_timezone.utc).replace(
+                second=0, microsecond=0
+            )
+            self._init_trackers(end_time=snapshot_end_time)
 
             sample_tracker = self.trackers.get((1, "price"))
             if sample_tracker:
@@ -588,7 +591,11 @@ class CorrelationCalculator:
                     f"[{self.exchange}][DEBUG] After add_symbol - tracker(1h,price): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
 
-            self.update_correlations()
+            # Do not apply an immediate "latest now" incremental update here.
+            # add_symbol runs inside stream consumption; doing so would advance
+            # state to "now" and then process queued older kline messages
+            # out-of-order, corrupting rolling trackers.
+            self._cache_correlations(save_to_db=False, validate=False)
             print(f"[{self.exchange}][DEBUG] add_symbol completed for {symbol}")
 
     def remove_symbol(self, symbol: str):

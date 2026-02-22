@@ -211,9 +211,10 @@ def get_symbol_kline_data_multi_hours(
     kline_timestamp_ms: Optional[int] = None,
 ):
     """
-    Fetch the kline for each symbol at each time offset (hours ago).
-    Uses a range query to find the closest kline within a 2-minute window
-    of the target time, to handle minor timestamp variations.
+    Fetch the exact kline for each symbol at each time offset (hours ago).
+
+    For incremental processors, timestamp alignment must be exact to avoid
+    removing a value from a different minute than the one that was added.
     Returns: Dict[hours, Dict[symbol, {price, volume, trades}]]
     """
     if not hours_list or not symbols:
@@ -228,8 +229,6 @@ def get_symbol_kline_data_multi_hours(
     else:
         base_time = timezone.now().replace(second=0, microsecond=0)
 
-    # Use a window query to find the closest kline within 2 minutes of target time
-    # This handles minor timestamp alignment issues while still being accurate
     query = f"""
         SELECT
             h.hours_offset,
@@ -247,9 +246,7 @@ def get_symbol_kline_data_multi_hours(
             WHERE
                 k.symbol_id = s.id
                 AND k.exchange_id = e.id
-                AND k.start_time >= %s - (h.hours_offset || ' hours')::interval - interval '1 minute'
-                AND k.start_time <= %s - (h.hours_offset || ' hours')::interval + interval '1 minute'
-            ORDER BY ABS(EXTRACT(EPOCH FROM (k.start_time - (%s - (h.hours_offset || ' hours')::interval))))
+                AND k.start_time = %s - (h.hours_offset || ' hours')::interval
             LIMIT 1
         ) k
         WHERE
@@ -260,8 +257,6 @@ def get_symbol_kline_data_multi_hours(
 
     params = [
         hours_list,
-        base_time,
-        base_time,
         base_time,
         exchange,
         contract_type,

@@ -208,6 +208,23 @@ class HyperliquidKlineCollector(BaseKlineCollector):
             taker_buy_quote_volume=None,
         )
 
+    def build_backfill_synthetic_candles(
+        self, timestamp_ms: int, missing_symbols: List[str]
+    ) -> List[NormalizedCandle]:
+        """Create synthetic candles for missing backfill symbols from last prices."""
+        if any(symbol not in self.last_prices for symbol in missing_symbols):
+            self._fetch_initial_prices()
+
+        synthetic_candles: List[NormalizedCandle] = []
+        for symbol in missing_symbols:
+            price = self.last_prices.get(symbol)
+            if price is None:
+                continue
+            synthetic_candles.append(
+                self._create_synthetic_candle(symbol, timestamp_ms, price)
+            )
+        return synthetic_candles
+
     def _flush_pending_candles(self):
         """Save all pending candles and generate synthetics for missing symbols."""
         if self.current_minute == 0:

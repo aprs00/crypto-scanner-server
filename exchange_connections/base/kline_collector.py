@@ -111,6 +111,12 @@ class BaseKlineCollector(ABC):
         """Fetch historical klines via REST API for backfill."""
         pass
 
+    def build_backfill_synthetic_candles(
+        self, timestamp_ms: int, missing_symbols: List[str]
+    ) -> List[NormalizedCandle]:
+        """Optionally provide synthetic candles for missing backfill symbols."""
+        return []
+
     def get_recent_gap_lookback_minutes(self) -> int:
         """Minutes to scan for sparse recent gaps on reconnect."""
         value = os.environ.get("BACKFILL_RECENT_LOOKBACK_MINUTES")
@@ -529,6 +535,31 @@ class BaseKlineCollector(ABC):
                 for timestamp_ms in range(chunk_start_ms, chunk_end_ms, 60000):
                     try:
                         newest, oldest = self._query_kline_data_for_timestamp(timestamp_ms)
+                        newest = newest or {}
+                        if symbols_list and len(newest) < len(symbols_list):
+                            missing_symbols = [
+                                s for s in symbols_list if s not in newest
+                            ]
+                            synthetic_candles = self.build_backfill_synthetic_candles(
+                                timestamp_ms=timestamp_ms,
+                                missing_symbols=missing_symbols,
+                            )
+                            if synthetic_candles:
+                                self._save_klines_batch(synthetic_candles)
+                                newest = get_symbol_kline_data_at_timestamp(
+                                    symbols=symbols_list,
+                                    exchange=self.exchange,
+                                    contract_type=self.contract_type,
+                                    kline_timestamp_ms=timestamp_ms,
+                                )
+
+                            if len(newest) < len(symbols_list):
+                                print(
+                                    f"[{self.exchange}] WARN: Skipping incomplete backfill publish at {timestamp_ms}: "
+                                    f"newest symbols {len(newest)}/{len(symbols_list)}"
+                                )
+                                continue
+
                         self._publish_kline_timestamp(
                             timestamp_ms,
                             source="backfill",
