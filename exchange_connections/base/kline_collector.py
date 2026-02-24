@@ -534,7 +534,9 @@ class BaseKlineCollector(ABC):
 
                 for timestamp_ms in range(chunk_start_ms, chunk_end_ms, 60000):
                     try:
-                        newest, oldest = self._query_kline_data_for_timestamp(timestamp_ms)
+                        newest, oldest = self._query_kline_data_for_timestamp(
+                            timestamp_ms
+                        )
                         newest = newest or {}
                         if symbols_list and len(newest) < len(symbols_list):
                             missing_symbols = [
@@ -571,7 +573,9 @@ class BaseKlineCollector(ABC):
                             f"[{self.exchange}] ERROR: Failed to publish backfill event: {e}"
                         )
 
-            print(f"[{self.exchange}] Backfill complete: {total_inserted} klines inserted")
+            print(
+                f"[{self.exchange}] Backfill complete: {total_inserted} klines inserted"
+            )
         finally:
             self._backfill_in_progress = False
             self._flush_pending_timestamps()
@@ -717,8 +721,12 @@ class BaseKlineCollector(ABC):
                 time.sleep(WS_RECONNECT_DELAY)
                 continue
 
+            backfill_enabled = not self._should_disable_backfill()
+            backfill_check_minute_ms = (int(time.time() * 1000) // 60000) * 60000
+            post_rollover_gap_check_done = not backfill_enabled
+
             # On connect: detect gaps (via BTC) and backfill all symbols
-            if not self._should_disable_backfill():
+            if backfill_enabled:
                 self.backfill_gaps()
 
             # Wait for disconnect or symbol change
@@ -729,6 +737,12 @@ class BaseKlineCollector(ABC):
                     break
 
                 time.sleep(poll_interval)
+
+                if backfill_enabled and not post_rollover_gap_check_done:
+                    current_minute_ms = (int(time.time() * 1000) // 60000) * 60000
+                    if current_minute_ms > backfill_check_minute_ms:
+                        self.backfill_gaps()
+                        post_rollover_gap_check_done = True
 
                 # Check for symbol changes periodically
                 if time.time() - last_symbol_check >= SYMBOL_CHECK_INTERVAL:

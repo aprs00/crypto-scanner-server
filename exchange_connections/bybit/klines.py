@@ -133,6 +133,8 @@ class BybitKlineCollector(BaseKlineCollector):
         self, symbol: str, start_time_ms: int, end_time_ms: int
     ) -> List[NormalizedCandle]:
         """Fetch historical klines via Bybit REST API with retry logic."""
+        # Use end-1ms so a 1-minute backfill requests the missing minute itself.
+        bybit_end_time_ms = end_time_ms - 1
         max_retries = 4
         base_delay = 1
         requested_minutes = max(1, (end_time_ms - start_time_ms) // 60000)
@@ -147,7 +149,7 @@ class BybitKlineCollector(BaseKlineCollector):
                         "symbol": symbol,
                         "interval": "1",
                         "start": start_time_ms,
-                        "end": end_time_ms,
+                        "end": bybit_end_time_ms,
                         "limit": limit,
                     },
                     timeout=10,
