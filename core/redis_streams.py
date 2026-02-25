@@ -1,3 +1,4 @@
+import os
 import time
 from typing import Any, cast
 
@@ -9,8 +10,35 @@ from core.redis_config import get_redis_connection
 
 
 STREAM_PREFIX = "stream:market"
-STREAM_MAXLEN = 60
-STREAM_TRIM_APPROXIMATE = False
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+# Keep enough history to survive consumer lag spikes/reconnect bursts.
+STREAM_MAXLEN = _env_int("MARKET_STREAM_MAXLEN", 720)
+# Approximate trimming avoids per-write exact-trim overhead.
+STREAM_TRIM_APPROXIMATE = _env_bool("MARKET_STREAM_TRIM_APPROXIMATE", True)
 
 
 def get_market_stream_key(exchange: str, contract_type: str) -> str:

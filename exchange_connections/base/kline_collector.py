@@ -32,6 +32,9 @@ RECENT_GAP_LOOKBACK_MINUTES = 30
 MAX_BACKFILL_LOOKBACK_MINUTES = 7 * 24 * 60
 # Default per-request backfill chunk size (subclasses can override).
 DEFAULT_BACKFILL_CHUNK_MINUTES = 1000
+# Avoid publishing backfill events for very recent minutes; live stream should
+# own the frontier to prevent backfill/live duplicate timestamp processing.
+BACKFILL_PUBLISH_LAG_MINUTES = 2
 SYMBOL_CHECK_INTERVAL = 900  # 15 minutes
 COINGECKO_MARKET_CAP_URL = (
     "https://api.coingecko.com/api/v3/coins/markets"
@@ -142,6 +145,17 @@ class BaseKlineCollector(ABC):
     def get_backfill_chunk_minutes(self) -> int:
         """Max candles requested per backfill REST call."""
         return DEFAULT_BACKFILL_CHUNK_MINUTES
+
+    def get_backfill_publish_lag_minutes(self) -> int:
+        """Only publish backfill events older than this many minutes from now."""
+        value = os.environ.get("BACKFILL_PUBLISH_LAG_MINUTES")
+        if value is None:
+            return BACKFILL_PUBLISH_LAG_MINUTES
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else BACKFILL_PUBLISH_LAG_MINUTES
+        except ValueError:
+            return BACKFILL_PUBLISH_LAG_MINUTES
 
     def _should_disable_backfill(self) -> bool:
         disable = os.environ.get("DISABLE_BACKFILL", "").lower() in ("1", "true", "yes")
@@ -534,6 +548,13 @@ class BaseKlineCollector(ABC):
 
                 for timestamp_ms in range(chunk_start_ms, chunk_end_ms, 60000):
                     try:
+                        current_minute_ms = (int(time.time() * 1000) // 60000) * 60000
+                        publish_cutoff_ms = current_minute_ms - (
+                            self.get_backfill_publish_lag_minutes() * 60000
+                        )
+                        if timestamp_ms >= publish_cutoff_ms:
+                            continue
+
                         newest, oldest = self._query_kline_data_for_timestamp(
                             timestamp_ms
                         )
