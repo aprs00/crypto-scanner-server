@@ -2,7 +2,7 @@ import time
 import numpy as np
 import msgpack
 from datetime import datetime, timezone as dt_timezone
-from typing import Dict, cast
+from typing import Dict, Optional, cast
 from django.utils import timezone
 from django.conf import settings
 from redis.exceptions import RedisError
@@ -13,7 +13,7 @@ from exchange_connections.selectors import (
     get_historical_kline_data,
 )
 from zscore.selectors.zscore import get_zscore_history_data
-from exchange_connections.constants import KLINE_FIELD_MAP
+from exchange_connections.constants import KLINE_FIELD_MAP, get_btc_symbol, get_sol_symbol
 from core.constants import EXCHANGE_CONFIG, Exchange
 from zscore.models import ZScoreHistory
 from exchange_connections.models import Symbol, Exchange as ExchangeModel, ContractType
@@ -106,6 +106,28 @@ class IncrementalZScore:
 
         return z_score
 
+    def get_state(self):
+        if self.count <= 0 or self.current_value is None:
+            return {
+                "count": float(self.count),
+                "mean": float(self.mean),
+                "variance": 0.0,
+                "std_dev": 0.0,
+                "current_value": 0.0,
+                "z_score": 0.0,
+            }
+
+        variance = self.M2 / self.count
+        std_dev = np.sqrt(max(variance, 0.0))
+        return {
+            "count": float(self.count),
+            "mean": float(self.mean),
+            "variance": float(variance),
+            "std_dev": float(std_dev),
+            "current_value": float(self.current_value),
+            "z_score": float(self.get_z_score()),
+        }
+
 
 class ZScoreProcessor:
     def __init__(self, exchange: Exchange, contract_type: str = "perpetual"):
@@ -120,6 +142,172 @@ class ZScoreProcessor:
         # NOTE: initialization moved to run() to ensure we capture stream position first
         self.incremental_zscores: dict = {}
         self.initialized = False
+        self._validation_symbols = self._get_validation_symbols()
+        self._last_processed_kline_timestamp_ms: Optional[int] = None
+        self._last_processed_stream_id: Optional[str] = None
+        self._throttled_log_at: Dict[str, float] = {}
+
+    def _get_validation_symbols(self):
+        btc = get_btc_symbol(self.exchange)
+        sol = get_sol_symbol(self.exchange)
+        return [btc, sol]
+
+    def _log_throttled(self, key: str, every_seconds: int, message: str):
+        now = time.time()
+        last = self._throttled_log_at.get(key, 0.0)
+        if now - last >= every_seconds:
+            print(message)
+            self._throttled_log_at[key] = now
+
+    def _log_message_ordering(self, timestamp_ms: int, source: str, msg_id: str):
+        previous = self._last_processed_kline_timestamp_ms
+        if previous is None:
+            return
+
+        if timestamp_ms <= previous:
+            delta_ms = timestamp_ms - previous
+            self._log_throttled(
+                "out_of_order_kline",
+                10,
+                f"[{self.exchange}][WARN] Out-of-order zscore kline message: ts={timestamp_ms}, "
+                f"prev_processed_ts={previous}, delta_ms={delta_ms}, source={source}, msg_id={msg_id}",
+            )
+
+    def _log_payload_health(self, timestamp_ms: int, source: str, newest: Dict, oldest: Dict):
+        expected = len(self.symbols)
+        newest_count = len(newest)
+        oldest_counts = {
+            int(hours): len(oldest.get(hours) or oldest.get(str(hours), {}))
+            for hours in self.hours_options
+        }
+
+        if expected and newest_count < expected:
+            missing = [s for s in self.symbols if s not in newest][:5]
+            self._log_throttled(
+                "payload_newest_incomplete",
+                20,
+                f"[{self.exchange}][WARN] Incomplete zscore newest_values at ts={timestamp_ms} "
+                f"(source={source}): {newest_count}/{expected} symbols, sample missing={missing}",
+            )
+
+        for hours, count in oldest_counts.items():
+            if expected and count < expected:
+                self._log_throttled(
+                    f"payload_oldest_incomplete_{hours}",
+                    20,
+                    f"[{self.exchange}][WARN] Incomplete zscore oldest_values at ts={timestamp_ms} "
+                    f"(source={source}, hours={hours}): {count}/{expected} symbols",
+                )
+
+    def _log_btc_sol_state_snapshot(self, timestamp_ms: int, source: str):
+        if len(self._validation_symbols) < 2:
+            return
+        if 1 not in self.hours_options:
+            return
+
+        snapshots = []
+        for symbol in self._validation_symbols[:2]:
+            zscore_obj = (
+                self.incremental_zscores.get(symbol, {})
+                .get("price", {})
+                .get(1)
+            )
+            if zscore_obj is None:
+                continue
+            state = zscore_obj.get_state()
+            snapshots.append((symbol, state))
+
+            invalid = (
+                not np.isfinite(state["z_score"])
+                or state["variance"] < -1e-9
+                or abs(state["z_score"]) > 50
+            )
+            if invalid:
+                self._log_throttled(
+                    f"zscore_invalid_state_{symbol}",
+                    10,
+                    f"[{self.exchange}][ERROR] Invalid zscore tracker state for {symbol} at ts={timestamp_ms} source={source}: "
+                    f"z={state['z_score']:.6f} count={state['count']:.0f} mean={state['mean']:.6f} "
+                    f"variance={state['variance']:.6e} current={state['current_value']:.6f}",
+                )
+
+        if snapshots:
+            snapshot_text = ", ".join(
+                [
+                    (
+                        f"{symbol}: z={state['z_score']:.6f} count={state['count']:.0f} "
+                        f"std={state['std_dev']:.6e} current={state['current_value']:.6f}"
+                    )
+                    for symbol, state in snapshots
+                ]
+            )
+            self._log_throttled(
+                "zscore_snapshot",
+                300,
+                f"[{self.exchange}][DEBUG] ZScore snapshot ts={timestamp_ms} source={source}: {snapshot_text}",
+            )
+
+    @staticmethod
+    def _manual_zscore(values: list) -> tuple[float, int, float]:
+        arr = np.array(values, dtype=np.float64)
+        valid = arr[np.isfinite(arr)]
+        if valid.size < 2:
+            return 0.0, int(valid.size), 0.0
+        variance = float(np.var(valid))
+        if variance <= 1e-9:
+            return 0.0, int(valid.size), variance
+        mean = float(np.mean(valid))
+        z = float((valid[-1] - mean) / np.sqrt(variance))
+        return z, int(valid.size), variance
+
+    def _validate_btc_sol_zscores(self, timestamp_ms: int, source: str):
+        try:
+            if len(self._validation_symbols) < 2:
+                return
+            if 1 not in self.hours_options:
+                return
+
+            btc_sym, sol_sym = self._validation_symbols[:2]
+            data = get_historical_kline_data(
+                hours=1,
+                symbols=[btc_sym, sol_sym],
+                exchange=self.exchange,
+                contract_type=self.contract_type,
+            )
+
+            validation_parts = []
+            for symbol in (btc_sym, sol_sym):
+                zscore_obj = (
+                    self.incremental_zscores.get(symbol, {})
+                    .get("price", {})
+                    .get(1)
+                )
+                if zscore_obj is None:
+                    continue
+
+                series = data.get(symbol, {}).get("price", [])
+                manual_z, count, variance = self._manual_zscore(series)
+                incremental_z = float(zscore_obj.get_z_score())
+                diff = abs(incremental_z - manual_z)
+                validation_parts.append(
+                    f"{symbol}: inc={incremental_z:.6f} numpy={manual_z:.6f} diff={diff:.6f} points={count} variance={variance:.6e}"
+                )
+
+                if diff > 0.25:
+                    self._log_throttled(
+                        f"zscore_validation_drift_{symbol}",
+                        10,
+                        f"[{self.exchange}][ERROR] ZScore drift for {symbol} at ts={timestamp_ms} source={source}: "
+                        f"incremental={incremental_z:.6f} numpy={manual_z:.6f} diff={diff:.6f} points={count} variance={variance:.6e}",
+                    )
+
+            if validation_parts:
+                print(
+                    f"[{self.exchange}][VALIDATION] ZScore 1h price ts={timestamp_ms} source={source} "
+                    + " | ".join(validation_parts)
+                )
+        except Exception as exc:
+            print(f"[{self.exchange}][VALIDATION] ZScore validation failed: {exc}")
 
     def initialize_zscores(self, end_time: datetime | None = None):
         """Initialize Z-score objects using historical kline data from DB"""
@@ -152,8 +340,8 @@ class ZScoreProcessor:
 
     def update_zscores(
         self,
-        newest_values: Dict[str, Dict[str, float]],
-        oldest_values: Dict[int | str, Dict[str, Dict[str, float]]],
+        newest_values: Optional[Dict[str, Dict[str, float]]],
+        oldest_values: Optional[Dict[int | str, Dict[str, Dict[str, float]]]],
     ):
         """Update incremental Z-scores with new data"""
         if newest_values is None:
@@ -164,6 +352,11 @@ class ZScoreProcessor:
             )
 
         oldest_by_hours = oldest_values or {}
+        stats_1h_price = {
+            "missing_new": 0,
+            "added_without_old": 0,
+            "updated_with_old": 0,
+        }
 
         for hours in self.hours_options:
             # Handle both int and string keys (JSON decoding produces string keys)
@@ -176,16 +369,37 @@ class ZScoreProcessor:
                     zscore_obj = self.incremental_zscores[symbol][data_type][hours]
                     symbol_new_values = newest_values.get(symbol)
                     if not symbol_new_values or data_type not in symbol_new_values:
+                        if hours == 1 and data_type == "price":
+                            stats_1h_price["missing_new"] += 1
                         continue
                     new_val = symbol_new_values[data_type]
                     if new_val is None or not np.isfinite(new_val):
+                        if hours == 1 and data_type == "price":
+                            stats_1h_price["missing_new"] += 1
                         continue
                     old_val = oldest_for_hours.get(symbol, {}).get(data_type)
 
                     if old_val is not None and np.isfinite(old_val):
                         zscore_obj.update_data_point(old_val, new_val)
+                        if hours == 1 and data_type == "price":
+                            stats_1h_price["updated_with_old"] += 1
                     else:
                         zscore_obj.add_data_point(new_val)
+                        if hours == 1 and data_type == "price":
+                            stats_1h_price["added_without_old"] += 1
+
+        expected = len(self.symbols)
+        if expected and (
+            stats_1h_price["missing_new"] > 0 or stats_1h_price["added_without_old"] > 0
+        ):
+            self._log_throttled(
+                "zscore_window_integrity",
+                20,
+                f"[{self.exchange}][WARN] 1h price window integrity: "
+                f"updated_with_old={stats_1h_price['updated_with_old']}/{expected}, "
+                f"added_without_old={stats_1h_price['added_without_old']}, "
+                f"missing_new={stats_1h_price['missing_new']}",
+            )
 
     def create_z_score_results(self):
         return {
@@ -411,6 +625,13 @@ class ZScoreProcessor:
                     r.xack(stream_key, group_name, msg_id)
                     return
                 timestamp_ms = int(timestamp_ms)
+                source = str(payload.get("source") or "unknown")
+                msg_id_str = msg_id.decode("utf-8")
+                self._log_message_ordering(
+                    timestamp_ms=timestamp_ms,
+                    source=source,
+                    msg_id=msg_id_str,
+                )
 
                 # Idempotency check - skip if already processed
                 if is_timestamp_processed(
@@ -426,11 +647,18 @@ class ZScoreProcessor:
                 newest = payload.get("newest_values") or {}
                 oldest = payload.get("oldest_values") or {}
                 oldest = cast(Dict[int | str, Dict[str, Dict[str, float]]], oldest)
+                self._log_payload_health(
+                    timestamp_ms=timestamp_ms,
+                    source=source,
+                    newest=newest,
+                    oldest=oldest,
+                )
 
                 self.update_zscores(
                     newest_values=newest,
                     oldest_values=oldest,
                 )
+                self._log_btc_sol_state_snapshot(timestamp_ms=timestamp_ms, source=source)
                 results = self.create_z_score_results()
 
                 pipeline = r.pipeline()
@@ -440,15 +668,34 @@ class ZScoreProcessor:
                         f"zscore:{self.exchange}:{self.contract_type}:{tf}",
                         msgpack.packb(tf_data),
                     )
-                save_to_db = payload.get("source") != "backfill"
+                save_to_db = source != "backfill"
                 if save_to_db:
                     self.store_z_score_results(results)
                 self.fetch_and_store_zscore_history_data(redis_pipeline=pipeline)
                 pipeline.execute()
 
+                latest_complete_minute_ms = (
+                    int(time.time() * 1000) // 60000
+                ) * 60000 - 60000
+                if timestamp_ms >= latest_complete_minute_ms:
+                    self._validate_btc_sol_zscores(
+                        timestamp_ms=timestamp_ms, source=source
+                    )
+
                 # Mark as processed after successful update
                 mark_timestamp_processed(
                     r, "zscore", self.exchange, self.contract_type, timestamp_ms
+                )
+                self._last_processed_kline_timestamp_ms = max(
+                    timestamp_ms,
+                    self._last_processed_kline_timestamp_ms or timestamp_ms,
+                )
+                self._last_processed_stream_id = msg_id_str
+                self._log_throttled(
+                    "zscore_progress",
+                    60,
+                    f"[{self.exchange}] ZScore stream progress: last_processed_ts={self._last_processed_kline_timestamp_ms} "
+                    f"source={source} msg_id={msg_id_str}",
                 )
 
                 notification_service.send_zscore_update()

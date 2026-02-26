@@ -77,6 +77,10 @@ class BaseKlineCollector(ABC):
         self._recent_limit = 500
         self._primary_symbol = get_btc_symbol(self.exchange)
         self._last_market_cap_refresh = 0
+        self._last_published_timestamp_ms: Optional[int] = None
+        self._published_counts: Dict[str, int] = {"live": 0, "backfill": 0}
+        self._dropped_duplicate_publishes = 0
+        self._throttled_log_at: Dict[str, float] = {}
         # Buffer for batching klines by timestamp before saving
         self._kline_buffer: Dict[int, List[NormalizedCandle]] = {}
         # Combined hours options for correlation and zscore services
@@ -86,6 +90,13 @@ class BaseKlineCollector(ABC):
             set(hours_opts.get("correlation", {}).values())
             | set(hours_opts.get("zscore", {}).values())
         )
+
+    def _log_throttled(self, key: str, every_seconds: int, message: str):
+        now = time.time()
+        last = self._throttled_log_at.get(key, 0.0)
+        if now - last >= every_seconds:
+            print(message)
+            self._throttled_log_at[key] = now
 
     @abstractmethod
     def fetch_perpetual_symbols(self) -> Set[str]:
@@ -374,7 +385,46 @@ class BaseKlineCollector(ABC):
         oldest_values: Optional[Dict] = None,
     ):
         if timestamp_ms in self._recent_timestamp_set:
+            self._dropped_duplicate_publishes += 1
+            self._log_throttled(
+                "duplicate_publish_dropped",
+                15,
+                f"[{self.exchange}][WARN] Dropping duplicate kline publish ts={timestamp_ms} source={source} "
+                f"(total_dropped={self._dropped_duplicate_publishes})",
+            )
             return
+        if (
+            self._last_published_timestamp_ms is not None
+            and timestamp_ms <= self._last_published_timestamp_ms
+        ):
+            self._log_throttled(
+                "publish_out_of_order",
+                10,
+                f"[{self.exchange}][WARN] Out-of-order stream publish ts={timestamp_ms}, "
+                f"prev_published_ts={self._last_published_timestamp_ms}, source={source}",
+            )
+
+        expected = len(self.symbols)
+        newest_count = len(newest_values or {})
+        if expected and newest_values is not None and newest_count < expected:
+            missing = [s for s in sorted(self.symbols) if s not in newest_values][:5]
+            self._log_throttled(
+                "publish_incomplete_newest",
+                20,
+                f"[{self.exchange}][WARN] Publishing incomplete newest_values at ts={timestamp_ms} source={source}: "
+                f"{newest_count}/{expected} symbols, sample missing={missing}",
+            )
+        if expected and oldest_values is not None:
+            for hours in self._all_hours_options:
+                hourly = oldest_values.get(hours) or oldest_values.get(str(hours), {})
+                if len(hourly) < expected:
+                    self._log_throttled(
+                        f"publish_incomplete_oldest_{hours}",
+                        20,
+                        f"[{self.exchange}][WARN] Publishing incomplete oldest_values at ts={timestamp_ms} source={source}: "
+                        f"hours={hours} count={len(hourly)}/{expected}",
+                    )
+
         self._remember_timestamp(timestamp_ms)
         payload = {
             "timestamp_ms": timestamp_ms,
@@ -390,6 +440,18 @@ class BaseKlineCollector(ABC):
             event_type="kline",
             payload=payload,
             redis_client=self.redis,
+        )
+        self._last_published_timestamp_ms = max(
+            timestamp_ms,
+            self._last_published_timestamp_ms or timestamp_ms,
+        )
+        self._published_counts[source] = self._published_counts.get(source, 0) + 1
+        self._log_throttled(
+            "publish_progress",
+            60,
+            f"[{self.exchange}] Stream publish progress: last_ts={self._last_published_timestamp_ms} "
+            f"live={self._published_counts.get('live', 0)} backfill={self._published_counts.get('backfill', 0)} "
+            f"duplicate_dropped={self._dropped_duplicate_publishes}",
         )
 
     def _buffer_live_timestamp(self, timestamp_ms: int):
@@ -741,6 +803,7 @@ class BaseKlineCollector(ABC):
                 )
                 time.sleep(WS_RECONNECT_DELAY)
                 continue
+            ws_session_started = time.time()
 
             backfill_enabled = not self._should_disable_backfill()
             backfill_check_minute_ms = (int(time.time() * 1000) // 60000) * 60000
@@ -779,6 +842,14 @@ class BaseKlineCollector(ABC):
 
             # Flush any buffered klines before reconnecting
             self._flush_all_buffered_klines()
+            session_seconds = time.time() - ws_session_started
+            print(
+                f"[{self.exchange}] WebSocket session ended after {session_seconds:.1f}s "
+                f"(last_published_ts={self._last_published_timestamp_ms}, "
+                f"live_publishes={self._published_counts.get('live', 0)}, "
+                f"backfill_publishes={self._published_counts.get('backfill', 0)}, "
+                f"duplicate_dropped={self._dropped_duplicate_publishes})"
+            )
             print(f"[{self.exchange}] Reconnecting in {WS_RECONNECT_DELAY}s...")
             time.sleep(WS_RECONNECT_DELAY)
 

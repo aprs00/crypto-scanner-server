@@ -214,6 +214,54 @@ class CorrelationTracker:
 
         return float(cov / np.sqrt(denom))
 
+    def get_pair_diagnostics(self, i: int, j: int) -> Dict[str, float]:
+        """Return raw moments for a pair to debug invalid correlations."""
+        if i == j:
+            return {
+                "count": float(self.counts[i, j]),
+                "mean_x": 0.0,
+                "mean_y": 0.0,
+                "var_x": 0.0,
+                "var_y": 0.0,
+                "cov": 0.0,
+                "denom": 0.0,
+                "correlation": 1.0,
+            }
+
+        count = float(self.counts[i, j])
+        if count <= 0:
+            return {
+                "count": count,
+                "mean_x": 0.0,
+                "mean_y": 0.0,
+                "var_x": 0.0,
+                "var_y": 0.0,
+                "cov": 0.0,
+                "denom": 0.0,
+                "correlation": 0.0,
+            }
+
+        mean_x = self.sum_x[i, j] / count
+        mean_y = self.sum_x[j, i] / count
+        var_x = self.sum_xx[i, j] / count - mean_x * mean_x
+        var_y = self.sum_xx[j, i] / count - mean_y * mean_y
+        cov = self.sum_xy[i, j] / count - mean_x * mean_y
+        denom = var_x * var_y
+        corr = 0.0
+        if denom > 0.0:
+            corr = float(cov / np.sqrt(denom))
+
+        return {
+            "count": count,
+            "mean_x": float(mean_x),
+            "mean_y": float(mean_y),
+            "var_x": float(var_x),
+            "var_y": float(var_y),
+            "cov": float(cov),
+            "denom": float(denom),
+            "correlation": float(corr),
+        }
+
 
 class CorrelationCalculator:
     """Main correlation calculator with Redis pubsub integration."""
@@ -231,8 +279,100 @@ class CorrelationCalculator:
         self.last_update_time: float = 0
         self.update_count: int = 0
         self._data_types = tuple(KLINE_FIELD_MAP)
+        self._last_processed_kline_timestamp_ms: Optional[int] = None
+        self._last_processed_stream_id: Optional[str] = None
+        self._throttled_log_at: Dict[str, float] = {}
 
         self._validation_symbols = self._get_validation_symbols()
+
+    def _log_throttled(self, key: str, every_seconds: int, message: str):
+        now = time.time()
+        last = self._throttled_log_at.get(key, 0.0)
+        if now - last >= every_seconds:
+            print(message)
+            self._throttled_log_at[key] = now
+
+    def _log_message_ordering(self, timestamp_ms: int, source: str, msg_id: str):
+        previous = self._last_processed_kline_timestamp_ms
+        if previous is None:
+            return
+
+        if timestamp_ms <= previous:
+            delta_ms = timestamp_ms - previous
+            self._log_throttled(
+                "out_of_order_kline",
+                10,
+                f"[{self.exchange}][WARN] Out-of-order kline message: ts={timestamp_ms}, "
+                f"prev_processed_ts={previous}, delta_ms={delta_ms}, source={source}, msg_id={msg_id}",
+            )
+
+    def _log_payload_health(self, timestamp_ms: int, source: str, newest: Dict, oldest: Dict):
+        expected = len(self.symbols)
+        newest_count = len(newest)
+        oldest_counts = {
+            int(hours): len(oldest.get(hours) or oldest.get(str(hours), {}))
+            for hours in self.hours_options
+        }
+
+        if expected and newest_count < expected:
+            missing = [s for s in self.symbols if s not in newest][:5]
+            self._log_throttled(
+                "payload_newest_incomplete",
+                20,
+                f"[{self.exchange}][WARN] Incomplete newest_values payload at ts={timestamp_ms} "
+                f"(source={source}): {newest_count}/{expected} symbols, sample missing={missing}",
+            )
+
+        for hours, count in oldest_counts.items():
+            if expected and count < expected:
+                self._log_throttled(
+                    f"payload_oldest_incomplete_{hours}",
+                    20,
+                    f"[{self.exchange}][WARN] Incomplete oldest_values payload at ts={timestamp_ms} "
+                    f"(source={source}, hours={hours}): {count}/{expected} symbols",
+                )
+
+    def _log_btc_sol_tracker_snapshot(self, timestamp_ms: int, source: str):
+        if len(self._validation_symbols) < 2:
+            return
+
+        btc_sym, sol_sym = self._validation_symbols[:2]
+        if btc_sym not in self.symbol_to_idx or sol_sym not in self.symbol_to_idx:
+            return
+
+        tracker = self.trackers.get((1, "price"))
+        if not tracker:
+            return
+
+        btc_idx = self.symbol_to_idx[btc_sym]
+        sol_idx = self.symbol_to_idx[sol_sym]
+        stats = tracker.get_pair_diagnostics(btc_idx, sol_idx)
+        corr = stats["correlation"]
+
+        self._log_throttled(
+            "btc_sol_tracker_snapshot",
+            300,
+            f"[{self.exchange}][DEBUG] BTC-SOL tracker snapshot ts={timestamp_ms} source={source}: "
+            f"corr={corr:.6f} count={stats['count']:.0f} var_x={stats['var_x']:.6e} "
+            f"var_y={stats['var_y']:.6e} cov={stats['cov']:.6e} denom={stats['denom']:.6e} steps={tracker.steps}",
+        )
+
+        invalid = (
+            not np.isfinite(corr)
+            or abs(corr) > 1.000001
+            or stats["count"] < 0
+            or stats["var_x"] < -1e-9
+            or stats["var_y"] < -1e-9
+            or stats["denom"] < -1e-9
+        )
+        if invalid:
+            self._log_throttled(
+                "btc_sol_tracker_invalid",
+                5,
+                f"[{self.exchange}][ERROR] Invalid BTC-SOL tracker state at ts={timestamp_ms} source={source}: "
+                f"corr={corr:.6f} count={stats['count']:.0f} var_x={stats['var_x']:.6e} "
+                f"var_y={stats['var_y']:.6e} cov={stats['cov']:.6e} denom={stats['denom']:.6e}",
+            )
 
     def _get_validation_symbols(self) -> List[str]:
         """Get validation symbol pair for the exchange."""
@@ -342,7 +482,9 @@ class CorrelationCalculator:
 
                 tracker.update(new_arr, old_arr)
 
-    def _validate_btc_sol_correlation(self):
+    def _validate_btc_sol_correlation(
+        self, timestamp_ms: Optional[int] = None, source: str = "unknown"
+    ):
         """Validate incremental correlation against manual numpy calculation to detect drift."""
         try:
             if len(self._validation_symbols) < 2:
@@ -398,20 +540,45 @@ class CorrelationCalculator:
             manual_corr = np.corrcoef(btc_valid, sol_valid)[0, 1]
 
             diff = abs(incremental_corr - manual_corr)
+            context_ts = (
+                str(timestamp_ms)
+                if timestamp_ms is not None
+                else str(self._last_processed_kline_timestamp_ms)
+            )
+            context_msg_id = self._last_processed_stream_id or "n/a"
 
             # Print comparison
             print(
-                f"[VALIDATION] BTC-SOL 1h price - Incremental={incremental_corr:.6f}, Numpy={manual_corr:.6f}, Diff={diff:.6f}"
+                f"[{self.exchange}][VALIDATION] BTC-SOL 1h price - Incremental={incremental_corr:.6f}, "
+                f"Numpy={manual_corr:.6f}, Diff={diff:.6f}, ts={context_ts}, source={source}, msg_id={context_msg_id}"
             )
             print(
-                f"[VALIDATION] points={len(btc_valid)} btc_last={btc_valid[-1]:.6f} sol_last={sol_valid[-1]:.6f}"
+                f"[{self.exchange}][VALIDATION] points={len(btc_valid)} btc_last={btc_valid[-1]:.6f} "
+                f"sol_last={sol_valid[-1]:.6f}"
             )
 
+            if diff > 0.2 or abs(incremental_corr) > 1.000001:
+                stats = tracker.get_pair_diagnostics(btc_idx, sol_idx)
+                self._log_throttled(
+                    "btc_sol_validation_drift",
+                    10,
+                    f"[{self.exchange}][ERROR] BTC-SOL correlation drift detected at ts={context_ts} source={source}: "
+                    f"incremental={incremental_corr:.6f} numpy={manual_corr:.6f} diff={diff:.6f} "
+                    f"count={stats['count']:.0f} var_x={stats['var_x']:.6e} var_y={stats['var_y']:.6e} "
+                    f"cov={stats['cov']:.6e} denom={stats['denom']:.6e}",
+                )
+
         except Exception as e:
-            print(f"[VALIDATION] Error during BTC-SOL validation: {e}")
+            print(f"[{self.exchange}][VALIDATION] Error during BTC-SOL validation: {e}")
             traceback.print_exc()
 
-    def _cache_correlations(self, save_to_db: bool = True, validate: bool = True):
+    def _cache_correlations(
+        self,
+        save_to_db: bool = True,
+        validate: bool = True,
+        timestamp_ms: Optional[int] = None,
+        source: str = "unknown",
+    ):
         """Cache correlation matrices to Redis and optionally DB."""
         pipe = self.redis.pipeline()
         matrices_for_db: Dict[str, List[float]] = {}
@@ -457,7 +624,7 @@ class CorrelationCalculator:
         pipe.execute()
         notification_service.send_correlation_update()
         if validate:
-            self._validate_btc_sol_correlation()
+            self._validate_btc_sol_correlation(timestamp_ms=timestamp_ms, source=source)
 
     def update_correlations(
         self,
@@ -465,6 +632,8 @@ class CorrelationCalculator:
         oldest_values: Optional[Dict] = None,
         save_to_db: bool = True,
         validate: bool = True,
+        timestamp_ms: Optional[int] = None,
+        source: str = "unknown",
     ):
         """Main update method - fetch data, update trackers, cache results."""
         with self.lock:
@@ -510,13 +679,20 @@ class CorrelationCalculator:
             oldest_by_hours = oldest_values or {}
 
             self._update_trackers(newest, oldest_by_hours)
+            if timestamp_ms is not None:
+                self._log_btc_sol_tracker_snapshot(timestamp_ms=timestamp_ms, source=source)
 
             if sample_tracker:
                 print(
                     f"[{self.exchange}][DEBUG] After update - tracker(1h,price): n_symbols={sample_tracker.n_symbols}, steps={sample_tracker.steps}"
                 )
 
-            self._cache_correlations(save_to_db, validate=validate)
+            self._cache_correlations(
+                save_to_db,
+                validate=validate,
+                timestamp_ms=timestamp_ms,
+                source=source,
+            )
 
     def add_symbol(self, symbol: str):
         """Add new symbol to tracking."""
@@ -842,6 +1018,13 @@ class CorrelationCalculator:
                     self.redis.xack(stream_key, group_name, msg_id)
                     return
                 timestamp_ms = int(timestamp_ms)
+                source = str(payload.get("source") or "unknown")
+                msg_id_str = msg_id.decode("utf-8")
+                self._log_message_ordering(
+                    timestamp_ms=timestamp_ms,
+                    source=source,
+                    msg_id=msg_id_str,
+                )
 
                 # Idempotency check - skip if already processed
                 if is_timestamp_processed(
@@ -860,13 +1043,19 @@ class CorrelationCalculator:
                 # Use data from stream payload
                 newest = payload.get("newest_values") or {}
                 oldest = payload.get("oldest_values") or {}
+                self._log_payload_health(
+                    timestamp_ms=timestamp_ms,
+                    source=source,
+                    newest=newest,
+                    oldest=oldest,
+                )
 
                 # print length of newest/oldest for debugging
                 print(
                     f"[{self.exchange}] Processing kline message {msg_id.decode('utf-8')} - newest symbols: {len(newest)}, oldest_by_hours: { {k: len(v) for k, v in oldest.items()} }"
                 )
 
-                save_to_db = payload.get("source") != "backfill"
+                save_to_db = source != "backfill"
 
                 # Only validate against the latest complete minute; during catch-up,
                 # validations will compare against the current 60m window and drift.
@@ -880,6 +1069,8 @@ class CorrelationCalculator:
                     oldest_values=oldest,
                     save_to_db=save_to_db,
                     validate=validate,
+                    timestamp_ms=timestamp_ms,
+                    source=source,
                 )
 
                 # Mark as processed after successful update
@@ -889,6 +1080,17 @@ class CorrelationCalculator:
                     self.exchange,
                     self.contract_type,
                     timestamp_ms,
+                )
+                self._last_processed_kline_timestamp_ms = max(
+                    timestamp_ms,
+                    self._last_processed_kline_timestamp_ms or timestamp_ms,
+                )
+                self._last_processed_stream_id = msg_id_str
+                self._log_throttled(
+                    "kline_progress",
+                    60,
+                    f"[{self.exchange}] Stream progress: last_processed_ts={self._last_processed_kline_timestamp_ms} "
+                    f"source={source} msg_id={msg_id_str}",
                 )
             elif event_type == "symbol_update":
                 added = payload.get("added") or []

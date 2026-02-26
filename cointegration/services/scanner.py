@@ -48,6 +48,16 @@ class CointegrationScanner:
         self.contract_type_id: int | None = None
         self.readiness_symbol = get_btc_symbol(self.exchange)
         self.readiness_poll_seconds = 5
+        self.last_missing_next_ts: datetime | None = None
+        self._stall_started_at: datetime | None = None
+        self._throttled_log_at: dict[str, float] = {}
+
+    def _log_throttled(self, key: str, every_seconds: int, message: str):
+        now = time.time()
+        last = self._throttled_log_at.get(key, 0.0)
+        if now - last >= every_seconds:
+            print(message)
+            self._throttled_log_at[key] = now
 
     def _load_symbols(self) -> None:
         qs = (
@@ -174,9 +184,19 @@ class CointegrationScanner:
                         f"[{self.exchange}] Missing kline rows for {next_ts.isoformat()}, retrying."
                     )
                     self.last_empty_fetch_timestamp = next_ts
+                self.last_missing_next_ts = next_ts
+                self._log_throttled(
+                    "missing_kline_rows_context",
+                    10,
+                    f"[{self.exchange}][WARN] Missing minute while updating cointegration window: "
+                    f"next_ts={next_ts.isoformat()} target_time={target_time.isoformat()} "
+                    f"last_buffer_ts={(self.last_timestamp.isoformat() if self.last_timestamp else 'n/a')} "
+                    f"symbols={len(self.symbols)} sample_symbols={self.symbols[:5]}",
+                )
                 return False
 
             self.last_empty_fetch_timestamp = None
+            self.last_missing_next_ts = None
             new_vals = self.last_values.copy()
             for idx, symbol in enumerate(self.symbols):
                 row = data.get(symbol)
@@ -200,6 +220,7 @@ class CointegrationScanner:
             second=0, microsecond=0
         )
         target_timestamp_ms = int(target_time.timestamp() * 1000)
+        wait_started_at: datetime | None = None
 
         while True:
             data = get_symbol_kline_data_at_timestamp(
@@ -211,7 +232,22 @@ class CointegrationScanner:
             row = data.get(self.readiness_symbol)
             price = row.get("price") if row else None
             if price is not None and price > 0:
+                if wait_started_at is not None:
+                    waited = (timezone.now() - wait_started_at).total_seconds()
+                    print(
+                        f"[{self.exchange}] Readiness symbol {self.readiness_symbol} reached target "
+                        f"{target_time.isoformat()} after waiting {waited:.1f}s"
+                    )
                 return True
+            if wait_started_at is None:
+                wait_started_at = timezone.now()
+            waited = (timezone.now() - wait_started_at).total_seconds()
+            self._log_throttled(
+                "readiness_wait",
+                30,
+                f"[{self.exchange}] Waiting for readiness symbol {self.readiness_symbol} "
+                f"at {target_time.isoformat()} (waited {waited:.1f}s)",
+            )
             time.sleep(self.readiness_poll_seconds)
 
     def _get_window_matrix(self) -> np.ndarray:
@@ -360,17 +396,45 @@ class CointegrationScanner:
                     required_data_time = next_compute - timedelta(minutes=1)
                     self._wait_for_btc_kline(required_data_time)
                     if not self._update_to_latest(target_time=required_data_time):
-                        print(
-                            f"[{self.exchange}] BTC minute ready but DB minute "
-                            f"{required_data_time.isoformat()} is not ready. Retrying."
+                        if self._stall_started_at is None:
+                            self._stall_started_at = timezone.now()
+                        stalled_for = (timezone.now() - self._stall_started_at).total_seconds()
+                        missing_next = (
+                            self.last_missing_next_ts.isoformat()
+                            if self.last_missing_next_ts
+                            else "unknown"
                         )
+                        self._log_throttled(
+                            "cointegration_db_stall",
+                            10,
+                            f"[{self.exchange}][WARN] Cointegration waiting for DB minute. "
+                            f"required_data_time={required_data_time.isoformat()} "
+                            f"missing_next_ts={missing_next} "
+                            f"last_buffer_ts={(self.last_timestamp.isoformat() if self.last_timestamp else 'n/a')} "
+                            f"stalled_for={stalled_for:.1f}s symbols={len(self.symbols)}",
+                        )
+                        time.sleep(1)
                         continue
+                    if self._stall_started_at is not None:
+                        stalled_for = (timezone.now() - self._stall_started_at).total_seconds()
+                        print(
+                            f"[{self.exchange}] Cointegration DB catch-up recovered after {stalled_for:.1f}s "
+                            f"(last_missing_next_ts={self.last_missing_next_ts.isoformat() if self.last_missing_next_ts else 'n/a'})"
+                        )
+                        self._stall_started_at = None
 
                     if try_acquire_lock(
                         self.exchange, self.contract_type, self.window_minutes
                     ):
                         try:
+                            compute_start = time.time()
                             self._compute_and_store()
+                            self._log_throttled(
+                                "cointegration_compute_duration",
+                                30,
+                                f"[{self.exchange}] Cointegration compute/store completed in "
+                                f"{time.time() - compute_start:.2f}s (symbols={len(self.symbols)})",
+                            )
                         finally:
                             release_lock(
                                 self.exchange, self.contract_type, self.window_minutes
