@@ -906,6 +906,7 @@ class CorrelationCalculator:
             self.contract_type,
             snapshot_last_complete_minute_ms,
         )
+        self._last_processed_kline_timestamp_ms = snapshot_last_complete_minute_ms
         print(
             f"[{self.exchange}] Correlation snapshot complete (marked ts={snapshot_last_complete_minute_ms})"
         )
@@ -1025,6 +1026,17 @@ class CorrelationCalculator:
                     source=source,
                     msg_id=msg_id_str,
                 )
+
+                if (
+                    self._last_processed_kline_timestamp_ms is not None
+                    and timestamp_ms <= self._last_processed_kline_timestamp_ms
+                ):
+                    print(
+                        f"[{self.exchange}] Skipping out-of-order correlations timestamp {timestamp_ms} "
+                        f"(last_processed_ts={self._last_processed_kline_timestamp_ms}, source={source}, msg_id={msg_id_str})"
+                    )
+                    self.redis.xack(stream_key, group_name, msg_id)
+                    return
 
                 # Idempotency check - skip if already processed
                 if is_timestamp_processed(

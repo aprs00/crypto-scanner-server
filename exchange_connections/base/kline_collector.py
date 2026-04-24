@@ -28,6 +28,8 @@ from core.redis_streams import publish_market_event
 WS_RECONNECT_DELAY = 5
 # Detect recent sparse gaps even when no disconnect happened.
 RECENT_GAP_LOOKBACK_MINUTES = 30
+# Reconnect sockets that stay open but stop delivering closed candles.
+LIVE_STALE_RECONNECT_SECONDS = 180
 # Safety cap for reconnect catch-up to avoid unbounded backfill workloads.
 MAX_BACKFILL_LOOKBACK_MINUTES = 7 * 24 * 60
 # Default per-request backfill chunk size (subclasses can override).
@@ -78,6 +80,7 @@ class BaseKlineCollector(ABC):
         self._primary_symbol = get_btc_symbol(self.exchange)
         self._last_market_cap_refresh = 0
         self._last_published_timestamp_ms: Optional[int] = None
+        self._last_live_candle_wall_time: Optional[float] = None
         self._published_counts: Dict[str, int] = {"live": 0, "backfill": 0}
         self._dropped_duplicate_publishes = 0
         self._throttled_log_at: Dict[str, float] = {}
@@ -668,12 +671,19 @@ class BaseKlineCollector(ABC):
         timestamp_ms = candle.open_time_ms
 
         if source == "live":
+            self._last_live_candle_wall_time = time.time()
             # Buffer live klines for batch saving
             self._kline_buffer.setdefault(timestamp_ms, []).append(candle)
 
             expected_count = len(self.symbols) if self.symbols else None
-            # Flush completed minutes once we have all symbols for a timestamp
-            # Use current candle's minute as cutoff to avoid wall-clock timing
+            # Flush older minutes even if a symbol never sent a candle. Downstream
+            # services consume exact-timestamp payloads and treat missing symbols as NaN.
+            self._flush_completed_minutes(
+                timestamp_ms,
+                expected_count=expected_count,
+                force=True,
+            )
+            # Flush the current minute immediately only when it is complete.
             self._flush_completed_minutes(
                 timestamp_ms + 1, expected_count=expected_count
             )
@@ -690,7 +700,7 @@ class BaseKlineCollector(ABC):
         """Flush buffered minutes older than cutoff timestamp.
 
         If expected_count is provided, only flush minutes that have all symbols.
-        When force=True, flush regardless of completeness but only publish when complete.
+        When force=True, flush and publish even if the minute is incomplete.
         """
         completed = [ts for ts in self._kline_buffer if ts < cutoff_timestamp_ms]
         if not completed:
@@ -701,7 +711,8 @@ class BaseKlineCollector(ABC):
             if not candles:
                 continue
 
-            is_complete = expected_count is None or len(candles) >= expected_count
+            symbol_count = len({c.symbol for c in candles})
+            is_complete = expected_count is None or symbol_count >= expected_count
             if not is_complete and not force:
                 continue
 
@@ -709,7 +720,12 @@ class BaseKlineCollector(ABC):
             self._save_klines_batch(candles)
 
             if not is_complete:
-                continue
+                self._log_throttled(
+                    "flush_incomplete_live",
+                    20,
+                    f"[{self.exchange}][WARN] Flushing incomplete kline minute ts={ts}: "
+                    f"{symbol_count}/{expected_count} symbols",
+                )
 
             if self._backfill_in_progress:
                 self._buffer_live_timestamp(ts)
@@ -759,8 +775,22 @@ class BaseKlineCollector(ABC):
         expected_count = len(self.symbols) if self.symbols else None
         max_ts = max(self._kline_buffer.keys())
         self._flush_completed_minutes(
-            max_ts + 1, expected_count=expected_count, force=True
+            max_ts + 1,
+            expected_count=expected_count,
+            force=True,
         )
+
+    def _is_live_stream_stale(self, ws_session_started: float) -> bool:
+        if self._backfill_in_progress:
+            return False
+
+        last_live = self._last_live_candle_wall_time
+        activity_time = (
+            last_live
+            if last_live is not None and last_live >= ws_session_started
+            else ws_session_started
+        )
+        return time.time() - activity_time > LIVE_STALE_RECONNECT_SECONDS
 
     def _save_klines_batch(self, candles: List[NormalizedCandle]):
         """Batch save multiple klines to database."""
@@ -827,6 +857,14 @@ class BaseKlineCollector(ABC):
                     if current_minute_ms > backfill_check_minute_ms:
                         self.backfill_gaps()
                         post_rollover_gap_check_done = True
+
+                if self._is_live_stream_stale(ws_session_started):
+                    print(
+                        f"[{self.exchange}][WARN] No live candles received for "
+                        f"{LIVE_STALE_RECONNECT_SECONDS}s; reconnecting WebSocket"
+                    )
+                    self.close_websocket()
+                    break
 
                 # Check for symbol changes periodically
                 if time.time() - last_symbol_check >= SYMBOL_CHECK_INTERVAL:
