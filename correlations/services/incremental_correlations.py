@@ -282,6 +282,7 @@ class CorrelationCalculator:
         self._last_processed_kline_timestamp_ms: Optional[int] = None
         self._last_processed_stream_id: Optional[str] = None
         self._throttled_log_at: Dict[str, float] = {}
+        self._last_validation_inputs: Optional[Dict[str, Optional[float]]] = None
 
         self._validation_symbols = self._get_validation_symbols()
 
@@ -349,12 +350,23 @@ class CorrelationCalculator:
         stats = tracker.get_pair_diagnostics(btc_idx, sol_idx)
         corr = stats["correlation"]
 
-        self._log_throttled(
-            "btc_sol_tracker_snapshot",
-            300,
-            f"[{self.exchange}][DEBUG] BTC-SOL tracker snapshot ts={timestamp_ms} source={source}: "
-            f"corr={corr:.6f} count={stats['count']:.0f} var_x={stats['var_x']:.6e} "
-            f"var_y={stats['var_y']:.6e} cov={stats['cov']:.6e} denom={stats['denom']:.6e} steps={tracker.steps}",
+        inputs = self._last_validation_inputs or {}
+        new_btc = inputs.get("new_btc")
+        new_sol = inputs.get("new_sol")
+        old_btc = inputs.get("old_btc")
+        old_sol = inputs.get("old_sol")
+
+        def _fmt(v):
+            return f"{v:.6f}" if isinstance(v, float) else "None"
+
+        # Per-tick log so a drift event can be bracketed by the immediate prior/next tick.
+        print(
+            f"[{self.exchange}][DEBUG] BTC-SOL tick ts={timestamp_ms} source={source} "
+            f"corr={corr:.6f} steps={tracker.steps} count={stats['count']:.0f} "
+            f"new_btc={_fmt(new_btc)} old_btc={_fmt(old_btc)} "
+            f"new_sol={_fmt(new_sol)} old_sol={_fmt(old_sol)} "
+            f"var_x={stats['var_x']:.6e} var_y={stats['var_y']:.6e} "
+            f"cov={stats['cov']:.6e} denom={stats['denom']:.6e}"
         )
 
         invalid = (
@@ -481,6 +493,22 @@ class CorrelationCalculator:
                         )
 
                 tracker.update(new_arr, old_arr)
+
+                if (
+                    hours == 1
+                    and data_type == "price"
+                    and len(self._validation_symbols) >= 2
+                ):
+                    btc_sym, sol_sym = self._validation_symbols[:2]
+                    btc_idx = self.symbol_to_idx.get(btc_sym)
+                    sol_idx = self.symbol_to_idx.get(sol_sym)
+                    if btc_idx is not None and sol_idx is not None:
+                        self._last_validation_inputs = {
+                            "new_btc": float(new_arr[btc_idx]),
+                            "new_sol": float(new_arr[sol_idx]),
+                            "old_btc": float(old_arr[btc_idx]) if old_arr is not None else None,
+                            "old_sol": float(old_arr[sol_idx]) if old_arr is not None else None,
+                        }
 
     def _validate_btc_sol_correlation(
         self, timestamp_ms: Optional[int] = None, source: str = "unknown"
@@ -759,6 +787,18 @@ class CorrelationCalculator:
             snapshot_end_time = datetime.now(dt_timezone.utc).replace(
                 second=0, microsecond=0
             )
+            snapshot_end_ms = int(snapshot_end_time.timestamp() * 1000)
+            last_processed_ms = self._last_processed_kline_timestamp_ms
+            gap_minutes = (
+                (snapshot_end_ms - last_processed_ms) / 60000
+                if last_processed_ms is not None
+                else None
+            )
+            print(
+                f"[{self.exchange}][DEBUG] add_symbol re-init: snapshot_end_ms={snapshot_end_ms} "
+                f"last_processed_ms={last_processed_ms} gap_minutes={gap_minutes} "
+                f"(window data covers up to snapshot_end_ms - 60000)"
+            )
             self._init_trackers(end_time=snapshot_end_time)
 
             sample_tracker = self.trackers.get((1, "price"))
@@ -808,6 +848,11 @@ class CorrelationCalculator:
                         f"[{self.exchange}][DEBUG] Symbols removed from list: {removed}"
                     )
                 self._rebuild_indices()
+                print(
+                    f"[{self.exchange}][DEBUG] remove_symbol re-init: "
+                    f"last_processed_ms={self._last_processed_kline_timestamp_ms} "
+                    f"(end_time defaults to now; window will advance to now-1m)"
+                )
                 self._init_trackers()
                 self._cache_correlations(save_to_db=False)
                 print(f"[{self.exchange}][DEBUG] remove_symbol completed for {symbol}")

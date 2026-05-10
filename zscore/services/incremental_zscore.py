@@ -146,6 +146,7 @@ class ZScoreProcessor:
         self._last_processed_kline_timestamp_ms: Optional[int] = None
         self._last_processed_stream_id: Optional[str] = None
         self._throttled_log_at: Dict[str, float] = {}
+        self._last_validation_inputs: Dict[str, Dict[str, Optional[float]]] = {}
 
     def _get_validation_symbols(self):
         btc = get_btc_symbol(self.exchange)
@@ -232,19 +233,21 @@ class ZScoreProcessor:
                 )
 
         if snapshots:
-            snapshot_text = ", ".join(
-                [
-                    (
-                        f"{symbol}: z={state['z_score']:.6f} count={state['count']:.0f} "
-                        f"std={state['std_dev']:.6e} current={state['current_value']:.6f}"
-                    )
-                    for symbol, state in snapshots
-                ]
-            )
-            self._log_throttled(
-                "zscore_snapshot",
-                300,
-                f"[{self.exchange}][DEBUG] ZScore snapshot ts={timestamp_ms} source={source}: {snapshot_text}",
+            def _fmt(v):
+                return f"{v:.6f}" if isinstance(v, float) else "None"
+
+            snapshot_parts = []
+            for symbol, state in snapshots:
+                inputs = self._last_validation_inputs.get(symbol, {})
+                snapshot_parts.append(
+                    f"{symbol}: z={state['z_score']:.6f} count={state['count']:.0f} "
+                    f"std={state['std_dev']:.6e} current={state['current_value']:.6f} "
+                    f"new={_fmt(inputs.get('new'))} old={_fmt(inputs.get('old'))}"
+                )
+            # Per-tick log so a drift event can be bracketed by adjacent ticks.
+            print(
+                f"[{self.exchange}][DEBUG] ZScore tick ts={timestamp_ms} source={source}: "
+                + " | ".join(snapshot_parts)
             )
 
     @staticmethod
@@ -388,6 +391,18 @@ class ZScoreProcessor:
                         if hours == 1 and data_type == "price":
                             stats_1h_price["added_without_old"] += 1
 
+                    if (
+                        hours == 1
+                        and data_type == "price"
+                        and symbol in self._validation_symbols
+                    ):
+                        self._last_validation_inputs[symbol] = {
+                            "new": float(new_val),
+                            "old": float(old_val)
+                            if old_val is not None and np.isfinite(old_val)
+                            else None,
+                        }
+
         expected = len(self.symbols)
         if expected and (
             stats_1h_price["missing_new"] > 0 or stats_1h_price["added_without_old"] > 0
@@ -458,7 +473,11 @@ class ZScoreProcessor:
             print(f"[{self.exchange}] Symbol {symbol_name} already being tracked")
             return
 
-        print(f"[{self.exchange}] Adding {symbol_name} to zscore tracking")
+        print(
+            f"[{self.exchange}] Adding {symbol_name} to zscore tracking "
+            f"(last_processed_ms={self._last_processed_kline_timestamp_ms}; "
+            f"new symbol's window will be initialized through now-1m)"
+        )
 
         self.symbols.append(symbol_name)
 
