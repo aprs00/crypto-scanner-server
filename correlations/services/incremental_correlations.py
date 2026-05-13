@@ -1,11 +1,12 @@
 import time
 import threading
 import gc
+from collections import deque
 from datetime import datetime, timezone as dt_timezone
 import numpy as np
 import msgpack
 import traceback
-from typing import Dict, List, Optional, cast
+from typing import Deque, Dict, List, Optional, cast
 from redis.exceptions import RedisError
 
 from exchange_connections.constants import (
@@ -65,6 +66,12 @@ class CorrelationTracker:
         self.sum_xy = np.zeros((n_symbols, n_symbols), dtype=np.float64)
         self.counts = np.zeros((n_symbols, n_symbols), dtype=np.int32)
         self._triu_indices = np.triu_indices(n_symbols, k=1)
+        # Ring buffer of actually-added value vectors. Subtraction draws from
+        # this so the value removed is exactly the value added window_size
+        # steps ago, regardless of what an external oldest_values lookup
+        # would now return (which can disagree if backfill changed the DB
+        # row between init and subtract).
+        self._history: Deque[np.ndarray] = deque(maxlen=window_size)
 
     def initialize(self, symbol_data: Dict[int, np.ndarray]):
         """Initialize from historical data keyed by symbol index.
@@ -114,19 +121,33 @@ class CorrelationTracker:
         self.counts = (v @ v.T).astype(np.int32)
         self.steps = effective_length
 
+        # Seed the ring buffer with the same columns we just accumulated, so
+        # subsequent update() calls subtract the exact values that init added.
+        self._history.clear()
+        for col in range(arr.shape[1]):
+            self._history.append(arr[:, col].copy())
+
     def update(self, new_vals: np.ndarray, old_vals: Optional[np.ndarray] = None):
         """Update running sums with new values, removing old if window full.
 
-        Updates pairwise sums/counts based on validity masks.
+        old_vals is ignored: the value to subtract is sourced from the
+        internal ring buffer so it matches exactly what was added
+        window_size steps ago. Trusting an external oldest_values lookup
+        breaks when the underlying DB row changes between init and
+        subtract (e.g., backfill landing late), producing permanent drift
+        in the rolling sums and impossible negative variances.
         """
+        del old_vals  # explicitly unused; kept for backwards compatibility
+
         new_valid = ~np.isnan(new_vals)
         new_vals_filled = np.where(new_valid, new_vals, 0.0)
         new_valid_i = new_valid.astype(np.int32)
         new_valid_f = new_valid.astype(np.float64)
 
-        if self.steps >= self.window_size and old_vals is not None:
-            old_valid = ~np.isnan(old_vals)
-            old_vals_filled = np.where(old_valid, old_vals, 0.0)
+        if self.steps >= self.window_size and len(self._history) == self.window_size:
+            buffered_old = self._history[0]
+            old_valid = ~np.isnan(buffered_old)
+            old_vals_filled = np.where(old_valid, buffered_old, 0.0)
             old_valid_i = old_valid.astype(np.int32)
             old_valid_f = old_valid.astype(np.float64)
 
@@ -139,6 +160,9 @@ class CorrelationTracker:
         self.sum_xy += np.outer(new_vals_filled, new_vals_filled)
         self.sum_x += np.outer(new_vals_filled, new_valid_f)
         self.sum_xx += np.outer(new_vals_filled * new_vals_filled, new_valid_f)
+
+        # maxlen=window_size, so this auto-pops the buffered_old we just consumed.
+        self._history.append(new_vals.astype(np.float64, copy=True))
 
         if self.steps < self.window_size:
             self.steps += 1
@@ -883,6 +907,12 @@ class CorrelationCalculator:
                 tracker.counts = np.delete(tracker.counts, idx, axis=1)
                 tracker.n_symbols = len(self.symbols)
                 tracker._triu_indices = np.triu_indices(tracker.n_symbols, k=1)
+                # Shrink each buffered value vector to match the new symbol layout.
+                shrunk = deque(
+                    (np.delete(v, idx) for v in tracker._history),
+                    maxlen=tracker.window_size,
+                )
+                tracker._history = shrunk
 
                 if tracker.sum_x.shape[0] != tracker.n_symbols:
                     print(

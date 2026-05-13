@@ -1,7 +1,8 @@
+import time
 from django.core.management.base import BaseCommand
 
 from cointegration.services.scanner import CointegrationScanner
-from core.constants import Exchange
+from core.constants import ACTIVE_EXCHANGES, Exchange
 
 
 class Command(BaseCommand):
@@ -40,8 +41,15 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        exchange = Exchange(options["exchange"]).value
+        exchange = Exchange(options["exchange"])
         contract_type = options["contract_type"]
+
+        if exchange not in ACTIVE_EXCHANGES:
+            self.stdout.write(f"[{exchange}] Exchange is disabled, skipping cointegration.")
+            while True:
+                time.sleep(3600)
+
+        exchange = exchange.value
         window_minutes = options["window_minutes"]
         cadence_minutes = options["cadence_minutes"]
         batch_size = options["batch_size"]

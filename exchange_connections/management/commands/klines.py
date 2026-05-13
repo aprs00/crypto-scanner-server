@@ -1,6 +1,7 @@
+import time
 from django.core.management.base import BaseCommand
 
-from core.constants import Exchange
+from core.constants import ACTIVE_EXCHANGES, Exchange
 
 EXCHANGE_KLINES_MAP = {
     Exchange.BINANCE: "exchange_connections.binance.klines",
@@ -23,6 +24,11 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         exchange = options["exchange"]
+
+        if Exchange(exchange) not in ACTIVE_EXCHANGES:
+            self.stdout.write(f"[{exchange}] Exchange is disabled, skipping klines.")
+            while True:
+                time.sleep(3600)
 
         self.stdout.write(f"Starting {exchange.capitalize()} klines connection...")
 

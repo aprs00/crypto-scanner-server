@@ -17,6 +17,7 @@ class Exchange(str, Enum):
 
 EXCHANGE_CONFIG = {
     Exchange.BINANCE: {
+        "active": False,
         "name": "Binance",
         "data_types": ["price", "volume", "trades"],
         "hours_options": {
@@ -73,6 +74,10 @@ EXCHANGE_CONFIG = {
             "average_price": {"1w": 168, "1M": 720, "3M": 2160},
         },
     },
+}
+
+ACTIVE_EXCHANGES = {
+    exchange for exchange, config in EXCHANGE_CONFIG.items() if config.get("active", True)
 }
 
 # Collect all unique timeframe hours across all exchanges

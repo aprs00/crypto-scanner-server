@@ -1,5 +1,7 @@
+import time
 from django.core.management.base import BaseCommand
 from zscore.services.incremental_zscore import ZScoreProcessor
+from core.constants import ACTIVE_EXCHANGES, Exchange
 
 
 class Command(BaseCommand):
@@ -22,6 +24,12 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         exchange = options["exchange"]
         contract_type = options["contract_type"]
+
+        if Exchange(exchange) not in ACTIVE_EXCHANGES:
+            self.stdout.write(f"[{exchange}] Exchange is disabled, skipping zscore.")
+            while True:
+                time.sleep(3600)
+
         self.stdout.write(
             self.style.SUCCESS(
                 f"Starting zscore calculations for {exchange} ({contract_type})..."

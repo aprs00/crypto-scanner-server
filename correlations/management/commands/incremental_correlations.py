@@ -1,8 +1,9 @@
+import time
 from django.core.management.base import BaseCommand
 from correlations.services.incremental_correlations import (
     CorrelationCalculator,
 )
-from core.constants import Exchange
+from core.constants import ACTIVE_EXCHANGES, Exchange
 
 
 class Command(BaseCommand):
@@ -25,6 +26,12 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         exchange = Exchange(options["exchange"])
         contract_type = options["contract_type"]
+
+        if exchange not in ACTIVE_EXCHANGES:
+            self.stdout.write(f"[{exchange}] Exchange is disabled, skipping correlations.")
+            while True:
+                time.sleep(3600)
+
         self.stdout.write(
             self.style.SUCCESS(
                 f"Starting correlations calculations for {exchange} ({contract_type})..."
