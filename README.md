@@ -17,6 +17,9 @@ docker exec -it cs-bybit-klines python manage.py populate_klines_bybit --start-d
 # Hyperliquid
 # Only last 5000 candles available
 docker exec -it cs-hyperliquid-klines python manage.py populate_klines_hyperliquid --start-date "14 Jan 2026 08:00"
+
+# OKX
+docker exec -it cs-okx-klines python manage.py populate_klines_okx --start-date "18 Jan 2026 08:00"
 ```
 
 Options: `--ticker`, `--start-date`, `--end-date`, `--batch-size`

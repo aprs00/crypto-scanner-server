@@ -13,7 +13,7 @@ class Command(BaseCommand):
             "--exchange",
             type=str,
             required=True,
-            help="Exchange to calculate cointegration for (binance, bybit, hyperliquid)",
+            help="Exchange to calculate cointegration for (binance, bybit, hyperliquid, okx)",
         )
         parser.add_argument(
             "--contract-type",

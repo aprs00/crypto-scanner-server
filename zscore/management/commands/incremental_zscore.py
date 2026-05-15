@@ -12,7 +12,7 @@ class Command(BaseCommand):
             "--exchange",
             type=str,
             required=True,
-            help="Exchange to calculate zscores for (e.g. binance, hyperliquid)",
+            help="Exchange to calculate zscores for (e.g. binance, bybit, hyperliquid, okx)",
         )
         parser.add_argument(
             "--contract-type",

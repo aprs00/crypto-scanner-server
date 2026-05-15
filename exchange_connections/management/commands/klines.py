@@ -7,6 +7,7 @@ EXCHANGE_KLINES_MAP = {
     Exchange.BINANCE: "exchange_connections.binance.klines",
     Exchange.HYPERLIQUID: "exchange_connections.hyperliquid.klines",
     Exchange.BYBIT: "exchange_connections.bybit.klines",
+    Exchange.OKX: "exchange_connections.okx.klines",
 }
 
 
@@ -19,7 +20,7 @@ class Command(BaseCommand):
             type=str,
             required=True,
             choices=EXCHANGE_KLINES_MAP.keys(),
-            help="Exchange to connect to (binance, hyperliquid, bybit)",
+            help="Exchange to connect to (binance, hyperliquid, bybit, okx)",
         )
 
     def handle(self, *args, **options):

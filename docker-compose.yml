@@ -242,6 +242,65 @@ services:
       timeout: 10s
       retries: 3
 
+  okx-klines:
+    <<: *app-common
+    container_name: cs-okx-klines
+    command: python manage.py klines --exchange okx
+    environment:
+      <<: *env-common
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'klines.*okx' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  okx-correlations:
+    <<: *app-common
+    container_name: cs-okx-correlations
+    command: python manage.py incremental_correlations --exchange okx
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - redis
+      - okx-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'incremental_correlations.*okx' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  okx-zscore:
+    <<: *app-common
+    container_name: cs-okx-zscore
+    command: python manage.py incremental_zscore --exchange okx
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - redis
+      - okx-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'incremental_zscore.*okx' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  okx-cointegration:
+    <<: *app-common
+    container_name: cs-okx-cointegration
+    command: python manage.py cointegration_scan --exchange okx --window-minutes 1440 --cadence-minutes 15
+    environment:
+      <<: *env-common
+    depends_on:
+      - db
+      - okx-klines
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'cointegration_scan.*okx' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   db-maintenance:
     <<: *app-common
     container_name: cs-db-maintenance

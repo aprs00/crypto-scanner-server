@@ -15,6 +15,8 @@ def get_btc_symbol(exchange: str) -> str:
         return "BTCUSDT"
     elif exchange == Exchange.BYBIT:
         return "BTCUSDT"
+    elif exchange == Exchange.OKX:
+        return "BTC-USDT-SWAP"
     # Hyperliquid
     return "BTC"
 
@@ -25,6 +27,8 @@ def get_sol_symbol(exchange: str) -> str:
         return "SOLUSDT"
     elif exchange == Exchange.BYBIT:
         return "SOLUSDT"
+    elif exchange == Exchange.OKX:
+        return "SOL-USDT-SWAP"
     # Hyperliquid
     return "SOL"
 

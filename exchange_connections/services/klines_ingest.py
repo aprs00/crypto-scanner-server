@@ -160,7 +160,7 @@ def build_models_from_rest(
             for k in raw_klines
         ]
     else:
-        # Dict-based format (Hyperliquid and similar) - symbol is embedded in data
+        # Dict-based format (Hyperliquid, Bybit, OKX) - symbol is embedded in data
         return [
             WsKline(k).to_model(exchange=exchange, contract_type=contract_type)
             for k in raw_klines

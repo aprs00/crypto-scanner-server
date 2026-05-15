@@ -10,6 +10,7 @@ class Exchange(str, Enum):
     BINANCE = "binance"
     HYPERLIQUID = "hyperliquid"
     BYBIT = "bybit"
+    OKX = "okx"
 
     def __str__(self):
         return self.value
@@ -57,6 +58,25 @@ EXCHANGE_CONFIG = {
     },
     Exchange.BYBIT: {
         "name": "Bybit",
+        "data_types": ["price", "volume"],
+        "hours_options": {
+            "correlation": {
+                "1h": 1,
+                "4h": 4,
+                "12h": 12,
+                "1d": 24,
+                "3d": 72,
+                "7d": 168,
+                "14d": 336,
+            },
+            "correlation_pair": {"1h": 1, "4h": 4},
+            "cointegration_pair": {"4h": 4, "8h": 8},
+            "zscore": {"1h": 1, "4h": 4, "12h": 12},
+            "average_price": {"1w": 168, "1M": 720, "3M": 2160},
+        },
+    },
+    Exchange.OKX: {
+        "name": "OKX",
         "data_types": ["price", "volume"],
         "hours_options": {
             "correlation": {
