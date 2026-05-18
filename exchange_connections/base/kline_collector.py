@@ -24,7 +24,6 @@ from exchange_connections.selectors import (
 from core.redis_config import get_redis_connection
 from core.redis_streams import publish_market_event
 
-
 WS_RECONNECT_DELAY = 5
 # Detect recent sparse gaps even when no disconnect happened.
 RECENT_GAP_LOOKBACK_MINUTES = 30

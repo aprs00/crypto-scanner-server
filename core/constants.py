@@ -18,7 +18,7 @@ class Exchange(str, Enum):
 
 EXCHANGE_CONFIG = {
     Exchange.BINANCE: {
-        "active": False,
+        "active": True,
         "name": "Binance",
         "data_types": ["price", "volume", "trades"],
         "hours_options": {
@@ -38,6 +38,7 @@ EXCHANGE_CONFIG = {
         },
     },
     Exchange.HYPERLIQUID: {
+        "active": True,
         "name": "Hyperliquid",
         "data_types": ["price", "volume", "trades"],
         "hours_options": {
@@ -57,6 +58,7 @@ EXCHANGE_CONFIG = {
         },
     },
     Exchange.BYBIT: {
+        "active": True,
         "name": "Bybit",
         "data_types": ["price", "volume"],
         "hours_options": {
@@ -76,6 +78,7 @@ EXCHANGE_CONFIG = {
         },
     },
     Exchange.OKX: {
+        "active": True,
         "name": "OKX",
         "data_types": ["price", "volume"],
         "hours_options": {

@@ -13,7 +13,7 @@ from core.constants import Exchange
 
 
 BINANCE_FUTURES_EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/ws"
+BINANCE_FUTURES_WS_URL = "wss://fstream.binance.com/market/ws"
 BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 BINANCE_MAX_KLINES_PER_REQUEST = 1500
 
