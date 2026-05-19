@@ -257,19 +257,19 @@ class BaseKlineCollector(ABC):
                 pipe.execute()
             except Exception as e:
                 print(f"[{self.exchange}] ERROR: Failed to sync symbols to redis: {e}")
-            try:
-                publish_market_event(
-                    exchange=self.exchange,
-                    contract_type=self.contract_type,
-                    event_type="symbol_update",
-                    payload={
-                        "added": sorted(list(added)),
-                        "removed": sorted(list(removed)),
-                    },
-                    redis_client=self.redis,
-                )
-            except Exception as e:
-                print(f"[{self.exchange}] ERROR: Failed to publish symbol update: {e}")
+            # try:
+            #     publish_market_event(
+            #         exchange=self.exchange,
+            #         contract_type=self.contract_type,
+            #         event_type="symbol_update",
+            #         payload={
+            #             "added": sorted(list(added)),
+            #             "removed": sorted(list(removed)),
+            #         },
+            #         redis_client=self.redis,
+            #     )
+            # except Exception as e:
+            #     print(f"[{self.exchange}] ERROR: Failed to publish symbol update: {e}")
             return old_count > 0  # Only trigger reconnect if we had symbols before
 
         return False
