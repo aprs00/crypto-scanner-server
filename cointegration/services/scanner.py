@@ -4,6 +4,7 @@ from typing import List
 
 import numpy as np
 from django.utils import timezone
+from django.db import close_old_connections, connection
 
 from exchange_connections.constants import get_btc_symbol
 from exchange_connections.models import Symbol
@@ -391,6 +392,11 @@ class CointegrationScanner:
 
         while True:
             try:
+                # Drop any stale/aged DB connection so the next query reconnects.
+                # Long-running loops never hit Django's request signals, so this
+                # is the only place CONN_MAX_AGE recycling happens.
+                close_old_connections()
+
                 now = timezone.now()
                 if now >= next_compute:
                     required_data_time = next_compute - timedelta(minutes=1)
@@ -447,6 +453,9 @@ class CointegrationScanner:
                     next_compute += timedelta(minutes=self.cadence_minutes)
 
             except Exception as exc:
+                # Drop a possibly-dead DB connection so the next iteration
+                # reconnects instead of looping forever on a closed socket.
+                connection.close()
                 print(f"[{self.exchange}] Cointegration scan error: {exc}")
 
             time.sleep(1)

@@ -7,6 +7,7 @@ import numpy as np
 import msgpack
 import traceback
 from typing import Deque, Dict, List, Optional, cast
+from django.db import close_old_connections, connection
 from redis.exceptions import RedisError
 
 from exchange_connections.constants import (
@@ -1029,6 +1030,11 @@ class CorrelationCalculator:
             )
 
         while True:
+            # Drop any stale/aged DB connection so the next query reconnects.
+            # Long-running consumers never hit Django's request signals, so this
+            # is the only place CONN_MAX_AGE recycling happens.
+            close_old_connections()
+
             messages = cast(
                 list,
                 self.redis.xreadgroup(
@@ -1191,6 +1197,9 @@ class CorrelationCalculator:
             # ACK only on success
             self.redis.xack(stream_key, group_name, msg_id)
         except Exception as e:
+            # Drop a possibly-dead DB connection so the redelivered message
+            # reconnects instead of looping forever on a closed socket.
+            connection.close()
             print(
                 f"[{self.exchange}] ERROR: Stream handler failed: {e}, message will be redelivered"
             )

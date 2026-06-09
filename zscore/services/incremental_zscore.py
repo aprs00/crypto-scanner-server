@@ -5,6 +5,7 @@ from datetime import datetime, timezone as dt_timezone
 from typing import Dict, Optional, cast
 from django.utils import timezone
 from django.conf import settings
+from django.db import close_old_connections, connection
 from redis.exceptions import RedisError
 
 from exchange_connections.selectors import (
@@ -610,6 +611,11 @@ class ZScoreProcessor:
         )
 
         while True:
+            # Drop any stale/aged DB connection so the next query reconnects.
+            # Long-running consumers never hit Django's request signals, so this
+            # is the only place CONN_MAX_AGE recycling happens.
+            close_old_connections()
+
             messages = cast(
                 list,
                 r.xreadgroup(
@@ -730,6 +736,9 @@ class ZScoreProcessor:
             # ACK only on success
             r.xack(stream_key, group_name, msg_id)
         except Exception as e:
+            # Drop a possibly-dead DB connection so the redelivered message
+            # reconnects instead of looping forever on a closed socket.
+            connection.close()
             print(
                 f"[{self.exchange}] ERROR: Stream handler failed: {e}, message will be redelivered"
             )
