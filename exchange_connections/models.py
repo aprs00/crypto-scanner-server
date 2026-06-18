@@ -3,7 +3,7 @@ from django.db.models import UniqueConstraint
 
 
 class Kline1m(models.Model):
-    start_time = models.DateTimeField(db_index=True)
+    start_time = models.DateTimeField()
     close_time = models.DateTimeField()
     symbol = models.ForeignKey("Symbol", on_delete=models.CASCADE, db_index=True)
     open = models.DecimalField(max_digits=18, decimal_places=8)
@@ -21,7 +21,7 @@ class Kline1m(models.Model):
         max_digits=24, decimal_places=8, null=True, blank=True
     )
     number_of_trades = models.IntegerField()
-    exchange = models.ForeignKey("Exchange", on_delete=models.CASCADE, db_index=True)
+    exchange = models.ForeignKey("Exchange", on_delete=models.CASCADE, db_index=False)
 
     class Meta:
         db_table = "cs_klines_1m"
