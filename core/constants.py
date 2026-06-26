@@ -78,7 +78,7 @@ EXCHANGE_CONFIG = {
         },
     },
     Exchange.OKX: {
-        "active": True,
+        "active": False,
         "name": "OKX",
         "data_types": ["price", "volume"],
         "hours_options": {
