@@ -180,6 +180,29 @@ class CointegrationScanner:
             )
 
             if not data:
+                # An intermediate minute (strictly before target_time) with no
+                # rows for any symbol is a permanent ingestion gap, not a
+                # not-yet-written minute: _wait_for_btc_kline already proved the
+                # readiness symbol has a kline at target_time, and klines are
+                # written in order, so every earlier minute that is still empty
+                # will stay empty forever. Forward-fill it (carry the last
+                # values, mirroring _fill_missing on the initial window) and
+                # advance, instead of wedging the consumer on it.
+                if next_ts < target_time:
+                    self.last_empty_fetch_timestamp = None
+                    self.last_missing_next_ts = None
+                    self._log_throttled(
+                        "cointegration_gap_skip",
+                        30,
+                        f"[{self.exchange}] Skipping permanent kline gap at "
+                        f"{next_ts.isoformat()} (no rows for any symbol); carrying "
+                        f"forward last values. target_time={target_time.isoformat()}",
+                    )
+                    self.buffer[:, self.pos] = self.last_values
+                    self.pos = (self.pos + 1) % self.window_len
+                    self.last_timestamp = next_ts
+                    continue
+
                 if self.last_empty_fetch_timestamp != next_ts:
                     print(
                         f"[{self.exchange}] Missing kline rows for {next_ts.isoformat()}, retrying."
