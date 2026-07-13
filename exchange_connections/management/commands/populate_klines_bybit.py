@@ -21,6 +21,8 @@ from core.constants import Exchange
 
 BYBIT_KLINE_URL = "https://api.bybit.com/v5/market/kline"
 MAX_KLINES_PER_REQUEST = 1000
+RATE_LIMIT_RETRY_DELAY_SECONDS = 5
+MAX_RATE_LIMIT_RETRIES = 5
 
 
 class Command(BasePopulateKlinesCommand):
@@ -28,7 +30,7 @@ class Command(BasePopulateKlinesCommand):
 
     exchange = Exchange.BYBIT
     contract_type = "perpetual"
-    request_delay = 0.2
+    request_delay = 0.5
 
     def fetch_all_klines_paginated(self, symbol, start_date, end_date) -> List:
         """
@@ -47,6 +49,7 @@ class Command(BasePopulateKlinesCommand):
 
         # Bybit returns newest first, so we start from end and work backward
         current_end_ms = end_ms
+        rate_limit_retries = 0
 
         while current_end_ms > start_ms:
             try:
@@ -65,6 +68,8 @@ class Command(BasePopulateKlinesCommand):
                 if not klines:
                     print(f"No more klines available for {symbol}")
                     break
+
+                rate_limit_retries = 0
 
                 # Convert to our standard format and add to list
                 for kline in klines:
@@ -87,7 +92,23 @@ class Command(BasePopulateKlinesCommand):
                 time.sleep(self.request_delay)
 
             except Exception as e:
-                print(f"Error fetching klines for {symbol}: {str(e)}")
+                error_message = str(e)
+                is_rate_limit_error = (
+                    "rate limit" in error_message.lower()
+                    or "too many visits" in error_message.lower()
+                )
+                if is_rate_limit_error and rate_limit_retries < MAX_RATE_LIMIT_RETRIES:
+                    rate_limit_retries += 1
+                    retry_delay = RATE_LIMIT_RETRY_DELAY_SECONDS * rate_limit_retries
+                    print(
+                        f"Bybit rate limit reached for {symbol}; retrying the same "
+                        f"page in {retry_delay}s "
+                        f"({rate_limit_retries}/{MAX_RATE_LIMIT_RETRIES})"
+                    )
+                    time.sleep(retry_delay)
+                    continue
+
+                print(f"Error fetching klines for {symbol}: {error_message}")
                 time.sleep(1)
                 break
 
