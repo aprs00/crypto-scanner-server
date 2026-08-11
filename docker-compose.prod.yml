@@ -1,0 +1,65 @@
+x-production:
+  # Fail interpolation early instead of accidentally deploying `latest`.
+  app-image: ${APP_IMAGE:?Set APP_IMAGE to an immutable commit-tagged image}
+  clickhouse-password: ${CLICKHOUSE_PASSWORD:?Set a non-empty CLICKHOUSE_PASSWORD}
+  postgres-password: ${POSTGRES_PASSWORD:?Set a non-empty POSTGRES_PASSWORD}
+  secret-key: ${SECRET_KEY:?Set a non-empty SECRET_KEY}
+
+services:
+  app:
+    volumes: !reset []
+    build: !reset null
+    environment:
+      DEBUG: "false"
+      DJANGO_SECURE_SSL_REDIRECT: "true"
+      DJANGO_SESSION_COOKIE_SECURE: "true"
+      DJANGO_CSRF_COOKIE_SECURE: "true"
+      DJANGO_SECURE_HSTS_SECONDS: "300"
+      DJANGO_TRUST_PROXY_SSL_HEADER: "true"
+
+  binance-klines:
+    volumes: !reset []
+  binance-footprints:
+    volumes: !reset []
+  binance-correlations:
+    volumes: !reset []
+  binance-zscore:
+    volumes: !reset []
+  binance-cointegration:
+    volumes: !reset []
+
+  hyperliquid-klines:
+    volumes: !reset []
+  hyperliquid-footprints:
+    volumes: !reset []
+  hyperliquid-correlations:
+    volumes: !reset []
+  hyperliquid-zscore:
+    volumes: !reset []
+  hyperliquid-cointegration:
+    volumes: !reset []
+
+  bybit-klines:
+    volumes: !reset []
+  bybit-footprints:
+    volumes: !reset []
+  bybit-correlations:
+    volumes: !reset []
+  bybit-zscore:
+    volumes: !reset []
+  bybit-cointegration:
+    volumes: !reset []
+
+  okx-klines:
+    volumes: !reset []
+  okx-correlations:
+    volumes: !reset []
+  okx-zscore:
+    volumes: !reset []
+  okx-cointegration:
+    volumes: !reset []
+
+  footprint-maintenance:
+    volumes: !reset []
+  db-maintenance:
+    volumes: !reset []

@@ -1,7 +1,10 @@
 .env
 .env.development
+# Local runtime and Python cache data.
 data/
 bin
 lib
 .idea/
 venv/
+__pycache__/
+*.py[cod]

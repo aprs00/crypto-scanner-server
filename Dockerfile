@@ -31,6 +31,10 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /code
 
+# Existing Compose healthchecks use pgrep to verify long-running workers.
+RUN apt-get update && apt-get install -y --no-install-recommends procps \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy virtual environment from builder (no gcc/build-essential!)
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"

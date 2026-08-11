@@ -1,7 +1,9 @@
 version: '3.8'
 
 x-app-common: &app-common
-  image: crypto-scanner:latest
+  image: ${APP_IMAGE:-crypto-scanner:latest}
+  env_file:
+    - .env
   volumes:
     - .:/code
   depends_on:
@@ -19,6 +21,20 @@ x-env-common: &env-common
   POSTGRES_USER: ${POSTGRES_USER}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
+x-footprint-environment: &footprint-environment
+  <<: *env-common
+  CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-footprints}
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER:-footprints}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+  CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-clickhouse}
+  CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
+  CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-false}
+
+x-chart-common: &chart-common
+  <<: *app-common
+  environment:
+    <<: *footprint-environment
+
 services:
   db:
     container_name: cs-db
@@ -33,6 +49,42 @@ services:
       - POSTGRES_HOST=${POSTGRES_HOST}
     ports:
       - "127.0.0.1:${POSTGRES_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  clickhouse:
+    container_name: cs-clickhouse
+    image: clickhouse:26.3.17.56
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-footprints}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-footprints}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "127.0.0.1:${CLICKHOUSE_HOST_PORT:-8123}:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user \"$${CLICKHOUSE_USER}\" --password \"$${CLICKHOUSE_PASSWORD}\" --query 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     logging:
       driver: "json-file"
       options:
@@ -41,13 +93,17 @@ services:
 
   redis:
     container_name: cs-redis
-    image: "redis/redis-stack-server:latest"
+    image: "redis/redis-stack-server@sha256:a4ec9645bb2ae14e4eb38f724fbd10be2521238700f647089022b905cccad4d8"
     restart: unless-stopped
     command: redis-server /usr/local/etc/redis/redis.conf
     volumes:
       - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
-    ports:
-      - "6378:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     logging:
       driver: "json-file"
       options:
@@ -55,17 +111,20 @@ services:
         max-file: "3"
 
   app:
-    <<: *app-common
+    <<: *chart-common
     build:
       context: .
       target: runtime
     container_name: cs-app
     restart: always
-    command: python manage.py runserver 0.0.0.0:8000
+    command: daphne -b 0.0.0.0 -p 8000 core.asgi:application
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
-      - "8000:8000"
-    environment:
-      <<: *env-common
+      - "127.0.0.1:${APP_HOST_PORT:-8000}:8000"
 
   binance-klines:
     <<: *app-common
@@ -78,6 +137,23 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  binance-footprints:
+    <<: *chart-common
+    container_name: cs-binance-footprints
+    command: python manage.py footprint_trades --exchange binance
+    depends_on:
+      db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f '[f]ootprint_trades --exchange binance' >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   binance-correlations:
     <<: *app-common
@@ -135,6 +211,23 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  hyperliquid-footprints:
+    <<: *chart-common
+    container_name: cs-hyperliquid-footprints
+    command: python manage.py footprint_trades --exchange hyperliquid
+    depends_on:
+      db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f '[f]ootprint_trades --exchange hyperliquid' >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   hyperliquid-correlations:
     <<: *app-common
@@ -194,6 +287,42 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  bybit-footprints:
+    <<: *chart-common
+    container_name: cs-bybit-footprints
+    command: python manage.py footprint_trades --exchange bybit
+    depends_on:
+      db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f '[f]ootprint_trades --exchange bybit' >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  footprint-maintenance:
+    <<: *chart-common
+    container_name: cs-footprint-maintenance
+    command: python manage.py footprint_maintenance
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f '[f]ootprint_maintenance' >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   bybit-correlations:
     <<: *app-common
@@ -315,3 +444,4 @@ services:
 
 volumes:
   pgdata18:
+  clickhouse_data:

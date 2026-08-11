@@ -34,6 +34,17 @@ DEBUG = env("DEBUG")
 
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS")
 
+# These remain disabled for local HTTP development and are enabled by the
+# production Compose file. TLS terminates at the host's existing reverse proxy.
+SECURE_SSL_REDIRECT = env.bool("DJANGO_SECURE_SSL_REDIRECT", default=False)
+SESSION_COOKIE_SECURE = env.bool("DJANGO_SESSION_COOKIE_SECURE", default=False)
+CSRF_COOKIE_SECURE = env.bool("DJANGO_CSRF_COOKIE_SECURE", default=False)
+SECURE_HSTS_SECONDS = env.int("DJANGO_SECURE_HSTS_SECONDS", default=0)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_HSTS_PRELOAD = False
+if env.bool("DJANGO_TRUST_PROXY_SSL_HEADER", default=False):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
 STORE_TO_DB = env("STORE_TO_DB")
 
 # Application definition
@@ -49,6 +60,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "core",
     "exchange_connections",
+    "footprints",
     "correlations",
     "zscore",
     "averages",
