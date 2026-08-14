@@ -10,6 +10,13 @@ idempotently at startup. There is no migration ledger or manual migration
 command in V0. Collectors write directly to `raw_executions`; there is no
 SQLite, Parquet, shadow-write, or relational-bar path.
 
+ClickHouse diagnostic tables are separate from footprint data. The mounted
+`config.d/system-logs.xml` limits those tables to three days and reduces text
+logging from `trace` to `warning`. Before the first restart that introduces the
+configuration, apply `clickhouse/apply-system-log-retention.sql`; it updates the
+existing table definitions and clears the disposable accumulated diagnostics so
+ClickHouse does not preserve them under numbered legacy names.
+
 Collectors form a batch for at most 250 ms (or 500 executions). ClickHouse
 coalesces compatible writes for up to 100 ms before acknowledgement, keeping
 updates sub-second without creating a part per handful of trades.

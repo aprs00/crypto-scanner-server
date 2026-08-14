@@ -44,6 +44,19 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm app pyt
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
+The `db-maintenance` service keeps one-minute klines for 30 days using bounded
+50,000-row deletes, with no more than four batches per five-minute cycle.
+Cleanup defaults to enabled; set `KLINE_CLEANUP_ENABLED=false` only as a
+temporary operational override. ClickHouse system diagnostics retain three
+days. On the first release with that policy, apply the existing-table update
+before recreating ClickHouse:
+
+```sh
+docker exec -i cs-clickhouse sh -c \
+  'exec clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --multiquery' \
+  < clickhouse/apply-system-log-retention.sql
+```
+
 Use the host's existing TLS reverse proxy to forward to `127.0.0.1:8000` and
 preserve `Host`, set `X-Forwarded-Proto: https`, and pass WebSocket
 `Upgrade`/`Connection` headers. Do not expose Daphne, PostgreSQL, ClickHouse,

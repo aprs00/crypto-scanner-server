@@ -75,6 +75,7 @@ services:
       - "127.0.0.1:${CLICKHOUSE_HOST_PORT:-8123}:8123"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/config.d/system-logs.xml:/etc/clickhouse-server/config.d/system-logs.xml:ro
     ulimits:
       nofile:
         soft: 262144
@@ -434,6 +435,9 @@ services:
     <<: *app-common
     container_name: cs-db-maintenance
     command: python manage.py db_maintenance
+    environment:
+      <<: *env-common
+      KLINE_CLEANUP_ENABLED: ${KLINE_CLEANUP_ENABLED:-true}
     depends_on:
       - db
     healthcheck:
