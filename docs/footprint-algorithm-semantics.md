@@ -39,6 +39,7 @@ TRev uses `continuationTicks` and `reversalTicks`:
 6. Expansion from one execution is bounded to prevent pathological input from
    exhausting memory.
 
-The anchor is the beginning of the fixed V0 lookback window. TRev is
-path-dependent, so every configuration keeps that anchor while it is built and
-advanced.
+The anchor is the first execution in the user-selected lookback window. There
+is no execution-count history cap. TRev is path-dependent, so every
+configuration keeps that anchor while the complete chronological window is
+built and later advanced.

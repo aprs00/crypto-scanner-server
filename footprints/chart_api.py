@@ -8,10 +8,12 @@ from django.core.exceptions import ValidationError
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.gzip import gzip_page
 from django.views.decorators.http import require_GET, require_POST
+from redis.exceptions import RedisError
 
 from footprints.api import _error, market_by_key
-from footprints.chart_serialization import serialize_active_bar, serialize_chart_bar
+from footprints.chart_serialization import serialize_active_bar, serialize_snapshot_bar
 from footprints.chart_service import (
     ChartDensityLimitError,
     active_bar_for_series,
@@ -19,6 +21,7 @@ from footprints.chart_service import (
     series_lease_cutoff,
 )
 from footprints.constants import (
+    CHART_MAX_LOOKBACK_DAYS,
     CHART_MAX_LEVELS_PER_BAR,
     CHART_REQUEST_MAX_BYTES,
     CHART_SNAPSHOT_BARS,
@@ -34,6 +37,7 @@ from footprints.storage.clickhouse import (
     ClickHouseSettings,
     create_clickhouse_client,
 )
+from footprints.wakeups import publish_build_wakeup
 
 
 logger = logging.getLogger(__name__)
@@ -82,6 +86,12 @@ def chart_series(request: HttpRequest) -> JsonResponse:
             )
         return _error(message, "INVALID_CHART_PARAMETERS")
     parameter_a, parameter_b = parameters
+    lookback_days = _strict_int(payload.get("lookbackDays"))
+    if lookback_days is None or not 1 <= lookback_days <= CHART_MAX_LOOKBACK_DAYS:
+        return _error(
+            f"lookbackDays must be between 1 and {CHART_MAX_LOOKBACK_DAYS}",
+            "INVALID_LOOKBACK_DAYS",
+        )
 
     now = timezone.now()
     series = request_chart_series(
@@ -89,6 +99,7 @@ def chart_series(request: HttpRequest) -> JsonResponse:
         chart_type=chart_type,
         parameter_a=parameter_a,
         parameter_b=parameter_b,
+        lookback_days=lookback_days,
         now=now,
     )
     if series is None:
@@ -99,9 +110,20 @@ def chart_series(request: HttpRequest) -> JsonResponse:
         )
         response["Retry-After"] = "60"
         return response
-    return _series_response(series)
+    response = _series_response(series)
+    if series.status == ChartSeriesStatus.QUEUED:
+        try:
+            publish_build_wakeup()
+        except RedisError:
+            # The periodic maintenance catch-up remains the durable fallback.
+            logger.warning(
+                "Failed to wake chart maintenance for queued series %s",
+                series.public_key,
+            )
+    return response
 
 
+@gzip_page
 @require_GET
 def chart_bars(request: HttpRequest) -> HttpResponse:
     series_key = request.GET.get("seriesKey", "")
@@ -122,15 +144,36 @@ def chart_bars(request: HttpRequest) -> HttpResponse:
             errorCode=series.error_code or None,
         )
 
-    try:
-        active_bar = active_bar_for_series(series)
-        active_level_count = len(active_bar.levels) if active_bar is not None else 0
-        newest = _chart_bar_store().read_detailed(
-            series_id=series.pk,
-            limit=CHART_SNAPSHOT_BARS,
-            max_levels=CHART_SNAPSHOT_MAX_LEVELS - active_level_count,
+    limit = _query_integer(request.GET.get("limit"), default=CHART_SNAPSHOT_BARS)
+    before_value = request.GET.get("beforeBarIndex")
+    before_bar_index = _query_integer(before_value, default=None)
+    if limit is None or not 1 <= limit <= CHART_SNAPSHOT_BARS:
+        return _error(
+            f"limit must be between 1 and {CHART_SNAPSHOT_BARS}",
+            "INVALID_CHART_RANGE",
         )
-        if any(len(bar.levels) > CHART_MAX_LEVELS_PER_BAR for bar in newest):
+    if before_value is not None and (
+        before_bar_index is None or before_bar_index < 0
+    ):
+        return _error(
+            "beforeBarIndex must be a nonnegative integer",
+            "INVALID_CHART_RANGE",
+        )
+
+    try:
+        active_bar = (
+            active_bar_for_series(series)
+            if before_bar_index is None
+            else None
+        )
+        active_level_count = len(active_bar.levels) if active_bar is not None else 0
+        newest = _chart_bar_store().read_snapshot(
+            series_id=series.pk,
+            limit=limit,
+            max_levels=CHART_SNAPSHOT_MAX_LEVELS - active_level_count,
+            before_bar_index=before_bar_index,
+        )
+        if any(len(bar.level_ticks) > CHART_MAX_LEVELS_PER_BAR for bar in newest):
             raise ChartDensityLimitError(
                 f"closed chart bar exceeds {CHART_MAX_LEVELS_PER_BAR} native levels"
             )
@@ -139,13 +182,18 @@ def chart_bars(request: HttpRequest) -> HttpResponse:
         ):
             active_bar = None
         selected = list(reversed(newest))
+        next_before_bar_index = (
+            selected[0].bar_index
+            if selected and selected[0].bar_index > 0
+            else None
+        )
         specs = {
             spec.pk: spec
             for spec in InstrumentSpec.objects.filter(
                 pk__in={bar.instrument_spec_id for bar in selected}
             )
         }
-        bars = [serialize_chart_bar(bar, specs) for bar in selected]
+        bars = [serialize_snapshot_bar(bar, specs) for bar in selected]
         active = None
         if active_bar is not None:
             if active_bar.spec_id not in specs:
@@ -174,7 +222,10 @@ def chart_bars(request: HttpRequest) -> HttpResponse:
             "seriesKey": str(series.public_key),
             "bars": bars,
             "activeBar": active,
-        }
+            "hasMore": next_before_bar_index is not None,
+            "nextBeforeBarIndex": next_before_bar_index,
+        },
+        json_dumps_params={"separators": (",", ":")},
     )
 
 
@@ -233,3 +284,12 @@ def _chart_bar_store() -> ClickHouseChartStore:
 
 def _strict_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _query_integer(value: str | None, *, default: int | None) -> int | None:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

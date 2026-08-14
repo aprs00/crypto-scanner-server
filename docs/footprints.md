@@ -13,6 +13,7 @@ There are no time, range, or volume chart abstractions in this version.
 exchange WebSocket
     -> bounded in-memory queue
     -> ClickHouse raw_executions
+    -> bounded Redis maintenance wakeup
     -> Tick/TRev engine
     -> ClickHouse chart_bars + PostgreSQL checkpoint
     -> HTTP history + WebSocket live updates
@@ -20,20 +21,33 @@ exchange WebSocket
 
 ClickHouse owns the exact execution tape and closed chart bars. PostgreSQL owns
 market/specification metadata, the requested series configuration, lifecycle
-status, and the latest engine checkpoint. Redis/Channels carries replaceable
-live updates only.
+status, and the latest engine checkpoint. Redis carries bounded maintenance
+wakeups and replaceable live updates; ClickHouse cursors remain the durable
+catch-up source if a wakeup is missed.
+HTTP chart snapshots use response gzip when the client accepts it so dense
+footprint-level JSON does not dominate transfer time. The snapshot reader keeps
+validated ClickHouse level arrays in their native layout until JSON encoding,
+avoiding one temporary Python object per footprint level.
 
-A chart request uses the internal `CHART_DEFAULT_LOOKBACK_DAYS` window. The
-client chooses only the Tick trade count or the two TRev thresholds. Ready
+A chart request supplies an integer `lookbackDays` from 1 through 30. The
+entire selected raw window is replayed in resumable 100,000-execution chunks;
+100,000 is a work-unit size, not a history cap. Engine state and the raw cursor
+are checkpointed after each durable chart-bar write so live maintenance runs
+between chunks and interrupted builds resume without starting over. Ready
 series are advanced incrementally instead of being replayed for each update.
+Pending configurations for one market share one execution stream instead of
+scanning ClickHouse independently.
 Tick trade counts and TRev thresholds are integers from 1 through 4,000. One
 market may have at most 16 requested configurations with a live 30-minute
 lease. The client renews a lease by repeating the idempotent series request or
 subscribing to its WebSocket; idle rows are removed and their orphaned
 ClickHouse bars age out under the existing table TTL.
 
-The maintenance process recovers interrupted builds at startup. On each loop
-it advances ready series, then claims and builds at most one queued series.
+The maintenance process recovers interrupted builds at startup. A durable raw
+insert wakes it immediately for the affected markets, and a series request
+wakes the queued builder. A five-second full catch-up covers lost Redis
+wakeups. Each build claim includes all queued configurations for the oldest
+waiting market, including partially completed builds that need another chunk.
 The maintenance process holds a dedicated PostgreSQL advisory lock and exits
 if another copy already owns it or its lock connection is lost.
 Failed builds remain failed and later requests only observe that state, so
@@ -83,6 +97,7 @@ Content-Type: application/json
 {
   "marketKey": "binance:perpetual:BTCUSDT",
   "chartType": "tick",
+  "lookbackDays": 2,
   "tradesPerBar": 500
 }
 ```
@@ -93,6 +108,7 @@ Create or reuse a TRev series:
 {
   "marketKey": "binance:perpetual:BTCUSDT",
   "chartType": "trev",
+  "lookbackDays": 7,
   "continuationTicks": 20,
   "reversalTicks": 30
 }
@@ -109,9 +125,18 @@ Read the latest 500 closed bars and current active bar:
 GET /api/v1/footprints/chart-bars?seriesKey=...
 ```
 
-The response is `{ "seriesKey", "bars", "activeBar" }`. It contains the
-newest suffix of at most 500 closed bars and at most 40,000 native levels in
-total, including the active bar. V0 has no pagination or price aggregation.
+The response is `{ "seriesKey", "bars", "activeBar", "hasMore",
+"nextBeforeBarIndex" }`. It contains at most 500 closed bars and 40,000 native
+levels, including the active bar. Read older pages with the returned cursor:
+
+```http
+GET /api/v1/footprints/chart-bars?seriesKey=...&beforeBarIndex=1200&limit=500
+```
+
+Historical pages omit the active bar. The browser caches downloaded closed
+bars in IndexedDB and requests another page when the user scrolls near the
+left edge. IndexedDB is a disposable per-device cache; ClickHouse remains the
+authoritative complete history.
 
 ## WebSocket
 
@@ -125,8 +150,9 @@ Inbound subscription frames are text-only and limited to 2 KiB.
 
 `subscribed`, `update`, and `error` messages are scoped by `seriesKey`.
 Updates contain newly closed bars and an absolute active-bar replacement.
-Catch-up updates retain the latest 500 bars and send at most 50 bars and 8,000
-native levels per message, including the repeated active bar. A native bar is
+Catch-up publications retain the latest 500 bars for WebSocket delivery while
+all closed bars are persisted. Messages contain at most 50 bars and 8,000
+native levels, including the repeated active bar. A native bar is
 terminally rejected with `CHART_BAR_TOO_DENSE` above 4,000 levels. One TRev
 execution may expand through at most 500 synthetic boundaries. The client
 refetches the bounded HTTP snapshot if bar indexes reveal a missed live

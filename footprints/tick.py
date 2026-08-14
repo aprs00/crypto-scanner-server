@@ -118,6 +118,9 @@ class TickUpdate:
     bars: tuple[TickBar, ...]
 
 
+_EMPTY_TICK_UPDATE = TickUpdate(bars=())
+
+
 @dataclass(slots=True)
 class _ActiveBar:
     open_tick: int
@@ -134,30 +137,68 @@ class _ActiveBar:
 
     @classmethod
     def start(cls, trade: TickTrade, *, break_before: bool) -> "_ActiveBar":
-        active = cls(
-            open_tick=trade.price_tick,
-            high_tick=trade.price_tick,
-            low_tick=trade.price_tick,
-            last_tick=trade.price_tick,
+        return cls.start_raw(
+            order=trade.order,
+            price_tick=trade.price_tick,
+            quantity_units=trade.quantity_units,
+            is_taker_buy=trade.is_taker_buy,
             break_before=break_before,
-            first_order=trade.order,
-            last_order=trade.order,
         )
-        active.add(trade)
+
+    @classmethod
+    def start_raw(
+        cls,
+        *,
+        order: TickOrder,
+        price_tick: int,
+        quantity_units: int,
+        is_taker_buy: bool,
+        break_before: bool,
+    ) -> "_ActiveBar":
+        active = cls(
+            open_tick=price_tick,
+            high_tick=price_tick,
+            low_tick=price_tick,
+            last_tick=price_tick,
+            break_before=break_before,
+            first_order=order,
+            last_order=order,
+        )
+        active.add_raw(
+            order=order,
+            price_tick=price_tick,
+            quantity_units=quantity_units,
+            is_taker_buy=is_taker_buy,
+        )
         return active
 
     def add(self, trade: TickTrade) -> None:
-        self.high_tick = max(self.high_tick, trade.price_tick)
-        self.low_tick = min(self.low_tick, trade.price_tick)
-        self.last_tick = trade.price_tick
-        self.last_order = trade.order
-        values = self.levels.setdefault(trade.price_tick, [0, 0])
-        if trade.is_taker_buy:
-            values[0] += trade.quantity_units
-            self.buy_units += trade.quantity_units
+        self.add_raw(
+            order=trade.order,
+            price_tick=trade.price_tick,
+            quantity_units=trade.quantity_units,
+            is_taker_buy=trade.is_taker_buy,
+        )
+
+    def add_raw(
+        self,
+        *,
+        order: TickOrder,
+        price_tick: int,
+        quantity_units: int,
+        is_taker_buy: bool,
+    ) -> None:
+        self.high_tick = max(self.high_tick, price_tick)
+        self.low_tick = min(self.low_tick, price_tick)
+        self.last_tick = price_tick
+        self.last_order = order
+        values = self.levels.setdefault(price_tick, [0, 0])
+        if is_taker_buy:
+            values[0] += quantity_units
+            self.buy_units += quantity_units
         else:
-            values[1] += trade.quantity_units
-            self.sell_units += trade.quantity_units
+            values[1] += quantity_units
+            self.sell_units += quantity_units
         self.trade_count += 1
 
     def level_rows(self) -> tuple[TickLevel, ...]:
@@ -204,30 +245,55 @@ class TickEngine:
     def push(self, trade: TickTrade) -> TickUpdate:
         if not isinstance(trade, TickTrade):
             raise TickError("trade must be a TickTrade")
+        return self._push_trusted(
+            order=trade.order,
+            price_tick=trade.price_tick,
+            quantity_units=trade.quantity_units,
+            is_taker_buy=trade.is_taker_buy,
+            spec_id=trade.spec_id,
+        )
+
+    def _push_trusted(
+        self,
+        *,
+        order: TickOrder,
+        price_tick: int,
+        quantity_units: int,
+        is_taker_buy: bool,
+        spec_id: int,
+    ) -> TickUpdate:
         if (
             self.state.last_order is not None
-            and trade.order.rank <= self.state.last_order.rank
+            and order.rank <= self.state.last_order.rank
         ):
             raise TickError("execution order must strictly increase")
 
         closed: list[TickBar] = []
-        if self.state.spec_id is not None and trade.spec_id != self.state.spec_id:
+        if self.state.spec_id is not None and spec_id != self.state.spec_id:
             closed.extend(self._truncate())
 
         if self.state.active is None:
-            self.state.active = _ActiveBar.start(
-                trade,
+            self.state.active = _ActiveBar.start_raw(
+                order=order,
+                price_tick=price_tick,
+                quantity_units=quantity_units,
+                is_taker_buy=is_taker_buy,
                 break_before=self.state.break_before_next,
             )
             self.state.break_before_next = False
         else:
-            self.state.active.add(trade)
+            self.state.active.add_raw(
+                order=order,
+                price_tick=price_tick,
+                quantity_units=quantity_units,
+                is_taker_buy=is_taker_buy,
+            )
 
-        self.state.spec_id = trade.spec_id
-        self.state.last_order = trade.order
+        self.state.spec_id = spec_id
+        self.state.last_order = order
         if self.state.active.trade_count == self.config.trades_per_bar:
             closed.append(self._close_active())
-        return TickUpdate(bars=tuple(closed))
+        return TickUpdate(bars=tuple(closed)) if closed else _EMPTY_TICK_UPDATE
 
     def push_raw(
         self,
@@ -244,18 +310,19 @@ class TickEngine:
         order = object.__new__(TickOrder)
         object.__setattr__(order, "timestamp_us", timestamp_us)
         object.__setattr__(order, "rank", rank)
-        trade = object.__new__(TickTrade)
-        object.__setattr__(trade, "order", order)
-        object.__setattr__(trade, "price_tick", price_tick)
-        object.__setattr__(trade, "quantity_units", quantity_units)
-        object.__setattr__(trade, "is_taker_buy", is_taker_buy)
-        object.__setattr__(trade, "spec_id", spec_id)
-        return self.push(trade)
+        return self._push_trusted(
+            order=order,
+            price_tick=price_tick,
+            quantity_units=quantity_units,
+            is_taker_buy=is_taker_buy,
+            spec_id=spec_id,
+        )
 
     def truncate_segment(self) -> TickUpdate:
         """Close a partial bar and mark the next bar as discontinuous."""
 
-        return TickUpdate(bars=self._truncate())
+        bars = self._truncate()
+        return TickUpdate(bars=bars) if bars else _EMPTY_TICK_UPDATE
 
     def active_snapshot(self) -> TickBar | None:
         if self.state.active is None:

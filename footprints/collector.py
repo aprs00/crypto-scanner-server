@@ -10,7 +10,9 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from django.db import close_old_connections
+from redis.exceptions import RedisError
 
+from core.redis_config import get_redis_connection
 from footprints.models import FootprintMarket, InstrumentSpec
 from footprints.specs import load_runtime_instruments
 from footprints.storage.clickhouse import (
@@ -27,6 +29,7 @@ from footprints.storage.clickhouse import (
 from footprints.storage.clickhouse_schema import ensure_clickhouse_schema
 from footprints.storage.executions import StoredExecution
 from footprints.types import NormalizedTrade, RuntimeInstrument, TakerSide
+from footprints.wakeups import publish_execution_wakeup
 
 
 logger = logging.getLogger(__name__)
@@ -110,6 +113,7 @@ class FootprintCollector:
         self._clickhouse_lock = threading.RLock()
         self._clickhouse_access: ClickHouseAccess | None = None
         self._execution_store: ClickHouseExecutionStore | None = None
+        self._wakeup_redis = None
 
     def on_trade(self, trade: NormalizedTrade) -> None:
         market = self._markets.get(trade.market_key)
@@ -254,6 +258,7 @@ class FootprintCollector:
                     uncommitted,
                 )
             self._close_clickhouse()
+            self._close_wakeup_redis()
             close_old_connections()
 
         if self._fatal_error is not None:
@@ -434,6 +439,7 @@ class FootprintCollector:
                 if not self._insert_with_retry(batch):
                     self._uncommitted_batch_count += len(batch)
                     return
+                self._notify_committed_executions(batch)
             except Exception as exc:
                 logger.exception("Unexpected direct ClickHouse writer failure")
                 self._uncommitted_batch_count += len(members)
@@ -547,6 +553,34 @@ class FootprintCollector:
             access.close()
         except Exception:
             logger.warning("Failed to close the %s ClickHouse client", self.exchange)
+
+    def _notify_committed_executions(
+        self,
+        batch: tuple[StoredExecution, ...],
+    ) -> None:
+        try:
+            if self._wakeup_redis is None:
+                self._wakeup_redis = get_redis_connection()
+            publish_execution_wakeup(
+                {execution.market_id for execution in batch},
+                redis_client=self._wakeup_redis,
+            )
+        except RedisError:
+            logger.warning(
+                "Failed to wake chart maintenance after %s execution commit",
+                self.exchange,
+            )
+            self._close_wakeup_redis()
+
+    def _close_wakeup_redis(self) -> None:
+        client = self._wakeup_redis
+        self._wakeup_redis = None
+        if client is None:
+            return
+        try:
+            client.close()
+        except RedisError:
+            logger.warning("Failed to close the %s wakeup client", self.exchange)
 
     def _set_fatal(self, error: BaseException) -> None:
         with self._fatal_lock:

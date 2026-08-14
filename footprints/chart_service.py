@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any
 
@@ -12,6 +14,8 @@ from django.db.models import Q
 from footprints.chart_live import publish_chart_error, publish_chart_update
 from footprints.chart_serialization import serialize_active_bar, serialize_chart_bar
 from footprints.constants import (
+    CHART_BAR_INSERT_CHUNK,
+    CHART_BUILD_EXECUTION_CHUNK,
     CHART_DEFAULT_LOOKBACK_DAYS,
     CHART_LIVE_MAX_LEVELS,
     CHART_MAX_LEVELS_PER_BAR,
@@ -101,7 +105,6 @@ def recover_interrupted_builds() -> int:
     return ChartSeries.objects.filter(status=ChartSeriesStatus.BUILDING).update(
         status=ChartSeriesStatus.QUEUED,
         error_code="",
-        checkpoint_state=None,
     )
 
 
@@ -123,6 +126,7 @@ def request_chart_series(
     chart_type: str,
     parameter_a: int,
     parameter_b: int,
+    lookback_days: int,
     now: datetime,
 ) -> ChartSeries | None:
     """Create or renew one bounded shared configuration for a market."""
@@ -135,6 +139,7 @@ def request_chart_series(
             chart_type=chart_type,
             parameter_a=parameter_a,
             parameter_b=parameter_b,
+            lookback_days=lookback_days,
         ).first()
         if series is not None:
             series.last_requested_at = now
@@ -152,7 +157,8 @@ def request_chart_series(
             chart_type=chart_type,
             parameter_a=parameter_a,
             parameter_b=parameter_b,
-            anchor_at=lookback_anchor(now),
+            lookback_days=lookback_days,
+            anchor_at=lookback_anchor(now, lookback_days),
             last_requested_at=now,
         )
 
@@ -174,25 +180,37 @@ def refresh_series_lease(series_key: str, *, now: datetime) -> str | None:
     return None if status is None else str(status)
 
 
-def claim_queued_series() -> int | None:
+def claim_queued_market_series() -> tuple[int, ...]:
+    """Claim or resume every build for the oldest waiting market."""
+
+    cutoff = series_lease_cutoff(datetime.now(tz=dt_timezone.utc))
     with transaction.atomic():
-        series = (
+        oldest = (
             ChartSeries.objects.select_for_update(skip_locked=True)
             .filter(
-                status=ChartSeriesStatus.QUEUED,
-                last_requested_at__gte=series_lease_cutoff(
-                    datetime.now(tz=dt_timezone.utc)
-                ),
+                status__in=(ChartSeriesStatus.QUEUED, ChartSeriesStatus.BUILDING),
+                last_requested_at__gte=cutoff,
             )
             .order_by("created_at", "pk")
             .first()
         )
-        if series is None:
-            return None
-        series.status = ChartSeriesStatus.BUILDING
-        series.error_code = ""
-        series.save(update_fields=["status", "error_code"])
-        return int(series.pk)
+        if oldest is None:
+            return ()
+        series_ids = tuple(
+            ChartSeries.objects.select_for_update(skip_locked=True)
+            .filter(
+                market_id=oldest.market_id,
+                status__in=(ChartSeriesStatus.QUEUED, ChartSeriesStatus.BUILDING),
+                last_requested_at__gte=cutoff,
+            )
+            .order_by("created_at", "pk")
+            .values_list("pk", flat=True)[:CHART_MAX_SERIES_PER_MARKET]
+        )
+        ChartSeries.objects.filter(pk__in=series_ids).update(
+            status=ChartSeriesStatus.BUILDING,
+            error_code="",
+        )
+        return tuple(int(series_id) for series_id in series_ids)
 
 
 def build_next_queued_series(
@@ -200,20 +218,22 @@ def build_next_queued_series(
     execution_store: ClickHouseProjectorExecutionStore,
     bar_store: ClickHouseChartStore,
 ) -> bool:
-    series_id = claim_queued_series()
-    if series_id is None:
+    series_ids = claim_queued_market_series()
+    if not series_ids:
         return False
     try:
-        build_series(
-            series_id,
+        build_series_batch(
+            series_ids,
             execution_store=execution_store,
             bar_store=bar_store,
         )
     except Exception as exc:
         if _is_transient_build_error(exc):
-            _requeue_build(series_id)
+            for series_id in series_ids:
+                _requeue_build(series_id)
             raise TransientChartBuildError("chart storage is temporarily unavailable") from exc
-        _mark_build_failed(series_id, exc)
+        for series_id in series_ids:
+            _mark_build_failed(series_id, exc)
         raise
     return True
 
@@ -224,57 +244,167 @@ def build_series(
     execution_store: ClickHouseProjectorExecutionStore,
     bar_store: ClickHouseChartStore,
 ) -> None:
-    """Replay the fixed V0 lookback and publish one ready chart series."""
+    """Process one resumable history chunk for a claimed chart series."""
 
-    series = ChartSeries.objects.get(pk=series_id)
-    if series.status != ChartSeriesStatus.BUILDING:
-        raise RuntimeError("chart series is no longer claimed")
-
-    engine = _new_engine(series)
-    writer = _BuildWriter(series, bar_store)
-    cursor: ProjectorCursor | None = None
-    executions = execution_store.iter_executions(
-        market_id=series.market_id,
-        start_timestamp_us=_datetime_us(series.anchor_at),
+    build_series_batch(
+        (series_id,),
+        execution_store=execution_store,
+        bar_store=bar_store,
     )
-    for execution in executions:
-        if cursor is not None and execution.source_epoch != cursor[0]:
-            writer.add_many(engine.truncate_segment().bars)
-        writer.add_many(_push_execution(engine, execution).bars)
-        cursor = execution.cursor
-    writer.finish()
-    checkpoint = _checkpoint_state(engine, cursor)
-
-    with transaction.atomic():
-        locked = ChartSeries.objects.select_for_update().get(pk=series.pk)
-        if locked.status != ChartSeriesStatus.BUILDING:
-            raise RuntimeError("chart series changed during build")
-        locked.status = ChartSeriesStatus.READY
-        locked.checkpoint_state = checkpoint
-        locked.error_code = ""
-        locked.save(
-            update_fields=[
-                "status",
-                "checkpoint_state",
-                "error_code",
-            ]
-        )
-    _RUNTIMES.pop(series.pk, None)
 
 
 @dataclass(slots=True)
-class _BuildWriter:
+class _PendingBuild:
     series: ChartSeries
-    store: ClickHouseChartStore
-    buffer: deque[DetailedChartBar] = field(
-        default_factory=lambda: deque(maxlen=CHART_SNAPSHOT_BARS)
+    engine: TickEngine | TrevEngine
+    anchor_timestamp_us: int
+    cursor: ProjectorCursor | None = None
+    error: Exception | None = None
+
+
+def _pending_build(series: ChartSeries) -> _PendingBuild:
+    if series.checkpoint_state is None:
+        engine = _new_engine(series)
+        cursor = None
+    else:
+        engine, cursor = _decode_checkpoint(series)
+    return _PendingBuild(
+        series=series,
+        engine=engine,
+        anchor_timestamp_us=_datetime_us(series.anchor_at),
+        cursor=cursor,
     )
 
-    def add_many(self, bars) -> None:
-        self.buffer.extend(_stored_bar(self.series, bar) for bar in bars)
 
-    def finish(self) -> None:
-        self.store.append(tuple(self.buffer))
+def build_series_batch(
+    series_ids: Iterable[int],
+    *,
+    execution_store: ClickHouseProjectorExecutionStore,
+    bar_store: ClickHouseChartStore,
+) -> None:
+    """Replay one bounded market chunk for all pending configurations."""
+
+    identities = tuple(dict.fromkeys(series_ids))
+    if not identities:
+        raise ValueError("at least one chart series is required")
+    series_rows = list(
+        ChartSeries.objects.filter(pk__in=identities).order_by("created_at", "pk")
+    )
+    if {series.pk for series in series_rows} != set(identities):
+        raise RuntimeError("one or more chart series disappeared during build")
+    if any(series.status != ChartSeriesStatus.BUILDING for series in series_rows):
+        raise RuntimeError("chart series is no longer claimed")
+    market_ids = {series.market_id for series in series_rows}
+    if len(market_ids) != 1:
+        raise ValueError("one chart build batch must belong to one market")
+
+    started = time.monotonic()
+    pending = [_pending_build(series) for series in series_rows]
+    start_timestamp_us = min(item.anchor_timestamp_us for item in pending)
+    cursors = [item.cursor for item in pending]
+    after_cursor = (
+        min(cursor for cursor in cursors if cursor is not None)
+        if cursors and all(cursor is not None for cursor in cursors)
+        else None
+    )
+    executions = execution_store.iter_executions(
+        market_id=series_rows[0].market_id,
+        start_timestamp_us=start_timestamp_us,
+        after_cursor=after_cursor,
+        limit=CHART_BUILD_EXECUTION_CHUNK,
+    )
+    execution_count = 0
+    stored_bar_count = 0
+    bar_batch: list[DetailedChartBar] = []
+    for execution in executions:
+        execution_count += 1
+        execution_cursor = execution.cursor
+        for item in pending:
+            if item.error is not None:
+                continue
+            if item.cursor is not None and execution_cursor <= item.cursor:
+                continue
+            if execution.timestamp_us < item.anchor_timestamp_us:
+                item.cursor = execution_cursor
+                continue
+            try:
+                if (
+                    item.engine.state.last_order is not None
+                    and item.cursor is not None
+                    and execution.source_epoch != item.cursor[0]
+                ):
+                    segment_bars = item.engine.truncate_segment().bars
+                else:
+                    segment_bars = ()
+                execution_bars = _push_execution(item.engine, execution).bars
+                if segment_bars or execution_bars:
+                    stored = [
+                        _stored_bar(item.series, bar)
+                        for bar in (*segment_bars, *execution_bars)
+                    ]
+                else:
+                    stored = ()
+            except Exception as exc:
+                item.error = exc
+                continue
+            item.cursor = execution_cursor
+            bar_batch.extend(stored)
+            if len(bar_batch) >= CHART_BAR_INSERT_CHUNK:
+                stored_bar_count += bar_store.append(bar_batch)
+                bar_batch.clear()
+
+    stored_bar_count += bar_store.append(bar_batch)
+    complete = execution_count < CHART_BUILD_EXECUTION_CHUNK
+
+    with transaction.atomic():
+        locked_rows = {
+            series.pk: series
+            for series in ChartSeries.objects.select_for_update().filter(
+                pk__in=identities
+            )
+        }
+        if set(locked_rows) != set(identities) or any(
+            series.status != ChartSeriesStatus.BUILDING
+            for series in locked_rows.values()
+        ):
+            raise RuntimeError("chart series changed during build")
+        for item in pending:
+            locked = locked_rows[item.series.pk]
+            if item.error is None:
+                locked.status = (
+                    ChartSeriesStatus.READY
+                    if complete
+                    else ChartSeriesStatus.BUILDING
+                )
+                locked.checkpoint_state = _checkpoint_state(
+                    item.engine,
+                    item.cursor,
+                )
+                locked.error_code = ""
+            else:
+                locked.status = ChartSeriesStatus.FAILED
+                locked.checkpoint_state = None
+                locked.error_code = _error_code(item.error)
+            locked.save(
+                update_fields=[
+                    "status",
+                    "checkpoint_state",
+                    "error_code",
+                ]
+            )
+            _RUNTIMES.pop(item.series.pk, None)
+
+    elapsed_ms = round((time.monotonic() - started) * 1_000, 2)
+    logger.info(
+        "Processed chart build chunk market_id=%s series=%s executions=%s "
+        "bars=%s complete=%s elapsed_ms=%s",
+        series_rows[0].market_id,
+        len(pending),
+        execution_count,
+        stored_bar_count,
+        complete,
+        elapsed_ms,
+    )
 
 
 @dataclass(slots=True)
@@ -287,23 +417,37 @@ def advance_ready_series(
     *,
     execution_store: ClickHouseProjectorExecutionStore,
     bar_store: ClickHouseChartStore,
+    market_ids: Iterable[int] | None = None,
 ) -> int:
     """Read each market tail once and fan it into every ready chart engine."""
 
-    rows = list(
-        ChartSeries.objects.select_related("market")
-        .filter(
-            status=ChartSeriesStatus.READY,
-            last_requested_at__gte=series_lease_cutoff(
-                datetime.now(tz=dt_timezone.utc)
-            ),
-        )
-        .order_by("market_id", "pk")
+    selected_market_ids = None
+    if market_ids is not None:
+        selected_market_ids = tuple(sorted(set(market_ids)))
+        if not selected_market_ids:
+            return 0
+        if any(
+            isinstance(market_id, bool)
+            or not isinstance(market_id, int)
+            or market_id <= 0
+            for market_id in selected_market_ids
+        ):
+            raise ValueError("market_ids must contain positive integers")
+
+    query = ChartSeries.objects.filter(
+        status=ChartSeriesStatus.READY,
+        last_requested_at__gte=series_lease_cutoff(
+            datetime.now(tz=dt_timezone.utc)
+        ),
     )
-    ready_ids = {series.pk for series in rows}
-    for series_id in list(_RUNTIMES):
-        if series_id not in ready_ids:
-            _RUNTIMES.pop(series_id, None)
+    if selected_market_ids is not None:
+        query = query.filter(market_id__in=selected_market_ids)
+    rows = list(query.order_by("market_id", "pk"))
+    if selected_market_ids is None:
+        ready_ids = {series.pk for series in rows}
+        for series_id in list(_RUNTIMES):
+            if series_id not in ready_ids:
+                _RUNTIMES.pop(series_id, None)
 
     by_market: dict[int, list[tuple[ChartSeries, SeriesRuntime]]] = {}
     for series in rows:
@@ -363,15 +507,17 @@ def _advance_market(
         series.pk: deque(maxlen=CHART_SNAPSHOT_BARS)
         for series, _runtime in entries
     }
+    bar_batch: list[DetailedChartBar] = []
     touched: set[int] = set()
     raw_count = 0
     failed: dict[int, Exception] = {}
     for execution in stream:
         raw_count += 1
+        execution_cursor = execution.cursor
         for series, runtime in entries:
             if series.pk in failed:
                 continue
-            if runtime.cursor is not None and execution.cursor <= runtime.cursor:
+            if runtime.cursor is not None and execution_cursor <= runtime.cursor:
                 continue
             try:
                 if (
@@ -379,17 +525,22 @@ def _advance_market(
                     and execution.source_epoch != runtime.cursor[0]
                 ):
                     for bar in runtime.engine.truncate_segment().bars:
-                        emitted[series.pk].append(_stored_bar(series, bar))
+                        stored = _stored_bar(series, bar)
+                        emitted[series.pk].append(stored)
+                        bar_batch.append(stored)
                 for bar in _push_execution(runtime.engine, execution).bars:
-                    emitted[series.pk].append(_stored_bar(series, bar))
-                runtime.cursor = execution.cursor
+                    stored = _stored_bar(series, bar)
+                    emitted[series.pk].append(stored)
+                    bar_batch.append(stored)
+                runtime.cursor = execution_cursor
                 touched.add(series.pk)
             except Exception as exc:
                 failed[series.pk] = exc
+        if len(bar_batch) >= CHART_BAR_INSERT_CHUNK:
+            bar_store.append(bar_batch)
+            bar_batch.clear()
 
-    all_bars = [bar for values in emitted.values() for bar in values]
-    if all_bars:
-        bar_store.append(all_bars)
+    bar_store.append(bar_batch)
 
     publications: list[
         tuple[ChartSeries, SeriesRuntime, deque[DetailedChartBar]]
@@ -675,7 +826,6 @@ def _requeue_build(series_id: int) -> None:
     ).update(
         status=ChartSeriesStatus.QUEUED,
         error_code="",
-        checkpoint_state=None,
     )
     _RUNTIMES.pop(series_id, None)
 
@@ -698,8 +848,11 @@ def _error_code(error: Exception) -> str:
     return type(error).__name__[:64] or "CHART_BUILD_FAILED"
 
 
-def lookback_anchor(value: datetime) -> datetime:
-    return (value - timedelta(days=CHART_DEFAULT_LOOKBACK_DAYS)).replace(
+def lookback_anchor(
+    value: datetime,
+    lookback_days: int = CHART_DEFAULT_LOOKBACK_DAYS,
+) -> datetime:
+    return (value - timedelta(days=lookback_days)).replace(
         minute=0,
         second=0,
         microsecond=0,

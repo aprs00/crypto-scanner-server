@@ -12,7 +12,9 @@ from django.test import SimpleTestCase
 from footprints.storage.charts import (
     ChartLevel,
     ClickHouseChartStore,
+    ClickHouseProjectorExecutionStore,
     DetailedChartBar,
+    ProjectorSpecDivisors,
 )
 from footprints.storage.clickhouse import (
     ClickHouseAccess,
@@ -259,16 +261,40 @@ class RealClickHouseExecutionStoreTests(SimpleTestCase):
             ]
         )
 
-        bars = self.chart_store.read_detailed(series_id=201, limit=500)
-        bounded = self.chart_store.read_detailed(
+        snapshot = self.chart_store.read_snapshot(series_id=201, limit=500)
+        bounded = self.chart_store.read_snapshot(
             series_id=201,
             limit=500,
             max_levels=3,
         )
+        older = self.chart_store.read_snapshot(
+            series_id=201,
+            limit=500,
+            before_bar_index=2,
+        )
 
-        self.assertEqual([bar.bar_index for bar in bars], [2, 1])
-        self.assertEqual(bars[0].levels, (ChartLevel(100, 1, 1), ChartLevel(101, 1, 0)))
         self.assertEqual([bar.bar_index for bar in bounded], [2])
+        self.assertEqual([bar.bar_index for bar in older], [1])
+        self.assertEqual([bar.bar_index for bar in snapshot], [2, 1])
+        self.assertEqual(snapshot[0].level_ticks, (100, 101))
+        self.assertEqual(snapshot[0].level_buy_units, (1, 1))
+        self.assertEqual(snapshot[0].level_sell_units, (1, 0))
+
+    def test_immediate_chart_bar_retry_is_physically_deduplicated(self):
+        bar = self.chart_bar(series_id=203, bar_index=1)
+
+        self.chart_store.append([bar])
+        self.chart_store.append([bar])
+
+        physical_count = self.data_access.query(
+            f"""
+            SELECT count()
+            FROM {quote_identifier(self.test_database)}.`chart_bars`
+            WHERE series_id = 203 AND bar_index = 1
+            """,
+            operation="count_integration_chart_retry_rows",
+        ).result_rows[0][0]
+        self.assertEqual(physical_count, 1)
 
     def test_source_epoch_reads_current_clickhouse_maximum(self):
         rows = (
@@ -323,6 +349,56 @@ class RealClickHouseExecutionStoreTests(SimpleTestCase):
         self.assertEqual(
             recent[107][0].signature,
             (CURRENT_EVENT_US + 350_002, 100_126, 2_500, True, 11),
+        )
+
+    def test_projector_cursor_reads_only_strictly_newer_source_order(self):
+        rows = (
+            self.execution(
+                market_id=108,
+                source_epoch=1,
+                sequence=1,
+                trade_id="cursor-1",
+                timestamp_us=CURRENT_EVENT_US + 360_001,
+            ),
+            self.execution(
+                market_id=108,
+                source_epoch=1,
+                sequence=2,
+                trade_id="cursor-2",
+                timestamp_us=CURRENT_EVENT_US + 360_002,
+            ),
+            self.execution(
+                market_id=108,
+                source_epoch=2,
+                sequence=1,
+                trade_id="cursor-3",
+                timestamp_us=CURRENT_EVENT_US + 360_003,
+            ),
+        )
+        self.store.insert_batch(self.batch(*rows))
+        projector_store = ClickHouseProjectorExecutionStore(
+            self.data_access,
+            database=self.test_database,
+            spec_divisors={11: ProjectorSpecDivisors(1, 1)},
+        )
+
+        executions = list(
+            projector_store.iter_executions(
+                market_id=108,
+                start_timestamp_us=CURRENT_EVENT_US,
+                after_cursor=(
+                    1,
+                    1,
+                    0,
+                    CURRENT_EVENT_US + 360_001,
+                    "cursor-1",
+                ),
+            )
+        )
+
+        self.assertEqual(
+            [execution.trade_id for execution in executions],
+            ["cursor-2", "cursor-3"],
         )
 
     def test_conflicting_identity_inside_one_batch_is_rejected(self):

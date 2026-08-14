@@ -11,8 +11,16 @@ command in V0. Collectors write directly to `raw_executions`; there is no
 SQLite, Parquet, shadow-write, or relational-bar path.
 
 Collectors form a batch for at most 250 ms (or 500 executions). ClickHouse
-coalesces compatible writes for up to 500 ms before acknowledgement, keeping
+coalesces compatible writes for up to 100 ms before acknowledgement, keeping
 updates sub-second without creating a part per handful of trades.
+
+The single chart maintenance writer already batches every closed bar produced
+by one bounded insert chunk, so chart-bar writes bypass the asynchronous busy
+timeout and wait directly for a synchronous durable acknowledgement. Historical
+builds resume in 100,000-execution chunks and persist every closed bar; HTTP
+clients page those bars instead of receiving an unbounded response. This keeps
+checkpoint publication retry-safe without adding an async wait to every chart
+update.
 
 Run the opt-in real-server test inside the app container:
 

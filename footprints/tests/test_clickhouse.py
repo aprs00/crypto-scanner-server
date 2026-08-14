@@ -16,6 +16,7 @@ from footprints.storage.clickhouse import (
     ExecutionIdentityConflict,
     classify_clickhouse_error,
     create_clickhouse_client,
+    deduplicated_immediate_insert_settings,
     deduplicated_insert_settings,
 )
 from footprints.storage.executions import StoredExecution
@@ -208,7 +209,16 @@ class ClickHouseConfigurationTests(SimpleTestCase):
                 "wait_for_async_insert": 1,
                 "async_insert_deduplicate": 1,
                 "async_insert_use_adaptive_busy_timeout": 0,
-                "async_insert_busy_timeout_ms": 500,
+                "async_insert_busy_timeout_ms": 100,
+                "insert_deduplicate": 1,
+            },
+        )
+
+    def test_immediate_insert_settings_skip_the_async_busy_timeout(self):
+        self.assertEqual(
+            deduplicated_immediate_insert_settings(),
+            {
+                "async_insert": 0,
                 "insert_deduplicate": 1,
             },
         )
@@ -279,7 +289,7 @@ class ClickHouseExecutionStoreTests(SimpleTestCase):
         self.assertEqual(settings["wait_for_async_insert"], 1)
         self.assertEqual(settings["async_insert_deduplicate"], 1)
         self.assertEqual(settings["async_insert_use_adaptive_busy_timeout"], 0)
-        self.assertEqual(settings["async_insert_busy_timeout_ms"], 500)
+        self.assertEqual(settings["async_insert_busy_timeout_ms"], 100)
         self.assertEqual(settings["insert_deduplicate"], 1)
         self.assertNotIn("insert_deduplication_token", settings)
         self.assertEqual(client.queries, [])

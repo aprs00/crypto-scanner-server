@@ -6,6 +6,7 @@ from django.db import models
 from django.utils import timezone
 
 from footprints.constants import (
+    CHART_MAX_LOOKBACK_DAYS,
     TICK_MAX_TRADES_PER_BAR,
     TREV_MAX_THRESHOLD_TICKS,
     TREV_MIN_THRESHOLD_TICKS,
@@ -87,6 +88,7 @@ class ChartSeries(models.Model):
     chart_type = models.CharField(max_length=8, choices=ChartType.choices)
     parameter_a = models.PositiveIntegerField()
     parameter_b = models.PositiveIntegerField(default=0)
+    lookback_days = models.PositiveSmallIntegerField(default=2)
     status = models.CharField(
         max_length=16,
         choices=ChartSeriesStatus.choices,
@@ -107,8 +109,16 @@ class ChartSeries(models.Model):
                     "chart_type",
                     "parameter_a",
                     "parameter_b",
+                    "lookback_days",
                 ],
                 name="unique_chart_series_key",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    lookback_days__gte=1,
+                    lookback_days__lte=CHART_MAX_LOOKBACK_DAYS,
+                ),
+                name="valid_chart_series_lookback",
             ),
             models.CheckConstraint(
                 condition=(

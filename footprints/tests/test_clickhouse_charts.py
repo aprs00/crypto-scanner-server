@@ -9,6 +9,7 @@ from footprints.constants import CHART_SNAPSHOT_MAX_LEVELS
 from footprints.storage.charts import (
     ChartDataError,
     ChartLevel,
+    ChartSnapshotBar,
     ClickHouseChartStore,
     ClickHouseProjectorExecutionStore,
     DetailedChartBar,
@@ -132,6 +133,18 @@ class ProjectorExecutionStoreTests(SimpleTestCase):
             "ORDER BY market_id, source_epoch, source_sequence, batch_index, timestamp_us, trade_id",
             compact_sql,
         )
+        self.assertIn(
+            "source_epoch > {after_source_epoch:UInt32}",
+            compact_sql,
+        )
+        self.assertIn(
+            "source_sequence = {after_source_sequence:UInt64} AND batch_index > {after_batch_index:UInt32}",
+            compact_sql,
+        )
+        self.assertIn(
+            "timestamp_us = {after_timestamp_us:Int64} AND trade_id > {after_trade_id:String}",
+            compact_sql,
+        )
         self.assertEqual(parameters["after_source_epoch"], 3)
         self.assertEqual(operation, "stream_projector_executions")
 
@@ -146,7 +159,9 @@ class ProjectorExecutionStoreTests(SimpleTestCase):
                 )
             )
 
-        unknown = _FakeAccess(stream_rows=(_raw_projector_row(instrument_spec_id=99),))
+        unknown = _FakeAccess(
+            stream_rows=(_raw_projector_row(instrument_spec_id=99),)
+        )
         with self.assertRaisesRegex(ProjectorDataError, "specification 99"):
             list(
                 self._store(unknown).iter_executions(
@@ -232,10 +247,12 @@ class ClickHouseChartStoreTests(SimpleTestCase):
         self.assertEqual(mapped["level_ticks"], (999, 1_002))
         self.assertEqual(mapped["level_buy_units"], (0, 9))
         self.assertEqual(mapped["level_sell_units"], (4, 0))
-        self.assertTrue(settings["wait_for_async_insert"])
+        self.assertEqual(settings["async_insert"], 0)
+        self.assertNotIn("wait_for_async_insert", settings)
+        self.assertEqual(settings["insert_deduplicate"], 1)
         self.assertEqual(operation, "insert_chart_bars")
 
-    def test_read_returns_detailed_native_levels_newest_first(self):
+    def test_snapshot_read_keeps_validated_native_level_arrays(self):
         bar = _bar()
         row = (
             bar.series_id,
@@ -257,12 +274,18 @@ class ClickHouseChartStoreTests(SimpleTestCase):
         )
         access = _FakeAccess(query_results=((row,),))
 
-        result = ClickHouseChartStore(access, database="footprints").read_detailed(
+        result = ClickHouseChartStore(access, database="footprints").read_snapshot(
             series_id=7,
             limit=500,
         )
 
-        self.assertEqual(result, [bar])
+        self.assertEqual(len(result), 1)
+        snapshot = result[0]
+        self.assertIsInstance(snapshot, ChartSnapshotBar)
+        self.assertEqual(len(snapshot.level_ticks), 2)
+        self.assertEqual(snapshot.level_ticks, (999, 1_002))
+        self.assertEqual(snapshot.level_buy_units, (0, 9))
+        self.assertEqual(snapshot.level_sell_units, (4, 0))
         sql, parameters, _settings, operation = access.queries[0]
         self.assertIn("FINAL", sql)
         self.assertIn("ORDER BY bar_index DESC", sql)
@@ -275,7 +298,52 @@ class ClickHouseChartStoreTests(SimpleTestCase):
                 "max_levels": CHART_SNAPSHOT_MAX_LEVELS,
             },
         )
-        self.assertEqual(operation, "read_detailed_chart_bars")
+        self.assertEqual(operation, "read_chart_snapshot_bars")
+
+    def test_snapshot_read_rejects_invalid_native_level_volume(self):
+        malformed = _FakeAccess(
+            query_results=(
+                (
+                    (
+                        7,
+                        4,
+                        OPENED_AT,
+                        ENDED_AT,
+                        11,
+                        1_000,
+                        1_003,
+                        999,
+                        1_002,
+                        30,
+                        20,
+                        5,
+                        False,
+                        [999],
+                        [0],
+                        [0],
+                    ),
+                ),
+            )
+        )
+
+        with self.assertRaisesRegex(ChartDataError, "level volume"):
+            ClickHouseChartStore(malformed, database="footprints").read_snapshot(
+                series_id=7
+            )
+
+    def test_snapshot_read_pages_before_an_existing_bar(self):
+        access = _FakeAccess()
+
+        ClickHouseChartStore(access, database="footprints").read_snapshot(
+            series_id=7,
+            limit=250,
+            before_bar_index=900,
+        )
+
+        sql, parameters, _settings, _operation = access.queries[0]
+        self.assertIn("bar_index < {before_bar_index:UInt64}", sql)
+        self.assertEqual(parameters["before_bar_index"], 900)
+        self.assertEqual(parameters["limit"], 250)
 
     def test_duplicate_insert_key_and_malformed_levels_are_rejected(self):
         store = ClickHouseChartStore(_FakeAccess(), database="footprints")
@@ -307,6 +375,6 @@ class ClickHouseChartStoreTests(SimpleTestCase):
             )
         )
         with self.assertRaisesRegex(ChartDataError, "different lengths"):
-            ClickHouseChartStore(malformed, database="footprints").read_detailed(
+            ClickHouseChartStore(malformed, database="footprints").read_snapshot(
                 series_id=7
             )

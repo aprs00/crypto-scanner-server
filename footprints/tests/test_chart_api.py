@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 from dataclasses import replace
 from datetime import timedelta
@@ -18,12 +19,15 @@ from footprints.constants import (
     CHART_SNAPSHOT_MAX_LEVELS,
 )
 from footprints.models import ChartSeries, ChartSeriesStatus, ChartType, FootprintMarket
-from footprints.storage.charts import ChartLevel, DetailedChartBar
+from footprints.storage.charts import ChartSnapshotBar
 from footprints.tick import TickConfig, TickEngine, TickOrder, TickTrade
 
 
 class ChartApiTests(TestCase):
     def setUp(self):
+        wakeup_patcher = patch("footprints.chart_api.publish_build_wakeup")
+        self.publish_build_wakeup = wakeup_patcher.start()
+        self.addCleanup(wakeup_patcher.stop)
         self.market = FootprintMarket.objects.get(exchange="binance", symbol="BTCUSDT")
         self.spec = self.market.instrument_specs.order_by("effective_from").first()
         self.anchor = chart_service.lookback_anchor(timezone.now())
@@ -31,7 +35,13 @@ class ChartApiTests(TestCase):
     def post_series(self, payload):
         return self.client.post(
             "/api/v1/footprints/chart-series",
-            data=json.dumps({"marketKey": self.market.market_key, **payload}),
+            data=json.dumps(
+                {
+                    "marketKey": self.market.market_key,
+                    "lookbackDays": 2,
+                    **payload,
+                }
+            ),
             content_type="application/json",
         )
 
@@ -49,7 +59,7 @@ class ChartApiTests(TestCase):
             {"marketKey", "exchange", "symbol", "baseAsset", "currentTickSize"},
         )
 
-    def test_tick_and_trev_create_minimal_fixed_lookback_series(self):
+    def test_tick_and_trev_create_selected_lookback_series(self):
         tick = self.post_series({"chartType": "tick", "tradesPerBar": 500})
         trev = self.post_series(
             {
@@ -66,6 +76,23 @@ class ChartApiTests(TestCase):
         self.assertEqual(ChartSeries.objects.count(), 2)
         for series in ChartSeries.objects.all():
             self.assertEqual(series.anchor_at, self.anchor)
+            self.assertEqual(series.lookback_days, 2)
+        self.assertEqual(self.publish_build_wakeup.call_count, 2)
+
+    def test_lookback_is_validated_and_part_of_the_series_identity(self):
+        one_day = self.post_series(
+            {"chartType": "tick", "lookbackDays": 1, "tradesPerBar": 500}
+        )
+        seven_days = self.post_series(
+            {"chartType": "tick", "lookbackDays": 7, "tradesPerBar": 500}
+        )
+        invalid = self.post_series(
+            {"chartType": "tick", "lookbackDays": 31, "tradesPerBar": 500}
+        )
+
+        self.assertNotEqual(one_day.json()["seriesKey"], seven_days.json()["seriesKey"])
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.json()["code"], "INVALID_LOOKBACK_DAYS")
 
     def test_same_configuration_reuses_the_series(self):
         first = self.post_series({"chartType": "tick", "tradesPerBar": 501})
@@ -155,6 +182,22 @@ class ChartApiTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["code"], "UNKNOWN_CHART_SERIES")
 
+    def test_chart_history_range_is_bounded(self):
+        series = self._ready_tick_series()
+
+        invalid_cursor = self.client.get(
+            "/api/v1/footprints/chart-bars",
+            {"seriesKey": series.public_key, "beforeBarIndex": "invalid"},
+        )
+        oversized_page = self.client.get(
+            "/api/v1/footprints/chart-bars",
+            {"seriesKey": series.public_key, "limit": CHART_SNAPSHOT_BARS + 1},
+        )
+
+        self.assertEqual(invalid_cursor.status_code, 400)
+        self.assertEqual(oversized_page.status_code, 400)
+        self.assertEqual(invalid_cursor.json()["code"], "INVALID_CHART_RANGE")
+
     def test_failed_series_is_observed_without_an_automatic_retry(self):
         original_anchor = self.anchor - timedelta(days=5)
         series = ChartSeries.objects.create(
@@ -181,7 +224,7 @@ class ChartApiTests(TestCase):
     ):
         series = self._ready_tick_series()
         store = MagicMock()
-        store.read_detailed.return_value = [self._bar(series, 2), self._bar(series, 1)]
+        store.read_snapshot.return_value = [self._bar(series, 2), self._bar(series, 1)]
         store_factory.return_value = store
 
         response = self.client.get(
@@ -191,15 +234,79 @@ class ChartApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200, response.content)
         payload = response.json()
-        self.assertEqual(set(payload), {"seriesKey", "bars", "activeBar"})
+        self.assertEqual(
+            set(payload),
+            {
+                "seriesKey",
+                "bars",
+                "activeBar",
+                "hasMore",
+                "nextBeforeBarIndex",
+            },
+        )
         self.assertEqual([bar["barIndex"] for bar in payload["bars"]], [1, 2])
         self.assertEqual(payload["bars"][0]["levels"], [[100, 1, 2]])
         self.assertEqual(payload["activeBar"]["levels"], [[100, 2, 0]])
-        store.read_detailed.assert_called_once_with(
+        store.read_snapshot.assert_called_once_with(
             series_id=series.pk,
             limit=CHART_SNAPSHOT_BARS,
             max_levels=CHART_SNAPSHOT_MAX_LEVELS - 1,
+            before_bar_index=None,
         )
+
+    @patch("footprints.chart_api._chart_bar_store")
+    def test_chart_bars_page_back_without_repeating_the_active_bar(
+        self, store_factory
+    ):
+        series = self._ready_tick_series()
+        store = MagicMock()
+        store.read_snapshot.return_value = [
+            self._bar(series, 4),
+            self._bar(series, 3),
+        ]
+        store_factory.return_value = store
+
+        response = self.client.get(
+            "/api/v1/footprints/chart-bars",
+            {
+                "seriesKey": series.public_key,
+                "beforeBarIndex": 5,
+                "limit": 2,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual([bar["barIndex"] for bar in payload["bars"]], [3, 4])
+        self.assertIsNone(payload["activeBar"])
+        self.assertTrue(payload["hasMore"])
+        self.assertEqual(payload["nextBeforeBarIndex"], 3)
+        store.read_snapshot.assert_called_once_with(
+            series_id=series.pk,
+            limit=2,
+            max_levels=CHART_SNAPSHOT_MAX_LEVELS,
+            before_bar_index=5,
+        )
+
+    @patch("footprints.chart_api._chart_bar_store")
+    def test_chart_bars_compress_large_browser_responses(self, store_factory):
+        series = self._ready_tick_series()
+        store = MagicMock()
+        store.read_snapshot.return_value = [
+            self._bar(series, index) for index in range(20)
+        ]
+        store_factory.return_value = store
+
+        response = self.client.get(
+            "/api/v1/footprints/chart-bars",
+            {"seriesKey": series.public_key},
+            HTTP_ACCEPT_ENCODING="gzip",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.headers["Content-Encoding"], "gzip")
+        payload = json.loads(gzip.decompress(response.content))
+        self.assertEqual(len(payload["bars"]), 20)
 
     @patch("footprints.chart_api._chart_bar_store")
     def test_newly_closed_row_wins_over_a_stale_active_checkpoint(
@@ -207,7 +314,7 @@ class ChartApiTests(TestCase):
     ):
         series = self._ready_tick_series()
         store = MagicMock()
-        store.read_detailed.return_value = [self._bar(series, 3), self._bar(series, 2)]
+        store.read_snapshot.return_value = [self._bar(series, 3), self._bar(series, 2)]
         store_factory.return_value = store
 
         response = self.client.get(
@@ -227,13 +334,12 @@ class ChartApiTests(TestCase):
         series = self._ready_tick_series()
         dense = replace(
             self._bar(series, 2),
-            levels=tuple(
-                ChartLevel(index + 1, 1, 0)
-                for index in range(CHART_MAX_LEVELS_PER_BAR + 1)
-            ),
+            level_ticks=tuple(range(1, CHART_MAX_LEVELS_PER_BAR + 2)),
+            level_buy_units=(1,) * (CHART_MAX_LEVELS_PER_BAR + 1),
+            level_sell_units=(0,) * (CHART_MAX_LEVELS_PER_BAR + 1),
         )
         store = MagicMock()
-        store.read_detailed.return_value = [dense]
+        store.read_snapshot.return_value = [dense]
         store_factory.return_value = store
 
         response = self.client.get(
@@ -270,13 +376,12 @@ class ChartApiTests(TestCase):
             checkpoint_state=checkpoint,
         )
 
-    def _bar(self, series: ChartSeries, index: int) -> DetailedChartBar:
+    def _bar(self, series: ChartSeries, index: int) -> ChartSnapshotBar:
         opened = self.anchor + timedelta(seconds=index)
-        return DetailedChartBar(
+        return ChartSnapshotBar(
             series_id=series.pk,
             bar_index=index,
             opened_at=opened,
-            ended_at=opened + timedelta(milliseconds=1),
             instrument_spec_id=self.spec.pk,
             open_tick=100,
             high_tick=102,
@@ -286,5 +391,7 @@ class ChartApiTests(TestCase):
             sell_units=2,
             trade_count=2,
             break_before=False,
-            levels=(ChartLevel(100, 1, 2),),
+            level_ticks=(100,),
+            level_buy_units=(1,),
+            level_sell_units=(2,),
         )

@@ -190,6 +190,9 @@ class TrevUpdate:
     bars: tuple[TrevBar, ...]
 
 
+_EMPTY_TREV_UPDATE = TrevUpdate(bars=())
+
+
 @dataclass(slots=True)
 class _ActiveBar:
     open_tick: int
@@ -215,20 +218,35 @@ class _ActiveBar:
         )
 
     def add(self, trade: TrevTrade) -> None:
-        self.last_tick = trade.price_tick
-        self.high_tick = max(self.high_tick, trade.price_tick)
-        self.low_tick = min(self.low_tick, trade.price_tick)
-        values = self.levels.setdefault(trade.price_tick, [0, 0])
-        if trade.is_taker_buy:
-            values[0] += trade.quantity_units
-            self.buy_units += trade.quantity_units
+        self.add_raw(
+            order=trade.order,
+            price_tick=trade.price_tick,
+            quantity_units=trade.quantity_units,
+            is_taker_buy=trade.is_taker_buy,
+        )
+
+    def add_raw(
+        self,
+        *,
+        order: TrevOrder,
+        price_tick: int,
+        quantity_units: int,
+        is_taker_buy: bool,
+    ) -> None:
+        self.last_tick = price_tick
+        self.high_tick = max(self.high_tick, price_tick)
+        self.low_tick = min(self.low_tick, price_tick)
+        values = self.levels.setdefault(price_tick, [0, 0])
+        if is_taker_buy:
+            values[0] += quantity_units
+            self.buy_units += quantity_units
         else:
-            values[1] += trade.quantity_units
-            self.sell_units += trade.quantity_units
+            values[1] += quantity_units
+            self.sell_units += quantity_units
         self.trade_count += 1
         if self.first_order is None:
-            self.first_order = trade.order
-        self.last_order = trade.order
+            self.first_order = order
+        self.last_order = order
 
     def levels_tuple(self) -> tuple[TrevLevel, ...]:
         return tuple(
@@ -280,37 +298,61 @@ class TrevEngine:
     def push(self, trade: TrevTrade) -> TrevUpdate:
         """Consume one execution and return newly closed bars plus active state."""
 
+        if not isinstance(trade, TrevTrade):
+            raise TrevError("trade must be a TrevTrade")
+        return self._push_trusted(
+            order=trade.order,
+            price_tick=trade.price_tick,
+            quantity_units=trade.quantity_units,
+            is_taker_buy=trade.is_taker_buy,
+            spec_id=trade.spec_id,
+        )
+
+    def _push_trusted(
+        self,
+        *,
+        order: TrevOrder,
+        price_tick: int,
+        quantity_units: int,
+        is_taker_buy: bool,
+        spec_id: int,
+    ) -> TrevUpdate:
         if (
             self.state.last_order is not None
-            and trade.order.rank <= self.state.last_order.rank
+            and order.rank <= self.state.last_order.rank
         ):
             raise TrevError("execution order must strictly increase")
 
         closed: list[TrevBar] = []
-        if self.state.spec_id is not None and trade.spec_id != self.state.spec_id:
+        if self.state.spec_id is not None and spec_id != self.state.spec_id:
             closed.extend(self._truncate())
 
         if self.state.active is None:
             active = _ActiveBar.empty(
-                trade.price_tick,
+                price_tick,
                 break_before=self.state.break_before_next,
             )
             self.state.break_before_next = False
-            active.add(trade)
+            active.add_raw(
+                order=order,
+                price_tick=price_tick,
+                quantity_units=quantity_units,
+                is_taker_buy=is_taker_buy,
+            )
             self.state.active = active
-            self.state.spec_id = trade.spec_id
-            self.state.last_order = trade.order
-            return TrevUpdate(bars=tuple(closed))
+            self.state.spec_id = spec_id
+            self.state.last_order = order
+            return TrevUpdate(bars=tuple(closed)) if closed else _EMPTY_TREV_UPDATE
 
         established_direction: TrevDirection | None = None
         if self.state.direction == TrevDirection.UNSET:
-            if trade.price_tick > self.state.active.open_tick:
+            if price_tick > self.state.active.open_tick:
                 established_direction = TrevDirection.UP
-            elif trade.price_tick < self.state.active.open_tick:
+            elif price_tick < self.state.active.open_tick:
                 established_direction = TrevDirection.DOWN
 
         expansion_count = self._expansion_count(
-            trade.price_tick,
+            price_tick,
             direction=established_direction or self.state.direction,
         )
         if expansion_count > self.config.max_bars_per_trade:
@@ -321,26 +363,36 @@ class TrevEngine:
         if established_direction is not None:
             self.state.direction = established_direction
 
-        thresholds = self._thresholds(trade.price_tick, expansion_count)
+        thresholds = self._thresholds(price_tick, expansion_count)
         for index, (close_tick, new_direction) in enumerate(thresholds):
             is_last = index == len(thresholds) - 1
-            if is_last and trade.price_tick == close_tick:
-                self.state.active.add(trade)
+            if is_last and price_tick == close_tick:
+                self.state.active.add_raw(
+                    order=order,
+                    price_tick=price_tick,
+                    quantity_units=quantity_units,
+                    is_taker_buy=is_taker_buy,
+                )
             closed.append(
                 self._close_active(
                     close_tick=close_tick,
-                    trigger_order=trade.order,
+                    trigger_order=order,
                 )
             )
             self.state.direction = new_direction
             self.state.active = _ActiveBar.empty(close_tick)
 
-        if not thresholds or trade.price_tick != thresholds[-1][0]:
-            self.state.active.add(trade)
+        if not thresholds or price_tick != thresholds[-1][0]:
+            self.state.active.add_raw(
+                order=order,
+                price_tick=price_tick,
+                quantity_units=quantity_units,
+                is_taker_buy=is_taker_buy,
+            )
 
-        self.state.spec_id = trade.spec_id
-        self.state.last_order = trade.order
-        return TrevUpdate(bars=tuple(closed))
+        self.state.spec_id = spec_id
+        self.state.last_order = order
+        return TrevUpdate(bars=tuple(closed)) if closed else _EMPTY_TREV_UPDATE
 
     def push_raw(
         self,
@@ -362,18 +414,19 @@ class TrevEngine:
         order = object.__new__(TrevOrder)
         object.__setattr__(order, "timestamp_us", timestamp_us)
         object.__setattr__(order, "rank", rank)
-        trade = object.__new__(TrevTrade)
-        object.__setattr__(trade, "order", order)
-        object.__setattr__(trade, "price_tick", price_tick)
-        object.__setattr__(trade, "quantity_units", quantity_units)
-        object.__setattr__(trade, "is_taker_buy", is_taker_buy)
-        object.__setattr__(trade, "spec_id", spec_id)
-        return self.push(trade)
+        return self._push_trusted(
+            order=order,
+            price_tick=price_tick,
+            quantity_units=quantity_units,
+            is_taker_buy=is_taker_buy,
+            spec_id=spec_id,
+        )
 
     def truncate_segment(self) -> TrevUpdate:
         """End the current segment at a known data gap or specification change."""
 
-        return TrevUpdate(bars=self._truncate())
+        bars = self._truncate()
+        return TrevUpdate(bars=bars) if bars else _EMPTY_TREV_UPDATE
 
     def active_snapshot(self) -> TrevBar | None:
         active = self.state.active

@@ -61,6 +61,7 @@ def _collector(
     }
     collector._market_scales = {7: (3, 6)}
     collector._connection_source_epoch = 5
+    collector._notify_committed_executions = Mock()
     return collector
 
 
@@ -227,6 +228,7 @@ class CollectorDeliveryTests(SimpleTestCase):
         collector._writer_loop()
 
         self.assertEqual(store.insert_batch.call_count, 2)
+        self.assertEqual(collector._notify_committed_executions.call_count, 2)
         self.assertTrue(collector.queue.empty())
         self.assertEqual(collector.queue.unfinished_tasks, 0)
 
@@ -300,6 +302,7 @@ class CollectorDeliveryTests(SimpleTestCase):
         collector._writer_loop()
 
         self.assertEqual(store.insert_batch.call_count, 1)
+        collector._notify_committed_executions.assert_called_once()
         self.assertEqual(collector.queue.qsize(), 1)
 
     def test_retry_reuses_the_exact_rows(self):

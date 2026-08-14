@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from footprints.constants import CHART_SNAPSHOT_BARS, CHART_SNAPSHOT_MAX_LEVELS
 from footprints.storage.clickhouse import (
     ClickHouseAccess,
-    deduplicated_insert_settings,
+    deduplicated_immediate_insert_settings,
     qualified_table,
 )
 from footprints.storage.clickhouse_schema import CHART_BAR_COLUMNS
@@ -34,8 +35,7 @@ class ProjectorSpecDivisors:
         _positive_int(self.quantity_atoms_per_unit, "quantity_atoms_per_unit")
 
 
-@dataclass(frozen=True, slots=True)
-class ProjectorExecution:
+class ProjectorExecution(NamedTuple):
     source_epoch: int
     source_sequence: int
     batch_index: int
@@ -100,10 +100,23 @@ class ClickHouseProjectorExecutionStore:
         }
         if after_cursor is not None:
             conditions.append(
-                "(source_epoch, source_sequence, batch_index, timestamp_us, trade_id) > "
-                "({after_source_epoch:UInt32}, {after_source_sequence:UInt64}, "
-                "{after_batch_index:UInt32}, {after_timestamp_us:Int64}, "
-                "{after_trade_id:String})"
+                "("
+                "source_epoch > {after_source_epoch:UInt32} "
+                "OR (source_epoch = {after_source_epoch:UInt32} "
+                "AND source_sequence > {after_source_sequence:UInt64}) "
+                "OR (source_epoch = {after_source_epoch:UInt32} "
+                "AND source_sequence = {after_source_sequence:UInt64} "
+                "AND batch_index > {after_batch_index:UInt32}) "
+                "OR (source_epoch = {after_source_epoch:UInt32} "
+                "AND source_sequence = {after_source_sequence:UInt64} "
+                "AND batch_index = {after_batch_index:UInt32} "
+                "AND timestamp_us > {after_timestamp_us:Int64}) "
+                "OR (source_epoch = {after_source_epoch:UInt32} "
+                "AND source_sequence = {after_source_sequence:UInt64} "
+                "AND batch_index = {after_batch_index:UInt32} "
+                "AND timestamp_us = {after_timestamp_us:Int64} "
+                "AND trade_id > {after_trade_id:String})"
+                ")"
             )
             parameters.update(
                 {
@@ -119,52 +132,47 @@ class ClickHouseProjectorExecutionStore:
             parameters["limit"] = limit
             limit_clause = "LIMIT {limit:UInt64}"
 
+        columns = (
+            "source_epoch, source_sequence, batch_index, timestamp_us, trade_id, "
+            "price_atoms, quantity_atoms, is_taker_buy, instrument_spec_id"
+        )
         sql = f"""
-            SELECT
-                source_epoch,
-                source_sequence,
-                batch_index,
-                timestamp_us,
-                trade_id,
-                price_atoms,
-                quantity_atoms,
-                is_taker_buy,
-                instrument_spec_id
+            SELECT {columns}
             FROM {self.qualified_table}
             WHERE {' AND '.join(conditions)}
             ORDER BY
-                market_id,
-                source_epoch,
-                source_sequence,
-                batch_index,
-                timestamp_us,
-                trade_id
+                market_id, source_epoch, source_sequence, batch_index,
+                timestamp_us, trade_id
             {limit_clause}
         """
 
         previous: ProjectorExecution | None = None
+        previous_cursor: ProjectorCursor | None = None
         for row in self.access.stream_rows(
             sql,
             parameters=parameters,
             operation="stream_projector_executions",
         ):
             execution = self._execution_from_row(row)
-            if after_cursor is not None and execution.cursor <= after_cursor:
+            execution_cursor = execution.cursor
+            if after_cursor is not None and execution_cursor <= after_cursor:
                 raise ProjectorDataError(
                     "projector execution did not advance after its cursor"
                 )
             if previous is not None:
-                if execution.cursor < previous.cursor:
+                assert previous_cursor is not None
+                if execution_cursor < previous_cursor:
                     raise ProjectorDataError(
                         "projector executions are not in global source order"
                     )
-                if execution.cursor == previous.cursor:
+                if execution_cursor == previous_cursor:
                     if execution != previous:
                         raise ProjectorDataError(
                             "conflicting executions share a projector cursor"
                         )
                     continue
             previous = execution
+            previous_cursor = execution_cursor
             yield execution
 
     def _execution_from_row(self, row: Sequence[object]) -> ProjectorExecution:
@@ -181,20 +189,42 @@ class ClickHouseProjectorExecutionStore:
             raw_is_taker_buy,
             raw_spec_id,
         ) = row
-        source_epoch = _database_int(raw_source_epoch, "source_epoch", minimum=1)
-        source_sequence = _database_int(
-            raw_source_sequence, "source_sequence", minimum=0
-        )
-        batch_index = _database_int(raw_batch_index, "batch_index", minimum=0)
-        timestamp_us = _database_int(raw_timestamp_us, "timestamp_us", minimum=1)
-        price_atoms = _database_int(raw_price_atoms, "price_atoms", minimum=1)
-        quantity_atoms = _database_int(raw_quantity_atoms, "quantity_atoms", minimum=1)
-        spec_id = _database_int(raw_spec_id, "instrument_spec_id", minimum=1)
-        trade_id = str(raw_trade_id)
-        if not trade_id:
+        # clickhouse-connect maps these constrained ClickHouse integer columns
+        # directly to Python ints. Avoid seven generic int conversions per
+        # execution on this hottest replay path while retaining an explicit
+        # boundary check for fake/corrupt storage adapters.
+        if (
+            type(raw_source_epoch) is not int
+            or raw_source_epoch <= 0
+            or type(raw_source_sequence) is not int
+            or raw_source_sequence < 0
+            or type(raw_batch_index) is not int
+            or raw_batch_index < 0
+            or type(raw_timestamp_us) is not int
+            or raw_timestamp_us <= 0
+            or type(raw_price_atoms) is not int
+            or raw_price_atoms <= 0
+            or type(raw_quantity_atoms) is not int
+            or raw_quantity_atoms <= 0
+            or type(raw_spec_id) is not int
+            or raw_spec_id <= 0
+        ):
+            raise ProjectorDataError(
+                "projector execution contains an invalid native integer"
+            )
+        if not isinstance(raw_trade_id, str) or not raw_trade_id:
             raise ProjectorDataError("projector execution identity is incomplete")
-        if not isinstance(raw_is_taker_buy, bool):
+        if type(raw_is_taker_buy) is not bool:
             raise ProjectorDataError("projector execution side is not boolean")
+
+        source_epoch = raw_source_epoch
+        source_sequence = raw_source_sequence
+        batch_index = raw_batch_index
+        timestamp_us = raw_timestamp_us
+        trade_id = raw_trade_id
+        price_atoms = raw_price_atoms
+        quantity_atoms = raw_quantity_atoms
+        spec_id = raw_spec_id
 
         divisors = self.spec_divisors.get(spec_id)
         if divisors is None and self.load_spec_divisor is not None:
@@ -289,6 +319,27 @@ class DetailedChartBar:
             previous_tick = level.price_tick
 
 
+@dataclass(frozen=True, slots=True)
+class ChartSnapshotBar:
+    """Validated ClickHouse-native bar optimized for one HTTP snapshot."""
+
+    series_id: int
+    bar_index: int
+    opened_at: datetime
+    instrument_spec_id: int
+    open_tick: int
+    high_tick: int
+    low_tick: int
+    close_tick: int
+    buy_units: int
+    sell_units: int
+    trade_count: int
+    break_before: bool
+    level_ticks: tuple[int, ...]
+    level_buy_units: tuple[int, ...]
+    level_sell_units: tuple[int, ...]
+
+
 class ClickHouseChartStore:
     """Sparse historical storage for closed Tick and TREV bars."""
 
@@ -315,21 +366,34 @@ class ClickHouseChartStore:
             self.qualified_table,
             rows,
             column_names=CHART_BAR_COLUMNS,
-            settings=deduplicated_insert_settings(),
+            settings=deduplicated_immediate_insert_settings(),
             operation="insert_chart_bars",
         )
         return len(rows)
 
-    def read_detailed(
+    def read_snapshot(
         self,
         *,
         series_id: int,
         limit: int = CHART_SNAPSHOT_BARS,
         max_levels: int = CHART_SNAPSHOT_MAX_LEVELS,
-    ) -> list[DetailedChartBar]:
+        before_bar_index: int | None = None,
+    ) -> list[ChartSnapshotBar]:
+        """Read validated native arrays without allocating one object per level."""
+
         _positive_int(series_id, "series_id")
         _positive_int(limit, "limit")
         _positive_int(max_levels, "max_levels")
+        conditions = ["series_id = {series_id:UInt64}"]
+        parameters = {
+            "series_id": series_id,
+            "limit": limit,
+            "max_levels": max_levels,
+        }
+        if before_bar_index is not None:
+            _nonnegative_int(before_bar_index, "before_bar_index")
+            conditions.append("bar_index < {before_bar_index:UInt64}")
+            parameters["before_bar_index"] = before_bar_index
         result = self.access.query(
             f"""
             SELECT {', '.join(CHART_BAR_COLUMNS)}
@@ -343,22 +407,18 @@ class ClickHouseChartStore:
                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                     ) AS cumulative_levels
                 FROM {self.qualified_table} FINAL
-                WHERE series_id = {{series_id:UInt64}}
+                WHERE {' AND '.join(conditions)}
                 ORDER BY bar_index DESC
                 LIMIT {{limit:UInt64}}
             )
             WHERE cumulative_levels <= {{max_levels:UInt64}}
             ORDER BY bar_index DESC
             """,
-            parameters={
-                "series_id": series_id,
-                "limit": limit,
-                "max_levels": max_levels,
-            },
-            operation="read_detailed_chart_bars",
+            parameters=parameters,
+            operation="read_chart_snapshot_bars",
         )
         return [
-            _detailed_bar_from_row(row)
+            _snapshot_bar_from_row(row)
             for row in getattr(result, "result_rows", ())
         ]
 
@@ -397,9 +457,9 @@ def _chart_insert_row(bar: DetailedChartBar) -> tuple[object, ...]:
     )
 
 
-def _detailed_bar_from_row(row: Sequence[object]) -> DetailedChartBar:
+def _snapshot_bar_from_row(row: Sequence[object]) -> ChartSnapshotBar:
     if len(row) != len(CHART_BAR_COLUMNS):
-        raise ChartDataError("detailed chart row has an invalid shape")
+        raise ChartDataError("snapshot chart row has an invalid shape")
     raw_ticks, raw_buys, raw_sells = row[-3:]
     if not all(
         isinstance(values, (list, tuple)) for values in (raw_ticks, raw_buys, raw_sells)
@@ -407,29 +467,53 @@ def _detailed_bar_from_row(row: Sequence[object]) -> DetailedChartBar:
         raise ChartDataError("chart level arrays are not sequences")
     if not len(raw_ticks) == len(raw_buys) == len(raw_sells):
         raise ChartDataError("chart level arrays have different lengths")
-    levels = tuple(
-        ChartLevel(
-            price_tick=_database_int(tick, "level price_tick", minimum=1),
-            buy_units=_database_int(buy, "level buy_units", minimum=0),
-            sell_units=_database_int(sell, "level sell_units", minimum=0),
-        )
-        for tick, buy, sell in zip(raw_ticks, raw_buys, raw_sells, strict=True)
+
+    previous_tick = 0
+    for tick, buy, sell in zip(raw_ticks, raw_buys, raw_sells, strict=True):
+        if type(tick) is not int or tick <= previous_tick:
+            raise ChartDataError("chart levels must be strictly positive and price-sorted")
+        if (
+            type(buy) is not int
+            or buy < 0
+            or type(sell) is not int
+            or sell < 0
+            or (buy == 0 and sell == 0)
+        ):
+            raise ChartDataError("chart level volume is invalid")
+        previous_tick = tick
+
+    series_id = _database_int(row[0], "series_id", minimum=1)
+    bar_index = _database_int(row[1], "bar_index", minimum=0)
+    opened_at = _required_utc_datetime(row[2], "opened_at")
+    _required_utc_datetime(row[3], "ended_at")
+    instrument_spec_id = _database_int(
+        row[4], "instrument_spec_id", minimum=1
     )
-    return DetailedChartBar(
-        series_id=_database_int(row[0], "series_id", minimum=1),
-        bar_index=_database_int(row[1], "bar_index", minimum=0),
-        opened_at=_required_utc_datetime(row[2], "opened_at"),
-        ended_at=_required_utc_datetime(row[3], "ended_at"),
-        instrument_spec_id=_database_int(row[4], "instrument_spec_id", minimum=1),
-        open_tick=_database_int(row[5], "open_tick", minimum=1),
-        high_tick=_database_int(row[6], "high_tick", minimum=1),
-        low_tick=_database_int(row[7], "low_tick", minimum=1),
-        close_tick=_database_int(row[8], "close_tick", minimum=1),
+    open_tick = _database_int(row[5], "open_tick", minimum=1)
+    high_tick = _database_int(row[6], "high_tick", minimum=1)
+    low_tick = _database_int(row[7], "low_tick", minimum=1)
+    close_tick = _database_int(row[8], "close_tick", minimum=1)
+    if not low_tick <= min(open_tick, close_tick) <= high_tick or not (
+        low_tick <= max(open_tick, close_tick) <= high_tick
+    ):
+        raise ChartDataError("chart OHLC bounds are invalid")
+
+    return ChartSnapshotBar(
+        series_id=series_id,
+        bar_index=bar_index,
+        opened_at=opened_at,
+        instrument_spec_id=instrument_spec_id,
+        open_tick=open_tick,
+        high_tick=high_tick,
+        low_tick=low_tick,
+        close_tick=close_tick,
         buy_units=_database_int(row[9], "buy_units", minimum=0),
         sell_units=_database_int(row[10], "sell_units", minimum=0),
         trade_count=_database_int(row[11], "trade_count", minimum=0),
         break_before=_database_bool(row[12], "break_before"),
-        levels=levels,
+        level_ticks=tuple(raw_ticks),
+        level_buy_units=tuple(raw_buys),
+        level_sell_units=tuple(raw_sells),
     )
 
 

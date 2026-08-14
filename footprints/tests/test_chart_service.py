@@ -8,7 +8,10 @@ from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from footprints import chart_service
-from footprints.constants import CHART_MAX_SERIES_PER_MARKET
+from footprints.constants import (
+    CHART_BUILD_EXECUTION_CHUNK,
+    CHART_MAX_SERIES_PER_MARKET,
+)
 from footprints.management.commands import footprint_maintenance
 from footprints.models import ChartSeries, ChartSeriesStatus, ChartType, FootprintMarket
 from footprints.storage.charts import ProjectorExecution
@@ -123,6 +126,83 @@ class ChartServiceTests(TestCase):
         self.assertEqual(
             (active.open_tick, active.trade_count, active.buy_units), (101, 1, 5)
         )
+        self.assertEqual(
+            executions.calls[0]["limit"],
+            CHART_BUILD_EXECUTION_CHUNK,
+        )
+        self.assertIsNone(executions.calls[0]["after_cursor"])
+
+    def test_full_build_resumes_chunks_until_every_execution_is_processed(self):
+        series = self.series(parameter_a=1)
+        executions = FakeExecutionStore(
+            [self.execution(index, 100 + index) for index in range(1, 4)]
+        )
+        bars = FakeBarStore()
+
+        with patch.object(chart_service, "CHART_BUILD_EXECUTION_CHUNK", 2):
+            chart_service.build_series(
+                series.pk,
+                execution_store=executions,
+                bar_store=bars,
+            )
+            series.refresh_from_db()
+            self.assertEqual(series.status, ChartSeriesStatus.BUILDING)
+            self.assertEqual(
+                series.checkpoint_state["cursor"],
+                list(self.execution(2, 102).cursor),
+            )
+
+            chart_service.build_series(
+                series.pk,
+                execution_store=executions,
+                bar_store=bars,
+            )
+
+        series.refresh_from_db()
+        self.assertEqual(series.status, ChartSeriesStatus.READY)
+        self.assertEqual(
+            set(bars.rows),
+            {(series.pk, 0), (series.pk, 1), (series.pk, 2)},
+        )
+        self.assertEqual(
+            executions.calls[1]["after_cursor"],
+            self.execution(2, 102).cursor,
+        )
+
+    def test_shared_build_advances_a_later_lookback_to_the_next_chunk(self):
+        early = self.series(parameter_a=1, lookback_days=2)
+        late = self.series(
+            parameter_a=1,
+            lookback_days=1,
+            anchor_at=self.anchor + timedelta(milliseconds=3),
+        )
+        executions = FakeExecutionStore(
+            [self.execution(index, 100 + index) for index in range(1, 4)]
+        )
+        bars = FakeBarStore()
+
+        with patch.object(chart_service, "CHART_BUILD_EXECUTION_CHUNK", 2):
+            chart_service.build_series_batch(
+                (early.pk, late.pk),
+                execution_store=executions,
+                bar_store=bars,
+            )
+            late.refresh_from_db()
+            self.assertEqual(late.status, ChartSeriesStatus.BUILDING)
+            self.assertEqual(
+                late.checkpoint_state["cursor"],
+                list(self.execution(2, 102).cursor),
+            )
+
+            chart_service.build_series_batch(
+                (early.pk, late.pk),
+                execution_store=executions,
+                bar_store=bars,
+            )
+
+        late.refresh_from_db()
+        self.assertEqual(late.status, ChartSeriesStatus.READY)
+        self.assertIn((late.pk, 0), bars.rows)
 
     def test_transient_build_is_requeued_and_can_replay_same_indices(self):
         series = self.series(status=ChartSeriesStatus.QUEUED)
@@ -167,6 +247,44 @@ class ChartServiceTests(TestCase):
         self.assertEqual(series.status, ChartSeriesStatus.FAILED)
         self.assertEqual(series.error_code, "ValueError")
 
+    def test_queued_configurations_for_one_market_share_one_replay(self):
+        tick = self.series(
+            ChartType.TICK,
+            parameter_a=2,
+            status=ChartSeriesStatus.QUEUED,
+        )
+        trev = self.series(
+            ChartType.TREV,
+            parameter_a=1,
+            parameter_b=1,
+            status=ChartSeriesStatus.QUEUED,
+        )
+        executions = FakeExecutionStore(
+            [
+                self.execution(1, 100),
+                self.execution(2, 101),
+                self.execution(3, 102),
+            ]
+        )
+        bars = FakeBarStore()
+
+        self.assertTrue(
+            chart_service.build_next_queued_series(
+                execution_store=executions,
+                bar_store=bars,
+            )
+        )
+
+        tick.refresh_from_db()
+        trev.refresh_from_db()
+        self.assertEqual((tick.status, trev.status), ("ready", "ready"))
+        self.assertEqual(len(executions.calls), 1)
+        self.assertEqual(executions.calls[0]["market_id"], self.market.pk)
+        self.assertEqual(
+            {series_id for series_id, _bar_index in bars.rows},
+            {tick.pk, trev.pk},
+        )
+
     @patch("footprints.chart_service.publish_chart_update")
     def test_live_tail_is_read_once_and_fanned_to_tick_and_trev(self, publish_update):
         build_rows = [self.execution(1, 100), self.execution(2, 101)]
@@ -195,6 +313,34 @@ class ChartServiceTests(TestCase):
         for call in publish_update.call_args_list:
             for bar in call.kwargs["bars"]:
                 self.assertIn("levels", bar)
+
+    def test_targeted_advance_only_loads_the_notified_market(self):
+        target = self.series(
+            status=ChartSeriesStatus.READY,
+            checkpoint_state={"stub": True},
+        )
+        other_market = FootprintMarket.objects.get(exchange="bybit", symbol="BTCUSDT")
+        self.series(
+            market=other_market,
+            status=ChartSeriesStatus.READY,
+            checkpoint_state={"stub": True},
+        )
+        runtime = MagicMock()
+
+        with (
+            patch.object(chart_service, "_runtime_for", return_value=runtime) as load,
+            patch.object(chart_service, "_advance_market", return_value=0) as advance,
+        ):
+            chart_service.advance_ready_series(
+                execution_store=FakeExecutionStore([]),
+                bar_store=FakeBarStore(),
+                market_ids=[self.market.pk],
+            )
+
+        load.assert_called_once()
+        self.assertEqual(load.call_args.args[0].pk, target.pk)
+        advance.assert_called_once()
+        self.assertEqual(advance.call_args.args[0], self.market.pk)
 
     @patch("footprints.chart_service.publish_chart_update")
     def test_active_only_update_is_checkpointed_before_publication(self, publish_update):
@@ -245,7 +391,7 @@ class ChartServiceTests(TestCase):
         self.assertTrue(
             all(call.kwargs["active_bar"]["barIndex"] == 501 for call in calls)
         )
-        self.assertEqual(len(bars.rows), 500)
+        self.assertEqual(len(bars.rows), 501)
 
     @patch("footprints.chart_service.publish_chart_error")
     @patch("footprints.chart_service.publish_chart_update")
@@ -307,17 +453,19 @@ class ChartServiceTests(TestCase):
         )
         publish_update.assert_not_called()
 
-    def test_recover_interrupted_builds_and_claim_only_one_series(self):
-        interrupted = self.series()
+    def test_recover_interrupted_builds_and_claims_the_waiting_market(self):
+        interrupted = self.series(checkpoint_state={"saved": True})
         queued = self.series(parameter_a=3, status=ChartSeriesStatus.QUEUED)
 
         self.assertEqual(chart_service.recover_interrupted_builds(), 1)
-        claimed = chart_service.claim_queued_series()
+        claimed = chart_service.claim_queued_market_series()
 
-        self.assertIn(claimed, {interrupted.pk, queued.pk})
+        self.assertEqual(set(claimed), {interrupted.pk, queued.pk})
         self.assertEqual(
-            ChartSeries.objects.filter(status=ChartSeriesStatus.BUILDING).count(), 1
+            ChartSeries.objects.filter(status=ChartSeriesStatus.BUILDING).count(), 2
         )
+        interrupted.refresh_from_db()
+        self.assertEqual(interrupted.checkpoint_state, {"saved": True})
 
     def test_expired_series_are_not_claimed_or_advanced(self):
         expired = self.series(status=ChartSeriesStatus.QUEUED)
@@ -326,7 +474,7 @@ class ChartServiceTests(TestCase):
             last_requested_at=timezone.now() - timedelta(minutes=31)
         )
 
-        self.assertEqual(chart_service.claim_queued_series(), live.pk)
+        self.assertEqual(chart_service.claim_queued_market_series(), (live.pk,))
 
         live.status = ChartSeriesStatus.BUILDING
         live.save(update_fields=["status"])
@@ -379,6 +527,7 @@ class ChartServiceTests(TestCase):
             chart_type=ChartType.TREV,
             parameter_a=20,
             parameter_b=30,
+            lookback_days=2,
             now=timezone.now(),
         )
 
@@ -388,6 +537,7 @@ class ChartServiceTests(TestCase):
             chart_type=ChartType.TICK,
             parameter_a=building.parameter_a,
             parameter_b=0,
+            lookback_days=2,
             now=timezone.now(),
         )
         self.assertEqual(renewed.pk, building.pk)

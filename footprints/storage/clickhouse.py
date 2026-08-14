@@ -21,6 +21,7 @@ DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_QUERY_TIMEOUT_SECONDS = 30
 DEFAULT_INSERT_TIMEOUT_SECONDS = 60
 DEFAULT_QUERY_RETRIES = 2
+RAW_ASYNC_INSERT_BUSY_TIMEOUT_MS = 100
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NETWORK_ERROR_CODES = {159, 209, 210, 279, 319}
@@ -293,7 +294,24 @@ def deduplicated_insert_settings() -> dict[str, object]:
         "wait_for_async_insert": 1,
         "async_insert_deduplicate": 1,
         "async_insert_use_adaptive_busy_timeout": 0,
-        "async_insert_busy_timeout_ms": 500,
+        "async_insert_busy_timeout_ms": RAW_ASYNC_INSERT_BUSY_TIMEOUT_MS,
+        "insert_deduplicate": 1,
+    }
+
+
+def deduplicated_immediate_insert_settings() -> dict[str, object]:
+    """Synchronously acknowledge one already-batched, retry-safe insert.
+
+    The chart maintenance process is the only chart-bar writer and already
+    combines every bar produced by one advancement pass. Sending those rows
+    through ClickHouse's asynchronous insert queue adds the configured busy
+    timeout to every publication without creating a larger batch. Keep raw
+    collector writes asynchronous, but let chart checkpoints advance as soon
+    as their corresponding rows are durable.
+    """
+
+    return {
+        "async_insert": 0,
         "insert_deduplicate": 1,
     }
 
