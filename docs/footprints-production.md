@@ -1,8 +1,9 @@
 # Footprint V0 production deployment
 
 This release is designed for one Docker host. It deliberately has no account
-system, WAL/backfill service, LRU cache, Prometheus stack, or bundled reverse
-proxy. Reconnect/source changes are rendered as explicit chart gaps.
+system, WAL/backfill service, cross-host collector, Prometheus stack, or bundled
+reverse proxy. Each execution collector keeps a second subscribed WebSocket as
+a same-process hot standby for isolated connection failures.
 
 ## Before the first release
 
@@ -69,7 +70,8 @@ for chart checkpoints.
 
 ## Release checks
 
-- Confirm all three footprint collectors and maintenance are healthy.
+- Confirm all three footprint collectors and maintenance are healthy, and that
+  collector logs show both execution feeds becoming subscription-ready.
 - Request the market catalog, create one Tick and one TRev series, wait for
   `ready`, and confirm both snapshots are non-empty.
 - Manually smoke-test rendering, zoom, crosshair, resize, two panels sharing a
@@ -80,3 +82,5 @@ for chart checkpoints.
 
 Rollback by restoring the previous backend and frontend image tags. Keep the
 PostgreSQL and ClickHouse volumes; never reset production data as a rollback.
+The two sockets still share one process, host, network, and exchange endpoint;
+common failures require historical reconciliation.

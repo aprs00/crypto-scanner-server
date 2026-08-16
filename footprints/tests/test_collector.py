@@ -6,7 +6,7 @@ from unittest.mock import Mock, call
 
 from django.test import SimpleTestCase
 
-from footprints.collector import FootprintCollector, _MarketMetadata
+from footprints.collector import FootprintCollector, _HotStandbyRouter, _MarketMetadata
 from footprints.storage.clickhouse import (
     ExecutionIdentityConflict,
     RecentExecutionIdentity,
@@ -61,6 +61,7 @@ def _collector(
     }
     collector._market_scales = {7: (3, 6)}
     collector._connection_source_epoch = 5
+    collector._last_source_epoch = 5
     collector._notify_committed_executions = Mock()
     return collector
 
@@ -84,6 +85,13 @@ def _recent_identity(
         is_taker_buy=is_taker_buy,
         instrument_spec_id=instrument_spec_id,
     )
+
+
+def _queued_executions(collector: FootprintCollector):
+    executions = []
+    while not collector.queue.empty():
+        executions.append(collector.queue.get_nowait())
+    return executions
 
 
 class CollectorNormalizationTests(SimpleTestCase):
@@ -213,6 +221,179 @@ class CollectorNormalizationTests(SimpleTestCase):
 
         self.assertEqual(list(collector._recent_trades[7]), ["seven-2", "seven-3"])
         self.assertEqual(list(collector._recent_trades[8]), ["eight-2", "eight-3"])
+
+
+class CollectorRedundantFeedTests(SimpleTestCase):
+    def test_first_leader_drains_trades_received_before_ready(self):
+        collector = _collector()
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.trade(0, _trade("one", sequence=1))
+
+        router.ready(0)
+
+        executions = _queued_executions(collector)
+        self.assertEqual([item.trade.trade_id for item in executions], ["one"])
+
+    def test_ready_standby_replays_once_and_becomes_leader(self):
+        collector = _collector(queue_size=20)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
+        router.ready(1)
+
+        router.trade(0, _trade("one", sequence=1))
+        router.trade(1, _trade("one", sequence=1))
+        router.trade(1, _trade("two", sequence=2))
+
+        self.assertTrue(router.disconnected(0))
+        router.trade(1, _trade("three", sequence=3))
+
+        executions = _queued_executions(collector)
+        self.assertEqual(
+            [execution.trade.trade_id for execution in executions],
+            ["one", "two", "three"],
+        )
+        self.assertEqual({execution.source_epoch for execution in executions}, {5})
+        self.assertEqual(router.leader_slot, 1)
+
+    def test_standby_disconnect_does_not_interrupt_the_leader(self):
+        collector = _collector(queue_size=20)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
+        router.ready(1)
+        router.trade(0, _trade("one", sequence=1))
+
+        self.assertTrue(router.disconnected(1))
+        router.trade(0, _trade("two", sequence=2))
+
+        executions = _queued_executions(collector)
+        self.assertEqual(
+            [execution.trade.trade_id for execution in executions],
+            ["one", "two"],
+        )
+        self.assertEqual(router.leader_slot, 0)
+
+    def test_leader_disconnect_without_ready_standby_loses_coverage(self):
+        collector = _collector()
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.ready(0)
+        router.trade(0, _trade("one", sequence=1))
+
+        self.assertFalse(router.disconnected(0))
+        self.assertIsNone(router.leader_slot)
+
+    def test_unverified_handoff_keeps_buffered_trade_in_a_new_epoch(self):
+        collector = _collector(queue_size=20)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
+        router.ready(1)
+        router.trade(0, _trade("one", sequence=1))
+        router.trade(1, _trade("two", sequence=2))
+
+        self.assertTrue(router.disconnected(0))
+
+        executions = _queued_executions(collector)
+        self.assertEqual(
+            [(item.trade.trade_id, item.source_epoch) for item in executions],
+            [("one", 5), ("two", 6)],
+        )
+        router.trade(1, _trade("three", sequence=3))
+        self.assertEqual(collector.queue.get_nowait().source_epoch, 6)
+
+    def test_unverified_handoff_replays_after_the_latest_shared_trade(self):
+        collector = _collector(queue_size=20)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
+        router.ready(1)
+        router.trade(0, _trade("one", sequence=1))
+        router.trade(0, _trade("two", sequence=2))
+        router.trade(0, _trade("three", sequence=3))
+        router.trade(1, _trade("two", sequence=2))
+        router.trade(1, _trade("four", sequence=4))
+
+        self.assertTrue(router.disconnected(0))
+
+        executions = _queued_executions(collector)
+        self.assertEqual(
+            [(item.trade.trade_id, item.source_epoch) for item in executions],
+            [("one", 5), ("two", 5), ("three", 5), ("four", 6)],
+        )
+
+    def test_shutdown_does_not_promote_or_replay_standby(self):
+        collector = _collector(queue_size=20)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
+        router.ready(1)
+        router.trade(0, _trade("one", sequence=1))
+        router.trade(1, _trade("one", sequence=1))
+        router.trade(1, _trade("two", sequence=2))
+        collector._stream_stop_event.set()
+
+        self.assertTrue(router.disconnected(0))
+
+        executions = _queued_executions(collector)
+        self.assertEqual([item.trade.trade_id for item in executions], ["one"])
+        self.assertIsNone(router.leader_slot)
+
+    def test_conflicting_standby_copy_remains_fatal_on_promotion(self):
+        collector = _collector(queue_size=20)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
+        router.ready(1)
+        router.trade(0, _trade("same", sequence=1))
+        router.trade(1, _trade("same", sequence=1, price="100.126"))
+
+        with self.assertRaisesRegex(RuntimeError, "conflicting immutable"):
+            router.disconnected(0)
+
+        self.assertIsInstance(collector._fatal_error, ExecutionIdentityConflict)
+        self.assertTrue(collector.stop_event.is_set())
+
+    def test_bybit_handoff_assigns_one_canonical_batch_order(self):
+        market_key = "bybit:perpetual:BTCUSDT"
+        collector = _collector("bybit", queue_size=20)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
+        router.ready(1)
+
+        router.trade(
+            0,
+            _trade("one", market_key=market_key, sequence=50),
+        )
+        router.trade(
+            1,
+            _trade("one", market_key=market_key, sequence=50),
+        )
+        router.trade(
+            1,
+            _trade("two", market_key=market_key, sequence=50),
+        )
+        self.assertTrue(router.disconnected(0))
+
+        executions = _queued_executions(collector)
+        self.assertEqual(
+            [execution.trade.trade_id for execution in executions],
+            ["one", "two"],
+        )
+        self.assertEqual(
+            [execution.trade.batch_index for execution in executions],
+            [0, 1],
+        )
 
 
 class CollectorDeliveryTests(SimpleTestCase):

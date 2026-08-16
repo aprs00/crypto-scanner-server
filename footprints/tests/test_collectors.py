@@ -4,9 +4,9 @@ from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase
 
-from footprints.collectors import binance
+from footprints.collectors import binance, bybit, hyperliquid
 from footprints.collectors.binance import normalize_trade as normalize_binance
-from footprints.collectors.bybit import SequenceOrder, normalize_trade as normalize_bybit
+from footprints.collectors.bybit import normalize_trade as normalize_bybit
 from footprints.collectors.hyperliquid import normalize_trade as normalize_hyperliquid
 from footprints.types import TakerSide
 
@@ -103,6 +103,155 @@ class CollectorWebSocketTests(SimpleTestCase):
 
         on_trade.assert_called_once()
 
+    @patch("footprints.collectors.binance.run_websocket")
+    @patch("footprints.collectors.binance.websocket.WebSocketApp")
+    def test_binance_waits_for_subscription_ack(
+        self,
+        websocket_app,
+        _run_websocket,
+    ):
+        on_ready = Mock()
+        stop_event = threading.Event()
+
+        binance.listen(
+            {"BTCUSDT": "binance:perpetual:BTCUSDT"},
+            Mock(),
+            stop_event,
+            on_ready=on_ready,
+        )
+        callbacks = websocket_app.call_args.kwargs
+        socket = Mock()
+
+        callbacks["on_message"](
+            socket,
+            json.dumps({"result": None, "id": 1}),
+        )
+        callbacks["on_message"](
+            socket,
+            json.dumps({"result": None, "id": 1}),
+        )
+        on_ready.assert_called_once_with()
+        self.assertFalse(stop_event.is_set())
+
+    @patch("footprints.collectors.bybit.run_websocket")
+    @patch("footprints.collectors.bybit.websocket.WebSocketApp")
+    def test_bybit_waits_for_successful_ack(
+        self,
+        websocket_app,
+        run_websocket_mock,
+    ):
+        socket = Mock()
+        websocket_app.return_value = socket
+        on_ready = Mock()
+        stop_event = threading.Event()
+
+        bybit.listen(
+            {"BTCUSDT": "bybit:perpetual:BTCUSDT"},
+            Mock(),
+            stop_event,
+            on_ready=on_ready,
+        )
+        on_message = websocket_app.call_args.kwargs["on_message"]
+        on_message(
+            socket,
+            json.dumps({"success": True, "ret_msg": "", "op": "subscribe"}),
+        )
+
+        on_ready.assert_called_once_with()
+        run_websocket_mock.assert_called_once_with(
+            socket,
+            stop_event,
+            ping_interval=20,
+            ping_timeout=10,
+        )
+
+    @patch("footprints.collectors.bybit.run_websocket")
+    @patch("footprints.collectors.bybit.websocket.WebSocketApp")
+    def test_bybit_rejected_ack_stops_only_its_attempt(
+        self,
+        websocket_app,
+        _run_websocket,
+    ):
+        socket = Mock()
+        websocket_app.return_value = socket
+        on_ready = Mock()
+        failed_attempt = threading.Event()
+        independent_attempt = threading.Event()
+
+        bybit.listen(
+            {"BTCUSDT": "bybit:perpetual:BTCUSDT"},
+            Mock(),
+            failed_attempt,
+            on_ready=on_ready,
+        )
+        on_message = websocket_app.call_args.kwargs["on_message"]
+        with self.assertLogs("footprints.collectors.common", level="WARNING"):
+            on_message(
+                socket,
+                json.dumps(
+                    {
+                        "success": False,
+                        "ret_msg": "subscription failed",
+                        "op": "subscribe",
+                    }
+                ),
+            )
+
+        on_ready.assert_not_called()
+        self.assertTrue(failed_attempt.is_set())
+        self.assertFalse(independent_attempt.is_set())
+        socket.close.assert_called_once_with()
+
+    @patch("footprints.collectors.hyperliquid.run_websocket")
+    @patch("footprints.collectors.hyperliquid.websocket.WebSocketApp")
+    def test_hyperliquid_waits_for_every_symbol_ack(
+        self,
+        websocket_app,
+        run_websocket_mock,
+    ):
+        socket = Mock()
+        websocket_app.return_value = socket
+        on_ready = Mock()
+        stop_event = threading.Event()
+
+        hyperliquid.listen(
+            {
+                "BTC": "hyperliquid:perpetual:BTC",
+                "ETH": "hyperliquid:perpetual:ETH",
+            },
+            Mock(),
+            stop_event,
+            on_ready=on_ready,
+        )
+        on_message = websocket_app.call_args.kwargs["on_message"]
+
+        def acknowledge(symbol: str) -> None:
+            on_message(
+                socket,
+                json.dumps(
+                    {
+                        "channel": "subscriptionResponse",
+                        "data": {
+                            "method": "subscribe",
+                            "subscription": {"type": "trades", "coin": symbol},
+                        },
+                    }
+                ),
+            )
+
+        acknowledge("BTC")
+        on_ready.assert_not_called()
+        acknowledge("ETH")
+        acknowledge("BTC")
+
+        on_ready.assert_called_once_with()
+        run_websocket_mock.assert_called_once_with(
+            socket,
+            stop_event,
+            ping_interval=30,
+            ping_timeout=10,
+        )
+
 
 class CollectorNormalizationTests(SimpleTestCase):
     def test_binance_individual_trade_side_and_order(self):
@@ -138,13 +287,6 @@ class CollectorNormalizationTests(SimpleTestCase):
         )
         self.assertEqual(trade.taker_side, TakerSide.BUY)
         self.assertEqual((trade.venue_sequence, trade.batch_index), (12, 7))
-
-    def test_bybit_order_continues_across_messages_with_the_same_sequence(self):
-        order = SequenceOrder()
-        self.assertEqual(order.next_index("BTCUSDT", 12), 0)
-        self.assertEqual(order.next_index("BTCUSDT", 12), 1)
-        self.assertEqual(order.next_index("ETHUSDT", 12), 0)
-        self.assertEqual(order.next_index("BTCUSDT", 13), 0)
 
     def test_hyperliquid_has_global_trade_identity_and_arrival_order(self):
         trade = normalize_hyperliquid(

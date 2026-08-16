@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from decimal import Decimal
 
 import websocket
@@ -34,8 +35,18 @@ def normalize_trade(
     )
 
 
-def listen(markets: dict[str, str], on_trade, stop_event: threading.Event) -> None:
+def listen(
+    markets: dict[str, str],
+    on_trade,
+    stop_event: threading.Event,
+    *,
+    on_ready: Callable[[], None] | None = None,
+) -> None:
     url = "wss://api.hyperliquid.xyz/ws"
+    pending_symbols = set(markets)
+    ready = False
+    handle_error = close_stream_on_error(stop_event)
+
     def handle_open(socket) -> None:
         for symbol in markets:
             socket.send(
@@ -48,7 +59,21 @@ def listen(markets: dict[str, str], on_trade, stop_event: threading.Event) -> No
             )
 
     def handle_message(_socket, message: str) -> None:
+        nonlocal ready
         payload = json.loads(message)
+        if payload.get("channel") == "subscriptionResponse":
+            response = payload.get("data", {})
+            subscription = response.get("subscription", {})
+            if (
+                response.get("method") == "subscribe"
+                and subscription.get("type") == "trades"
+            ):
+                pending_symbols.discard(str(subscription.get("coin", "")))
+                if not pending_symbols and not ready:
+                    ready = True
+                    if on_ready is not None:
+                        on_ready()
+            return
         if payload.get("channel") != "trades":
             return
         for data in payload.get("data", []):
@@ -62,6 +87,6 @@ def listen(markets: dict[str, str], on_trade, stop_event: threading.Event) -> No
         url,
         on_open=handle_open,
         on_message=handle_message,
-        on_error=close_stream_on_error(stop_event),
+        on_error=handle_error,
     )
     run_websocket(ws, stop_event, ping_interval=30, ping_timeout=10)

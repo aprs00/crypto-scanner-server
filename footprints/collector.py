@@ -5,8 +5,8 @@ import logging
 import queue
 import threading
 import time
-from collections import OrderedDict
-from dataclasses import dataclass, replace
+from collections import OrderedDict, deque
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 from django.db import close_old_connections
@@ -50,6 +50,167 @@ RETRY_MAX_SECONDS = 30.0
 RECENT_TRADE_LIMIT = 50_000
 SHUTDOWN_DRAIN_SECONDS = 45.0
 COLLECTOR_OPERATION_TIMEOUT_SECONDS = 10
+STREAM_CONNECTIONS = 2
+STANDBY_BUFFER_TRADES = 50_000
+STREAM_READY_TIMEOUT_SECONDS = 15.0
+STREAM_JOIN_TIMEOUT_SECONDS = 5.0
+
+
+@dataclass(slots=True)
+class _HotStandbySlot:
+    ready: bool = False
+    buffers: dict[str, deque[NormalizedTrade]] = field(default_factory=dict)
+
+    def reset(self) -> None:
+        self.ready = False
+        self.buffers.clear()
+
+
+class ExecutionSourceOrderError(RuntimeError):
+    """A unique execution would sort behind the current projector cursor."""
+
+
+class _HotStandbyRouter:
+    """Send one ordered feed to storage while a second stays hot."""
+
+    def __init__(self, collector: FootprintCollector) -> None:
+        self.collector = collector
+        self.lock = threading.RLock()
+        self.slots = {slot: _HotStandbySlot() for slot in range(STREAM_CONNECTIONS)}
+        self.leader_slot: int | None = None
+        self.anchors: dict[str, NormalizedTrade] = {}
+
+    def _forward(self, trade: NormalizedTrade) -> None:
+        self.collector.on_trade(trade)
+        self.anchors[trade.market_key] = trade
+
+    @staticmethod
+    def _buffer(state: _HotStandbySlot, trade: NormalizedTrade) -> None:
+        state.buffers.setdefault(
+            trade.market_key,
+            deque(maxlen=STANDBY_BUFFER_TRADES),
+        ).append(trade)
+
+    def start(self, slot: int) -> None:
+        with self.lock:
+            self.slots[slot].reset()
+
+    def ready(self, slot: int) -> None:
+        with self.lock:
+            state = self.slots[slot]
+            if self.collector._stream_stopping():
+                return
+            state.ready = True
+            logger.info(
+                "%s execution feed subscription-ready slot=%s",
+                self.collector.exchange,
+                slot,
+            )
+            if self.leader_slot is None:
+                for market_key in sorted(state.buffers):
+                    for trade in state.buffers[market_key]:
+                        self._forward(trade)
+                state.buffers.clear()
+                self.leader_slot = slot
+                logger.info(
+                    "%s execution leader selected slot=%s",
+                    self.collector.exchange,
+                    slot,
+                )
+
+    def trade(
+        self,
+        slot: int,
+        trade: NormalizedTrade,
+    ) -> None:
+        with self.lock:
+            state = self.slots[slot]
+            if self.collector._stream_stopping():
+                return
+            if state.ready and slot == self.leader_slot:
+                self._forward(trade)
+                return
+            self._buffer(state, trade)
+
+    def disconnected(self, slot: int) -> bool:
+        """Promote a ready standby; return false when coverage was lost."""
+
+        with self.lock:
+            state = self.slots[slot]
+            state.ready = False
+            if self.collector._stream_stopping():
+                if slot == self.leader_slot:
+                    self.leader_slot = None
+                return True
+            if self.leader_slot is None:
+                return not any(state.buffers.values())
+            if slot != self.leader_slot:
+                return True
+
+            self.leader_slot = None
+            candidate = next(
+                (
+                    (candidate_slot, candidate_state)
+                    for candidate_slot, candidate_state in self.slots.items()
+                    if candidate_slot != slot and candidate_state.ready
+                ),
+                None,
+            )
+            if candidate is None:
+                return False
+
+            candidate_slot, candidate_state = candidate
+            replay: dict[str, tuple[NormalizedTrade, ...]] = {}
+            overlap = True
+            for market_key, anchor in self.anchors.items():
+                buffered = tuple(candidate_state.buffers.get(market_key, ()))
+                anchor_index = next(
+                    (
+                        index
+                        for index, trade in enumerate(buffered)
+                        if trade.trade_id == anchor.trade_id
+                    ),
+                    None,
+                )
+                if anchor_index is None:
+                    overlap = False
+                    shared_index = next(
+                        (
+                            index
+                            for index in range(len(buffered) - 1, -1, -1)
+                            if self.collector._is_recent_trade(
+                                market_key,
+                                buffered[index].trade_id,
+                            )
+                        ),
+                        None,
+                    )
+                    anchor_index = shared_index if shared_index is not None else 0
+                replay[market_key] = buffered[anchor_index:]
+
+            if overlap:
+                for market_key, buffered in candidate_state.buffers.items():
+                    replay.setdefault(market_key, tuple(buffered))
+            else:
+                source_epoch = self.collector._advance_source_epoch()
+                self.anchors.clear()
+                logger.error(
+                    "%s execution handoff had no overlap; source_epoch=%s",
+                    self.collector.exchange,
+                    source_epoch,
+                )
+
+            for market_key in sorted(replay):
+                for trade in replay[market_key]:
+                    self._forward(trade)
+            candidate_state.buffers.clear()
+            self.leader_slot = candidate_slot
+            logger.warning(
+                "%s execution leader failed over slot=%s",
+                self.collector.exchange,
+                candidate_slot,
+            )
+            return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,12 +231,12 @@ class _MarketMetadata:
 
 
 class FootprintCollector:
-    """Collect exact public executions directly into ClickHouse.
+    """Arbitrate redundant public execution feeds into one ClickHouse tape.
 
-    The bounded queue is the only buffer. A ClickHouse failure closes the
-    current source connection and the writer retries the unchanged in-memory
-    batch, so executions are never silently skipped while the process keeps
-    running.
+    Two independently reconnecting source legs share one logical source epoch.
+    Only the leader is admitted; the standby continuously buffers the same
+    feed for immediate handoff. The bounded queues remain the only buffers, so
+    exhaustion is fatal instead of lossy.
     """
 
     def __init__(self, exchange: str):
@@ -101,6 +262,8 @@ class FootprintCollector:
         self._connection_source_epoch = 0
         self._last_source_epoch = 0
         self._next_hyperliquid_sequence = 0
+        self._bybit_sequence_order: dict[str, tuple[int | None, int]] = {}
+        self._last_admitted_cursors: dict[str, tuple[int, int, int, int, str]] = {}
         self._ingest_lock = threading.RLock()
         self._recent_trades: dict[
             int, OrderedDict[str, ExecutionIdentitySignature]
@@ -108,6 +271,8 @@ class FootprintCollector:
 
         self._fatal_error: BaseException | None = None
         self._fatal_lock = threading.Lock()
+        self._feed_status_lock = threading.RLock()
+        self._active_stream_stop_events: set[threading.Event] = set()
         self._shutdown_deadline: float | None = None
         self._uncommitted_batch_count = 0
         self._clickhouse_lock = threading.RLock()
@@ -135,6 +300,21 @@ class FootprintCollector:
                     trade,
                     venue_sequence=self._next_hyperliquid_sequence,
                 )
+            elif self.exchange == "bybit":
+                if trade.venue_sequence is None:
+                    error = ExecutionSourceOrderError(
+                        "Bybit execution is missing its cross sequence"
+                    )
+                    self._set_fatal(error)
+                    raise error
+                previous_sequence, next_index = self._bybit_sequence_order.get(
+                    trade.market_key,
+                    (None, 0),
+                )
+                batch_index = (
+                    next_index if trade.venue_sequence == previous_sequence else 0
+                )
+                stored_trade = replace(trade, batch_index=batch_index)
 
             try:
                 instrument_spec_id = market.specification_at(
@@ -162,12 +342,29 @@ class FootprintCollector:
                         )
                     recent.move_to_end(trade.trade_id)
                     return
+                cursor = (
+                    execution.source_epoch,
+                    execution.source_sequence,
+                    execution.trade.batch_index,
+                    execution.trade.exchange_timestamp_us,
+                    execution.trade.trade_id,
+                )
+                previous_cursor = self._last_admitted_cursors.get(trade.market_key)
+                if previous_cursor is not None and cursor <= previous_cursor:
+                    raise ExecutionSourceOrderError(
+                        "execution would regress the canonical source order "
+                        f"{trade.market_key}:{trade.trade_id} "
+                        f"cursor={cursor} previous={previous_cursor}"
+                    )
                 self.queue.put_nowait(execution)
             except queue.Full as exc:
                 error = RuntimeError("footprint ClickHouse ingestion queue is full")
                 self._set_fatal(error)
                 raise error from exc
             except ExecutionIdentityConflict as exc:
+                self._set_fatal(exc)
+                raise
+            except ExecutionSourceOrderError as exc:
                 self._set_fatal(exc)
                 raise
             except Exception as exc:
@@ -179,10 +376,23 @@ class FootprintCollector:
 
             if self.exchange == "hyperliquid":
                 self._next_hyperliquid_sequence += 1
+            elif self.exchange == "bybit":
+                self._bybit_sequence_order[trade.market_key] = (
+                    stored_trade.venue_sequence,
+                    stored_trade.batch_index + 1,
+                )
             recent[trade.trade_id] = signature
             recent.move_to_end(trade.trade_id)
             while len(recent) > self.recent_trade_limit:
                 recent.popitem(last=False)
+            self._last_admitted_cursors[trade.market_key] = cursor
+
+    def _is_recent_trade(self, market_key: str, trade_id: str) -> bool:
+        market = self._markets.get(market_key)
+        return market is not None and trade_id in self._recent_trades.get(
+            market.market_id,
+            (),
+        )
 
     def run(self) -> None:
         writer = threading.Thread(
@@ -218,20 +428,18 @@ class FootprintCollector:
                 }
                 self._stream_stop_event.clear()
                 logger.info(
-                    "Starting %s raw execution stream at source epoch %s for %s",
+                    "Starting %s redundant execution generation source_epoch=%s "
+                    "connections=%s symbols=%s",
                     self.exchange,
                     source_epoch,
+                    STREAM_CONNECTIONS,
                     sorted(symbols),
                 )
                 try:
-                    self.adapter.listen(
-                        symbols,
-                        self.on_trade,
-                        self._stream_stop_event,
-                    )
+                    self._run_stream_generation(symbols)
                 except Exception:
                     if self._fatal_error is None:
-                        logger.exception("%s execution stream failed", self.exchange)
+                        raise
                     else:
                         logger.error(
                             "%s execution ingestion stopped: %s",
@@ -245,7 +453,10 @@ class FootprintCollector:
                     break
                 if self.stop_event.wait(self.reconnect_delay_seconds):
                     break
-                logger.info("Reconnecting %s execution stream", self.exchange)
+                logger.warning(
+                    "Restarting %s execution coverage in a new source epoch",
+                    self.exchange,
+                )
         finally:
             self.stop()
             writer.join()
@@ -272,7 +483,137 @@ class FootprintCollector:
                 time.monotonic() + self.shutdown_drain_seconds
             )
         self.stop_event.set()
+        self._stop_active_streams()
+
+    def _run_stream_generation(
+        self,
+        symbols: dict[str, str],
+    ) -> None:
+        router = _HotStandbyRouter(self)
+        self._stream_stop_event.clear()
+        if self.stop_event.is_set():
+            return
+        workers = [
+            threading.Thread(
+                target=self._stream_worker,
+                args=(slot, symbols, router),
+                name=f"{self.exchange}-execution-feed-{slot}",
+                daemon=True,
+            )
+            for slot in range(STREAM_CONNECTIONS)
+        ]
+        for worker in workers:
+            worker.start()
+        try:
+            self._stream_stop_event.wait()
+        finally:
+            self._stop_active_streams()
+            for worker in workers:
+                worker.join(timeout=STREAM_JOIN_TIMEOUT_SECONDS)
+            stuck = [worker.name for worker in workers if worker.is_alive()]
+            if stuck and self._fatal_error is None:
+                self._set_fatal(
+                    RuntimeError(
+                        "execution feed workers did not stop: " + ", ".join(stuck)
+                    )
+                )
+
+    def _stream_worker(
+        self,
+        slot: int,
+        symbols: dict[str, str],
+        router: _HotStandbyRouter,
+    ) -> None:
+        while not self._stream_stopping():
+            attempt_stop_event = threading.Event()
+            ready_event = threading.Event()
+            router.start(slot)
+            self._register_stream_attempt(attempt_stop_event)
+            if attempt_stop_event.is_set():
+                self._unregister_stream_attempt(attempt_stop_event)
+                return
+
+            def report_ready() -> None:
+                ready_event.set()
+                router.ready(slot)
+
+            def report_trade(trade: NormalizedTrade) -> None:
+                router.trade(slot, trade)
+
+            def stop_if_unready() -> None:
+                if not ready_event.is_set():
+                    attempt_stop_event.set()
+
+            readiness_timeout = threading.Timer(
+                STREAM_READY_TIMEOUT_SECONDS,
+                stop_if_unready,
+            )
+            readiness_timeout.daemon = True
+            readiness_timeout.start()
+
+            try:
+                self.adapter.listen(
+                    symbols,
+                    report_trade,
+                    attempt_stop_event,
+                    on_ready=report_ready,
+                )
+            except Exception:
+                if not self._stream_stopping():
+                    logger.exception(
+                        "%s execution feed failed slot=%s",
+                        self.exchange,
+                        slot,
+                    )
+            finally:
+                readiness_timeout.cancel()
+                self._unregister_stream_attempt(attempt_stop_event)
+
+            if not router.disconnected(slot):
+                if not self._stream_stopping():
+                    logger.error(
+                        "%s execution coverage lost; opening a new source epoch",
+                        self.exchange,
+                    )
+                self._stop_active_streams()
+                return
+            if self._stream_stopping():
+                return
+            logger.warning(
+                "%s execution feed reconnecting slot=%s in %.3fs",
+                self.exchange,
+                slot,
+                self.reconnect_delay_seconds,
+            )
+            if self._stream_stop_event.wait(self.reconnect_delay_seconds):
+                return
+
+    def _stream_stopping(self) -> bool:
+        return (
+            self._fatal_error is not None
+            or self.stop_event.is_set()
+            or self._stream_stop_event.is_set()
+        )
+
+    def _register_stream_attempt(
+        self,
+        stop_event: threading.Event,
+    ) -> None:
+        with self._feed_status_lock:
+            self._active_stream_stop_events.add(stop_event)
+            if self.stop_event.is_set() or self._stream_stop_event.is_set():
+                stop_event.set()
+
+    def _unregister_stream_attempt(self, stop_event: threading.Event) -> None:
+        with self._feed_status_lock:
+            self._active_stream_stop_events.discard(stop_event)
+
+    def _stop_active_streams(self) -> None:
         self._stream_stop_event.set()
+        with self._feed_status_lock:
+            members = tuple(self._active_stream_stop_events)
+        for stop_event in members:
+            stop_event.set()
 
     def _refresh_instruments(self) -> None:
         close_old_connections()
@@ -333,7 +674,7 @@ class FootprintCollector:
             try:
                 return self._allocate_source_epoch()
             except Exception as exc:
-                self._stream_stop_event.set()
+                self._stop_active_streams()
                 self._close_clickhouse()
                 failure_kind = classify_clickhouse_error(exc, is_write=False)
                 if failure_kind == ClickHouseFailureKind.FATAL:
@@ -368,7 +709,27 @@ class FootprintCollector:
             self._connection_source_epoch = source_epoch
             self._last_source_epoch = source_epoch
             self._next_hyperliquid_sequence = 0
+            self._bybit_sequence_order.clear()
+            self._last_admitted_cursors.clear()
         return source_epoch
+
+    def _advance_source_epoch(self) -> int:
+        """Expose an unverified live handoff without dropping buffered trades."""
+
+        with self._ingest_lock:
+            source_epoch = self._last_source_epoch + 1
+            if source_epoch > _MAX_SOURCE_EPOCH:
+                error = OverflowError(
+                    "ClickHouse execution source epoch exhausted UInt32"
+                )
+                self._set_fatal(error)
+                raise error
+            self._connection_source_epoch = source_epoch
+            self._last_source_epoch = source_epoch
+            self._next_hyperliquid_sequence = 0
+            self._bybit_sequence_order.clear()
+            self._last_admitted_cursors.clear()
+            return source_epoch
 
     def _seed_recent_trades(
         self,
@@ -462,7 +823,7 @@ class FootprintCollector:
                 self._ensure_execution_store().insert_batch(batch)
                 return True
             except Exception as exc:
-                self._stream_stop_event.set()
+                self._stop_active_streams()
                 self._close_clickhouse()
                 failure_kind = (
                     ClickHouseFailureKind.FATAL
@@ -587,7 +948,7 @@ class FootprintCollector:
             if self._fatal_error is None:
                 self._fatal_error = error
         self.stop_event.set()
-        self._stream_stop_event.set()
+        self._stop_active_streams()
 
 
 def _execution_identity_signature(

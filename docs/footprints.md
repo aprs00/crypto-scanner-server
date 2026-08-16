@@ -10,7 +10,8 @@ There are no time, range, or volume chart abstractions in this version.
 ## Runtime
 
 ```text
-exchange WebSocket
+two exchange WebSockets (leader + hot standby)
+    -> bounded handoff buffer + shared execution-identity dedupe
     -> bounded in-memory queue
     -> ClickHouse raw_executions
     -> bounded Redis maintenance wakeup
@@ -24,6 +25,13 @@ market/specification metadata, the requested series configuration, lifecycle
 status, and the latest engine checkpoint. Redis carries bounded maintenance
 wakeups and replaceable live updates; ClickHouse cursors remain the durable
 catch-up source if a wakeup is missed.
+
+Each collector keeps a leader WebSocket and a continuously consumed hot
+standby. If the leader disconnects, the standby replays its bounded buffer
+through the shared trade-identity dedupe, becomes leader, and the failed socket
+reconnects independently. Both connections share the existing identity cache
+and ClickHouse writer.
+
 HTTP chart snapshots use response gzip when the client accepts it so dense
 footprint-level JSON does not dominate transfer time. The snapshot reader keeps
 validated ClickHouse level arrays in their native layout until JSON encoding,
@@ -167,7 +175,18 @@ to 45 seconds, then log the exact number of unconfirmed executions. A forced
 process stop during an outage can still lose in-memory rows because V0
 intentionally has no WAL.
 
-A reconnect receives a new source epoch, which creates a chart segment
-boundary. Recent exact venue identities are loaded from ClickHouse before that
-epoch is allocated so replayed trades are not counted twice after a process
-restart.
+An individual socket reconnect does not change the source epoch when the
+standby buffer overlaps the leader's latest trades. An unverified handoff or
+loss of both sockets advances the source epoch, giving the chart an explicit
+segment boundary rather than claiming continuity; buffered observations still
+pass through the identity dedupe. Recent exact venue identities are loaded from
+ClickHouse before a restarted generation so replayed trades are not counted
+twice.
+
+The two sockets share the collector process, host, network path, storage, and
+exchange endpoint. They protect against an isolated WebSocket failure; they do
+not protect against a process or host failure, a common upstream outage, a
+deployment stop, or an outage longer than the venue's available overlap. They
+also do not replace historical reconciliation or backfill. If both connections
+are lost, the collector exposes the break with a new source epoch instead of
+claiming a seamless tape.

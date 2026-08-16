@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 
 import websocket
@@ -36,8 +37,17 @@ def normalize_trade(data: dict, market_key: str) -> NormalizedTrade:
     )
 
 
-def listen(markets: dict[str, str], on_trade, stop_event: threading.Event) -> None:
+def listen(
+    markets: dict[str, str],
+    on_trade,
+    stop_event: threading.Event,
+    *,
+    on_ready: Callable[[], None] | None = None,
+) -> None:
     url = "wss://fstream.binance.com/ws"
+    subscription_request_id = 1
+    ready = False
+    handle_error = close_stream_on_error(stop_event)
 
     def handle_open(socket) -> None:
         socket.send(
@@ -45,13 +55,29 @@ def listen(markets: dict[str, str], on_trade, stop_event: threading.Event) -> No
                 {
                     "method": "SUBSCRIBE",
                     "params": [f"{symbol.lower()}@trade" for symbol in markets],
-                    "id": 1,
+                    "id": subscription_request_id,
                 }
             )
         )
 
-    def handle_message(_socket, message: str) -> None:
+    def handle_message(socket, message: str) -> None:
+        nonlocal ready
         payload = json.loads(message)
+        if payload.get("id") == subscription_request_id:
+            if "result" in payload and payload["result"] is None:
+                if not ready:
+                    ready = True
+                    if on_ready is not None:
+                        on_ready()
+            else:
+                handle_error(
+                    socket,
+                    RuntimeError(
+                        "Binance execution WebSocket subscription was rejected: "
+                        f"{payload.get('msg', payload)}"
+                    ),
+                )
+            return
         data = payload.get("data", payload)
         symbol = str(data.get("s", ""))
         market_key = markets.get(symbol)
@@ -64,6 +90,6 @@ def listen(markets: dict[str, str], on_trade, stop_event: threading.Event) -> No
         url,
         on_open=handle_open,
         on_message=handle_message,
-        on_error=close_stream_on_error(stop_event),
+        on_error=handle_error,
     )
     run_websocket(ws, stop_event, ping_interval=20, ping_timeout=10)

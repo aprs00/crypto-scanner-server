@@ -2,25 +2,13 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from decimal import Decimal
 
 import websocket
 
 from footprints.types import NormalizedTrade, TakerSide
 from footprints.collectors.common import close_stream_on_error, run_websocket
-
-
-class SequenceOrder:
-    """Preserve delivery order when Bybit splits one sequence across messages."""
-
-    def __init__(self) -> None:
-        self._state: dict[str, tuple[int | None, int]] = {}
-
-    def next_index(self, symbol: str, sequence: int | None) -> int:
-        previous_sequence, next_index = self._state.get(symbol, (None, 0))
-        index = next_index if sequence == previous_sequence else 0
-        self._state[symbol] = (sequence, index + 1)
-        return index
 
 
 def normalize_trade(data: dict, market_key: str, batch_index: int = 0) -> NormalizedTrade:
@@ -41,9 +29,16 @@ def normalize_trade(data: dict, market_key: str, batch_index: int = 0) -> Normal
     )
 
 
-def listen(markets: dict[str, str], on_trade, stop_event: threading.Event) -> None:
+def listen(
+    markets: dict[str, str],
+    on_trade,
+    stop_event: threading.Event,
+    *,
+    on_ready: Callable[[], None] | None = None,
+) -> None:
     url = "wss://stream.bybit.com/v5/public/linear"
-    sequence_order = SequenceOrder()
+    ready = False
+    handle_error = close_stream_on_error(stop_event)
 
     def handle_open(socket) -> None:
         socket.send(
@@ -55,8 +50,24 @@ def listen(markets: dict[str, str], on_trade, stop_event: threading.Event) -> No
             )
         )
 
-    def handle_message(_socket, message: str) -> None:
+    def handle_message(socket, message: str) -> None:
+        nonlocal ready
         payload = json.loads(message)
+        if payload.get("op") == "subscribe":
+            if payload.get("success") is True:
+                if not ready:
+                    ready = True
+                    if on_ready is not None:
+                        on_ready()
+            else:
+                handle_error(
+                    socket,
+                    RuntimeError(
+                        "Bybit execution WebSocket subscription was rejected: "
+                        f"{payload.get('ret_msg', payload)}"
+                    ),
+                )
+            return
         topic = str(payload.get("topic", ""))
         if not topic.startswith("publicTrade."):
             return
@@ -65,14 +76,12 @@ def listen(markets: dict[str, str], on_trade, stop_event: threading.Event) -> No
         if not market_key:
             return
         for data in payload.get("data", []):
-            sequence = int(data["seq"])
-            batch_index = sequence_order.next_index(symbol, sequence)
-            on_trade(normalize_trade(data, market_key, batch_index))
+            on_trade(normalize_trade(data, market_key))
 
     ws = websocket.WebSocketApp(
         url,
         on_open=handle_open,
         on_message=handle_message,
-        on_error=close_stream_on_error(stop_event),
+        on_error=handle_error,
     )
     run_websocket(ws, stop_event, ping_interval=20, ping_timeout=10)
