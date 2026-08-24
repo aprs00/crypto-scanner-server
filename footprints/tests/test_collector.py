@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import queue
+import tempfile
 import threading
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 from django.test import SimpleTestCase
 
-from footprints.collector import FootprintCollector, _HotStandbyRouter, _MarketMetadata
+from footprints.collector import (
+    HANDOFF_VERIFIED_MARKER,
+    WRITER_ACTIVE_MARKER,
+    FootprintCollector,
+    _HotStandbyRouter,
+    _MarketMetadata,
+)
 from footprints.storage.clickhouse import (
     ExecutionIdentityConflict,
     RecentExecutionIdentity,
@@ -43,8 +51,9 @@ def _collector(
     *,
     queue_size: int = 10,
     recent_trade_limit: int = 10,
+    standby: bool = False,
 ) -> FootprintCollector:
-    collector = FootprintCollector(exchange)
+    collector = FootprintCollector(exchange, standby=standby)
     collector.queue = queue.Queue(maxsize=queue_size)
     collector.commit_interval_seconds = 0.001
     collector.retry_initial_seconds = 0
@@ -237,18 +246,58 @@ class CollectorRedundantFeedTests(SimpleTestCase):
 
         with patch("footprints.collector.time.monotonic", return_value=20):
             router.ready(1)
+        self.assertTrue(router.activate())
         self.assertEqual(router.rotation_candidate(), 0)
 
-    def test_first_leader_drains_trades_received_before_ready(self):
+    def test_first_leader_stays_buffered_until_both_feeds_are_activated(self):
         collector = _collector()
         router = _HotStandbyRouter(collector)
         router.start(0)
+        router.start(1)
         router.trade(0, _trade("one", sequence=1))
 
         router.ready(0)
+        self.assertTrue(collector.queue.empty())
+        self.assertFalse(router.activate())
+        router.ready(1)
+        self.assertTrue(router.activate())
+        self.assertFalse(router.activation_overlap_verified)
 
         executions = _queued_executions(collector)
         self.assertEqual([item.trade.trade_id for item in executions], ["one"])
+
+    def test_activation_prefers_the_ready_feed_with_verified_overlap(self):
+        collector = _collector(queue_size=20)
+        collector._seed_recent_trades({7: (_recent_identity("shared"),)})
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.trade(0, _trade("not-shared", sequence=1))
+        router.trade(1, _trade("shared", sequence=2))
+        router.trade(1, _trade("new", sequence=3))
+        router.ready(0)
+        router.ready(1)
+
+        self.assertTrue(router.activate())
+
+        self.assertTrue(router.activation_overlap_verified)
+        self.assertEqual(router.leader_slot, 1)
+        self.assertEqual(collector.queue.get_nowait().trade.trade_id, "new")
+
+    @patch("footprints.collector.STANDBY_BUFFER_TRADES", 2)
+    def test_warm_process_stops_instead_of_dropping_buffered_trades(self):
+        collector = _collector(standby=True)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.trade(0, _trade("one", sequence=1))
+        router.trade(0, _trade("two", sequence=2))
+
+        with self.assertRaisesRegex(RuntimeError, "warm-standby buffer is full"):
+            router.trade(0, _trade("three", sequence=3))
+
+        self.assertIsInstance(collector._fatal_error, RuntimeError)
+        self.assertTrue(collector.stop_event.is_set())
+        self.assertTrue(collector._stream_stop_event.is_set())
 
     def test_planned_leader_rotation_replays_once_and_stays_in_epoch(self):
         collector = _collector(queue_size=20)
@@ -257,6 +306,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         router.start(1)
         router.ready(0)
         router.ready(1)
+        self.assertTrue(router.activate())
 
         router.trade(0, _trade("one", sequence=1))
         router.trade(1, _trade("one", sequence=1))
@@ -280,6 +330,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         router.start(1)
         router.ready(0)
         router.ready(1)
+        self.assertTrue(router.activate())
         router.trade(0, _trade("one", sequence=1))
 
         self.assertTrue(router.disconnected(1, planned=True))
@@ -296,7 +347,11 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         collector = _collector()
         router = _HotStandbyRouter(collector)
         router.start(0)
+        router.start(1)
         router.ready(0)
+        router.ready(1)
+        self.assertTrue(router.activate())
+        self.assertTrue(router.disconnected(1))
         router.trade(0, _trade("one", sequence=1))
 
         self.assertFalse(router.disconnected(0))
@@ -309,6 +364,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         router.start(1)
         router.ready(0)
         router.ready(1)
+        self.assertTrue(router.activate())
         router.trade(0, _trade("one", sequence=1))
         router.trade(1, _trade("two", sequence=2))
 
@@ -329,6 +385,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         router.start(1)
         router.ready(0)
         router.ready(1)
+        self.assertTrue(router.activate())
         router.trade(0, _trade("one", sequence=1))
         router.trade(0, _trade("two", sequence=2))
         router.trade(0, _trade("three", sequence=3))
@@ -350,6 +407,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         router.start(1)
         router.ready(0)
         router.ready(1)
+        self.assertTrue(router.activate())
         router.trade(0, _trade("one", sequence=1))
         router.trade(1, _trade("one", sequence=1))
         router.trade(1, _trade("two", sequence=2))
@@ -368,6 +426,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         router.start(1)
         router.ready(0)
         router.ready(1)
+        self.assertTrue(router.activate())
         router.trade(0, _trade("same", sequence=1))
         router.trade(1, _trade("same", sequence=1, price="100.126"))
 
@@ -385,6 +444,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         router.start(1)
         router.ready(0)
         router.ready(1)
+        self.assertTrue(router.activate())
 
         router.trade(
             0,
@@ -489,28 +549,216 @@ class CollectorStreamLifecycleTests(SimpleTestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(len(attempts), 2)
 
-    def test_rotation_loop_postpones_until_both_feeds_are_ready(self):
+    def test_rotation_is_postponed_until_the_router_is_active_and_ready(self):
         collector = _collector()
-        collector.stream_rotation_interval_seconds = 3_600
-        collector.reconnect_delay_seconds = 1
-        stream_stop_event = Mock()
-        stream_stop_event.is_set.return_value = False
-        stream_stop_event.wait.side_effect = [False, False, True]
-        collector._stream_stop_event = stream_stop_event
         collector._request_stream_rotation = Mock(return_value=True)
-        router = Mock()
-        router.rotation_candidate.side_effect = [None, 1]
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
 
-        collector._rotation_loop(router)
+        self.assertFalse(collector._schedule_rotation(router))
+        router.ready(1)
+        self.assertFalse(collector._schedule_rotation(router))
+        self.assertTrue(router.activate())
+        self.assertTrue(collector._schedule_rotation(router))
 
-        collector._request_stream_rotation.assert_called_once_with(1)
-        self.assertEqual(
-            stream_stop_event.wait.call_args_list,
-            [call(3_600), call(1), call(3_600)],
+        collector._request_stream_rotation.assert_called_once_with(0)
+
+    def test_standby_waits_for_promotion_before_acquiring_writer_lock(self):
+        collector = _collector(standby=True)
+        collector._allocate_source_epoch_with_retry = Mock(return_value=6)
+        collector._seed_recent_trades({7: (_recent_identity("shared"),)})
+        activated = threading.Event()
+
+        def publish_marker(name, present, **_kwargs):
+            if name == WRITER_ACTIVE_MARKER and present:
+                activated.set()
+
+        collector._set_state_marker = Mock(side_effect=publish_marker)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.trade(0, _trade("shared", sequence=1))
+        router.trade(0, _trade("new", sequence=2))
+        router.ready(0)
+        router.ready(1)
+        leadership = Mock(acquired=False)
+
+        def acquire():
+            leadership.acquired = True
+            return True
+
+        leadership.try_acquire.side_effect = acquire
+        coordinator = threading.Thread(
+            target=collector._coordination_loop,
+            args=(router, leadership),
         )
+        coordinator.start()
+        try:
+            self.assertFalse(collector._promotion_event.wait(0.02))
+            leadership.try_acquire.assert_not_called()
+
+            collector.promote()
+            self.assertTrue(activated.wait(1))
+        finally:
+            collector._stream_stop_event.set()
+            coordinator.join(timeout=1)
+
+        self.assertFalse(coordinator.is_alive())
+        leadership.try_acquire.assert_called_once_with()
+        self.assertEqual(leadership.verify.call_count, 2)
+        collector._allocate_source_epoch_with_retry.assert_called_once_with()
+        self.assertTrue(router.active)
+        self.assertEqual(collector.queue.get_nowait().trade.trade_id, "new")
+        marker_calls = collector._set_state_marker.call_args_list
+        self.assertLess(
+            marker_calls.index(
+                call(HANDOFF_VERIFIED_MARKER, True, required=True)
+            ),
+            marker_calls.index(call(WRITER_ACTIVE_MARKER, True)),
+        )
+
+    def test_stop_wins_over_a_late_standby_promotion(self):
+        collector = _collector(standby=True)
+        router = _HotStandbyRouter(collector)
+        leadership = Mock(acquired=False)
+
+        collector.stop()
+        collector.promote()
+        collector._coordination_loop(router, leadership)
+
+        leadership.try_acquire.assert_not_called()
+        self.assertFalse(router.active)
+
+    def test_candidate_releases_the_lock_if_readiness_is_lost_before_activation(self):
+        collector = _collector(standby=True)
+        collector._allocate_source_epoch_with_retry = Mock(return_value=6)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
+        router.ready(1)
+        leadership = Mock(acquired=False)
+
+        def acquire_then_disconnect():
+            leadership.acquired = True
+            router.disconnected(1)
+            return True
+
+        def release_and_stop():
+            leadership.acquired = False
+            collector._stream_stop_event.set()
+
+        leadership.try_acquire.side_effect = acquire_then_disconnect
+        leadership.close.side_effect = release_and_stop
+
+        collector.promote()
+        collector._coordination_loop(router, leadership)
+
+        leadership.close.assert_called_once_with()
+        self.assertFalse(leadership.acquired)
+        self.assertFalse(router.active)
+
+    def test_leadership_is_reverified_after_source_epoch_allocation(self):
+        collector = _collector()
+        collector._allocate_source_epoch_with_retry = Mock(return_value=6)
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
+        router.ready(1)
+        leadership = Mock(acquired=True)
+        leadership.verify.side_effect = [None, RuntimeError("lock lost")]
+
+        collector._coordination_loop(router, leadership)
+
+        self.assertEqual(leadership.verify.call_count, 2)
+        self.assertFalse(router.active)
+        self.assertTrue(collector._writer_fenced.is_set())
+        self.assertIsInstance(collector._fatal_error, RuntimeError)
+
+    def test_shutdown_fences_the_writer_if_leadership_is_lost_while_draining(self):
+        collector = _collector()
+        writer = Mock()
+        writer.is_alive.return_value = True
+        leadership = Mock(acquired=True)
+        leadership.verify.side_effect = RuntimeError("lock lost during drain")
+
+        collector._join_writer_with_leadership(writer, leadership)
+
+        self.assertTrue(collector._writer_fenced.is_set())
+        self.assertIsInstance(collector._fatal_error, RuntimeError)
+        writer.join.assert_called_once_with()
+
+    @patch("footprints.collector.FootprintWriterLeadership")
+    def test_run_releases_leadership_after_storage_is_closed(self, leadership_class):
+        collector = _collector()
+        collector.stop_event.set()
+        order = []
+        collector._close_clickhouse = Mock(
+            side_effect=lambda: order.append("clickhouse")
+        )
+        collector._close_wakeup_redis = Mock(side_effect=lambda: order.append("redis"))
+        leadership_class.return_value.close.side_effect = lambda: order.append(
+            "leadership"
+        )
+
+        collector.run()
+
+        self.assertEqual(order, ["clickhouse", "redis", "leadership"])
+
+    def test_state_markers_follow_readiness_activation_and_handoff(self):
+        collector = _collector()
+        with tempfile.TemporaryDirectory() as directory:
+            collector._state_directory = Path(directory)
+            collector._reset_state_markers()
+            collector._set_feeds_ready(True)
+            collector._set_writer_active(True)
+            collector._set_handoff_verified(True)
+
+            self.assertTrue((Path(directory) / "feeds-ready").exists())
+            self.assertTrue((Path(directory) / "writer-active").exists())
+            self.assertTrue((Path(directory) / HANDOFF_VERIFIED_MARKER).exists())
+
+            collector._set_handoff_verified(False)
+
+            self.assertFalse((Path(directory) / HANDOFF_VERIFIED_MARKER).exists())
+
+            collector.stop()
+
+            self.assertFalse((Path(directory) / "feeds-ready").exists())
+            self.assertFalse((Path(directory) / "writer-active").exists())
+            self.assertFalse((Path(directory) / HANDOFF_VERIFIED_MARKER).exists())
+
+    def test_required_handoff_state_failure_is_not_swallowed(self):
+        collector = _collector()
+        with tempfile.TemporaryDirectory() as directory:
+            collector._state_directory = Path(directory)
+            (Path(directory) / HANDOFF_VERIFIED_MARKER).touch()
+
+            with patch.object(
+                Path,
+                "unlink",
+                side_effect=OSError("state unavailable"),
+            ):
+                with self.assertRaisesRegex(OSError, "state unavailable"):
+                    collector._set_handoff_verified(False, required=True)
 
 
 class CollectorDeliveryTests(SimpleTestCase):
+    def test_known_leadership_loss_prevents_further_insert_attempts(self):
+        collector = _collector()
+        collector.on_trade(_trade("fenced"))
+        batch = (collector.queue.get_nowait(),)
+        store = Mock()
+        collector._ensure_execution_store = Mock(return_value=store)
+        collector._writer_fenced.set()
+
+        self.assertFalse(collector._insert_with_retry(batch))
+
+        store.insert_batch.assert_not_called()
+
     def test_writer_drains_healthy_queue_after_shutdown_starts(self):
         collector = _collector()
         collector.commit_batch_size = 1

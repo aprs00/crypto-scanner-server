@@ -29,6 +29,7 @@ x-footprint-environment: &footprint-environment
   CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-clickhouse}
   CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
   CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-false}
+  FOOTPRINT_STATE_DIR: /tmp/footprint-state
 
 x-chart-common: &chart-common
   <<: *app-common

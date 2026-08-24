@@ -186,10 +186,26 @@ pass through the identity dedupe. Recent exact venue identities are loaded from
 ClickHouse before a restarted generation so replayed trades are not counted
 twice.
 
+Each exchange collector also holds a dedicated PostgreSQL advisory lock before
+it allocates a source epoch or writes executions. A second process can connect
+both sockets as a bounded warm standby, then take ownership and replay its
+overlap only after the active writer drains and releases the lock. Before
+replay, it prefers the ready socket whose buffer shares a recent persisted
+trade identity. Production rollouts require that overlap at both handoffs and
+use this path instead of restarting both sockets at once. A crash recovery is
+still allowed to start without overlap, but its new source epoch explicitly
+marks continuity as unverified.
+
+Leadership is checked before activation, while collecting, and while draining
+on shutdown. An insert already in flight when the PostgreSQL lock session fails
+cannot be recalled, so a duplicate remains possible in that narrow failure
+window and must be detected by reconciliation.
+
 The two sockets share the collector process, host, network path, storage, and
 exchange endpoint. They protect against an isolated WebSocket failure; they do
-not protect against a process or host failure, a common upstream outage, a
-deployment stop, or an outage longer than the venue's available overlap. They
-also do not replace historical reconciliation or backfill. If both connections
+not protect against a host failure, a common upstream outage, or an outage
+longer than the venue's available overlap. A warm process protects planned
+collector replacement only while both versions are healthy and subscribed. It
+does not replace historical reconciliation or backfill. If both connections
 are lost, the collector exposes the break with a new source epoch instead of
 claiming a seamless tape.

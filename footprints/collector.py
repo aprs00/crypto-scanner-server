@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 import queue
 import threading
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import Path
 
 from django.db import close_old_connections
 from redis.exceptions import RedisError
 
 from core.redis_config import get_redis_connection
+from footprints.leadership import FootprintWriterLeadership
 from footprints.models import FootprintMarket, InstrumentSpec
 from footprints.specs import load_runtime_instruments
 from footprints.storage.clickhouse import (
@@ -55,6 +58,14 @@ STANDBY_BUFFER_TRADES = 50_000
 STREAM_READY_TIMEOUT_SECONDS = 15.0
 STREAM_JOIN_TIMEOUT_SECONDS = 5.0
 STREAM_ROTATION_INTERVAL_SECONDS = 60 * 60
+LEADERSHIP_RETRY_SECONDS = 0.5
+LEADERSHIP_VERIFY_SECONDS = 1.0
+COORDINATION_INTERVAL_SECONDS = 0.1
+
+STATE_DIRECTORY_ENVIRONMENT = "FOOTPRINT_STATE_DIR"
+FEEDS_READY_MARKER = "feeds-ready"
+WRITER_ACTIVE_MARKER = "writer-active"
+HANDOFF_VERIFIED_MARKER = "handoff-verified"
 
 
 @dataclass(slots=True)
@@ -74,7 +85,7 @@ class ExecutionSourceOrderError(RuntimeError):
 
 
 class _HotStandbyRouter:
-    """Send one ordered feed to storage while a second stays hot."""
+    """Buffer redundant feeds until one writer is allowed to become active."""
 
     def __init__(self, collector: FootprintCollector) -> None:
         self.collector = collector
@@ -82,21 +93,36 @@ class _HotStandbyRouter:
         self.slots = {slot: _HotStandbySlot() for slot in range(STREAM_CONNECTIONS)}
         self.leader_slot: int | None = None
         self.anchors: dict[str, NormalizedTrade] = {}
+        self.active = False
+        self.activation_overlap_verified = False
 
     def _forward(self, trade: NormalizedTrade) -> None:
         self.collector.on_trade(trade)
         self.anchors[trade.market_key] = trade
 
-    @staticmethod
-    def _buffer(state: _HotStandbySlot, trade: NormalizedTrade) -> None:
-        state.buffers.setdefault(
+    def _buffer(self, state: _HotStandbySlot, trade: NormalizedTrade) -> None:
+        buffered = state.buffers.setdefault(
             trade.market_key,
             deque(maxlen=STANDBY_BUFFER_TRADES),
-        ).append(trade)
+        )
+        if not self.active and len(buffered) >= STANDBY_BUFFER_TRADES:
+            error = RuntimeError(
+                "footprint warm-standby buffer is full "
+                f"exchange={self.collector.exchange} market={trade.market_key}"
+            )
+            self.collector._set_fatal(error)
+            raise error
+        buffered.append(trade)
+
+    def _publish_readiness(self) -> None:
+        self.collector._set_feeds_ready(
+            all(state.ready for state in self.slots.values())
+        )
 
     def start(self, slot: int) -> None:
         with self.lock:
             self.slots[slot].reset()
+            self._publish_readiness()
 
     def ready(self, slot: int) -> None:
         with self.lock:
@@ -111,16 +137,69 @@ class _HotStandbyRouter:
                 slot,
             )
             if self.leader_slot is None:
-                for market_key in sorted(state.buffers):
-                    for trade in state.buffers[market_key]:
-                        self._forward(trade)
-                state.buffers.clear()
                 self.leader_slot = slot
                 logger.info(
-                    "%s execution leader selected slot=%s",
+                    "%s execution local leader selected slot=%s",
                     self.collector.exchange,
                     slot,
                 )
+            self._publish_readiness()
+
+    def feeds_ready(self) -> bool:
+        with self.lock:
+            return all(state.ready for state in self.slots.values())
+
+    def activate(self) -> bool:
+        """Replay the selected feed once both subscriptions are ready."""
+
+        with self.lock:
+            if self.active:
+                return True
+            if not all(state.ready for state in self.slots.values()):
+                return False
+            if self.leader_slot is None:
+                ready = [
+                    (state.ready_since, slot)
+                    for slot, state in self.slots.items()
+                    if state.ready_since is not None
+                ]
+                if not ready:
+                    return False
+                self.leader_slot = min(ready)[1]
+
+            overlapping_slots = [
+                slot
+                for slot, state in self.slots.items()
+                if state.ready
+                and any(
+                    self.collector._is_recent_trade(market_key, trade.trade_id)
+                    for market_key, trades in state.buffers.items()
+                    for trade in trades
+                )
+            ]
+            self.activation_overlap_verified = bool(overlapping_slots)
+            if overlapping_slots and self.leader_slot not in overlapping_slots:
+                self.leader_slot = min(
+                    overlapping_slots,
+                    key=lambda slot: (self.slots[slot].ready_since, slot),
+                )
+
+            leader_state = self.slots[self.leader_slot]
+            buffered_count = sum(
+                len(members) for members in leader_state.buffers.values()
+            )
+            for market_key in sorted(leader_state.buffers):
+                for trade in leader_state.buffers[market_key]:
+                    self._forward(trade)
+            leader_state.buffers.clear()
+            self.active = True
+            logger.info(
+                "%s execution writer activated slot=%s replayed=%s",
+                self.collector.exchange,
+                self.leader_slot,
+                buffered_count,
+            )
+            return True
 
     def trade(
         self,
@@ -131,7 +210,7 @@ class _HotStandbyRouter:
             state = self.slots[slot]
             if self.collector._stream_stopping():
                 return
-            if state.ready and slot == self.leader_slot:
+            if self.active and state.ready and slot == self.leader_slot:
                 self._forward(trade)
                 return
             self._buffer(state, trade)
@@ -140,6 +219,8 @@ class _HotStandbyRouter:
         """Return the oldest leg only when every leg is ready."""
 
         with self.lock:
+            if not self.active:
+                return None
             ready = [
                 (state.ready_since, slot)
                 for slot, state in self.slots.items()
@@ -156,9 +237,22 @@ class _HotStandbyRouter:
             state = self.slots[slot]
             state.ready = False
             state.ready_since = None
+            self._publish_readiness()
             if self.collector._stream_stopping():
                 if slot == self.leader_slot:
                     self.leader_slot = None
+                return True
+            if not self.active:
+                state.buffers.clear()
+                if slot == self.leader_slot:
+                    self.leader_slot = next(
+                        (
+                            candidate_slot
+                            for candidate_slot, candidate_state in self.slots.items()
+                            if candidate_slot != slot and candidate_state.ready
+                        ),
+                        None,
+                    )
                 return True
             if self.leader_slot is None:
                 return not any(state.buffers.values())
@@ -258,19 +352,21 @@ class _MarketMetadata:
 class FootprintCollector:
     """Arbitrate redundant public execution feeds into one ClickHouse tape.
 
-    Two independently reconnecting source legs share one logical source epoch.
-    Only the leader is admitted; the standby continuously buffers the same
-    feed for immediate handoff. The bounded queues remain the only buffers, so
-    exhaustion is fatal instead of lossy.
+    Each process warms two independently reconnecting source legs before one
+    process is elected as the exchange writer. The active process admits one
+    leg and keeps the other buffered for immediate in-process failover.
     """
 
-    def __init__(self, exchange: str):
+    def __init__(self, exchange: str, *, standby: bool = False):
         if exchange not in ADAPTER_MODULES:
             raise ValueError(f"unsupported footprint exchange: {exchange}")
         self.exchange = exchange
         self.adapter = importlib.import_module(ADAPTER_MODULES[exchange])
         self.stop_event = threading.Event()
         self._stream_stop_event = threading.Event()
+        self._promotion_event = threading.Event()
+        if not standby:
+            self._promotion_event.set()
 
         self.queue: queue.Queue[StoredExecution] = queue.Queue(maxsize=QUEUE_SIZE)
         self.commit_batch_size = COMMIT_BATCH_SIZE
@@ -297,6 +393,10 @@ class FootprintCollector:
 
         self._fatal_error: BaseException | None = None
         self._fatal_lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        state_directory = os.environ.get(STATE_DIRECTORY_ENVIRONMENT, "").strip()
+        self._state_directory = Path(state_directory) if state_directory else None
+        self._writer_fenced = threading.Event()
         self._feed_status_lock = threading.RLock()
         self._active_stream_stop_events: dict[int, threading.Event] = {}
         self._planned_stream_stop_events: set[threading.Event] = set()
@@ -306,6 +406,70 @@ class FootprintCollector:
         self._clickhouse_access: ClickHouseAccess | None = None
         self._execution_store: ClickHouseExecutionStore | None = None
         self._wakeup_redis = None
+
+    def promote(self) -> None:
+        """Allow an explicitly warm candidate to compete for leadership."""
+
+        if not self._promotion_event.is_set():
+            logger.info("%s footprint standby promotion requested", self.exchange)
+            self._promotion_event.set()
+
+    def _reset_state_markers(self) -> None:
+        directory = self._state_directory
+        if directory is None:
+            return
+        directory.mkdir(parents=True, exist_ok=True)
+        for name in (
+            FEEDS_READY_MARKER,
+            WRITER_ACTIVE_MARKER,
+            HANDOFF_VERIFIED_MARKER,
+        ):
+            (directory / name).unlink(missing_ok=True)
+
+    def _set_state_marker(
+        self,
+        name: str,
+        present: bool,
+        *,
+        required: bool = False,
+    ) -> None:
+        directory = self._state_directory
+        if directory is None:
+            return
+        try:
+            with self._state_lock:
+                marker = directory / name
+                if present:
+                    directory.mkdir(parents=True, exist_ok=True)
+                    marker.touch()
+                else:
+                    marker.unlink(missing_ok=True)
+        except OSError:
+            logger.exception(
+                "Failed to update %s footprint state marker %s",
+                self.exchange,
+                name,
+            )
+            if required:
+                raise
+
+    def _set_feeds_ready(self, ready: bool) -> None:
+        self._set_state_marker(FEEDS_READY_MARKER, ready)
+
+    def _set_writer_active(self, active: bool) -> None:
+        self._set_state_marker(WRITER_ACTIVE_MARKER, active)
+
+    def _set_handoff_verified(
+        self,
+        verified: bool,
+        *,
+        required: bool = False,
+    ) -> None:
+        self._set_state_marker(
+            HANDOFF_VERIFIED_MARKER,
+            verified,
+            required=required,
+        )
 
     def on_trade(self, trade: NormalizedTrade) -> None:
         market = self._markets.get(trade.market_key)
@@ -422,6 +586,8 @@ class FootprintCollector:
         )
 
     def run(self) -> None:
+        leadership = FootprintWriterLeadership(self.exchange)
+        self._reset_state_markers()
         writer = threading.Thread(
             target=self._writer_loop,
             name=f"{self.exchange}-clickhouse-writer",
@@ -446,23 +612,18 @@ class FootprintCollector:
                         f"No enabled footprint markets configured for {self.exchange}"
                     )
 
-                source_epoch = self._allocate_source_epoch_with_retry()
-                if source_epoch is None:
-                    break
                 symbols = {
                     instrument.symbol: market_key
                     for market_key, instrument in self.instruments.items()
                 }
                 logger.info(
-                    "Starting %s redundant execution generation source_epoch=%s "
-                    "connections=%s symbols=%s",
+                    "Starting %s warm execution generation connections=%s symbols=%s",
                     self.exchange,
-                    source_epoch,
                     STREAM_CONNECTIONS,
                     sorted(symbols),
                 )
                 try:
-                    self._run_stream_generation(symbols)
+                    self._run_stream_generation(symbols, leadership)
                 except Exception:
                     if self._fatal_error is None:
                         raise
@@ -475,8 +636,15 @@ class FootprintCollector:
 
                 if self._fatal_error is not None or self.stop_event.is_set():
                     break
-                if not self._wait_until_drained():
+                if not self._wait_until_drained(leadership):
                     break
+                if leadership.acquired:
+                    try:
+                        leadership.close()
+                    except Exception as exc:
+                        self._writer_fenced.set()
+                        self._set_fatal(exc)
+                        break
                 if self.stop_event.wait(self.reconnect_delay_seconds):
                     break
                 logger.warning(
@@ -485,17 +653,26 @@ class FootprintCollector:
                 )
         finally:
             self.stop()
-            writer.join()
+            self._join_writer_with_leadership(writer, leadership)
             uncommitted = self._uncommitted_batch_count + self.queue.qsize()
             if uncommitted:
-                logger.error(
+                error = RuntimeError(
                     "Footprint collector stopped with uncommitted executions "
-                    "exchange=%s count=%s",
-                    self.exchange,
-                    uncommitted,
+                    f"exchange={self.exchange} count={uncommitted}"
                 )
+                logger.error("%s", error)
+                with self._fatal_lock:
+                    if self._fatal_error is None:
+                        self._fatal_error = error
             self._close_clickhouse()
             self._close_wakeup_redis()
+            try:
+                leadership.close()
+            except Exception:
+                logger.exception(
+                    "Failed to close the %s footprint writer lock",
+                    self.exchange,
+                )
             close_old_connections()
 
         if self._fatal_error is not None:
@@ -514,9 +691,13 @@ class FootprintCollector:
     def _run_stream_generation(
         self,
         symbols: dict[str, str],
+        leadership: FootprintWriterLeadership,
     ) -> None:
         router = _HotStandbyRouter(self)
         self._stream_stop_event.clear()
+        self._set_writer_active(False)
+        self._set_feeds_ready(False)
+        self._set_handoff_verified(False, required=True)
         if self.stop_event.is_set():
             return
         workers = [
@@ -531,7 +712,7 @@ class FootprintCollector:
         for worker in workers:
             worker.start()
         try:
-            self._rotation_loop(router)
+            self._coordination_loop(router, leadership)
         finally:
             self._stop_active_streams()
             for worker in workers:
@@ -626,25 +807,138 @@ class FootprintCollector:
             if self._stream_stop_event.wait(self.reconnect_delay_seconds):
                 return
 
-    def _rotation_loop(self, router: _HotStandbyRouter) -> None:
-        """Rotate one ready feed per interval, postponing unsafe rotations."""
+    def _coordination_loop(
+        self,
+        router: _HotStandbyRouter,
+        leadership: FootprintWriterLeadership,
+    ) -> None:
+        """Promote one writer, verify its lease, and schedule safe rotations."""
+
+        activated = False
+        source_epoch: int | None = None
+        next_lock_attempt = 0.0
+        next_leadership_verify = 0.0
+        next_rotation: float | None = None
 
         while not self._stream_stopping():
-            if self._stream_stop_event.wait(
-                self.stream_rotation_interval_seconds
-            ):
-                return
-            while not self._stream_stopping():
-                slot = router.rotation_candidate()
-                if slot is not None and self._request_stream_rotation(slot):
-                    logger.info(
-                        "%s execution feed scheduled rotation slot=%s",
-                        self.exchange,
-                        slot,
-                    )
-                    break
-                if self._stream_stop_event.wait(self.reconnect_delay_seconds):
+            now = time.monotonic()
+            if not activated:
+                if not self._promotion_event.is_set() or not router.feeds_ready():
+                    self._stream_stop_event.wait(COORDINATION_INTERVAL_SECONDS)
+                    continue
+
+                if not leadership.acquired and now >= next_lock_attempt:
+                    try:
+                        acquired = leadership.try_acquire()
+                    except Exception:
+                        logger.exception(
+                            "%s footprint writer lock acquisition failed",
+                            self.exchange,
+                        )
+                        acquired = False
+                    next_lock_attempt = now + LEADERSHIP_RETRY_SECONDS
+                    if acquired:
+                        logger.info(
+                            "%s footprint writer leadership acquired",
+                            self.exchange,
+                        )
+
+                if leadership.acquired:
+                    if source_epoch is None:
+                        if not self._verify_writer_leadership(leadership):
+                            return
+                        source_epoch = self._allocate_source_epoch_with_retry()
+                        if source_epoch is None:
+                            return
+                        if not self._verify_writer_leadership(leadership):
+                            return
+                    if router.activate():
+                        activated = True
+                        overlap_verified = router.activation_overlap_verified
+                        self._set_handoff_verified(
+                            overlap_verified,
+                            required=True,
+                        )
+                        self._set_writer_active(True)
+                        activated_at = time.monotonic()
+                        next_leadership_verify = (
+                            activated_at + LEADERSHIP_VERIFY_SECONDS
+                        )
+                        next_rotation = (
+                            activated_at + self.stream_rotation_interval_seconds
+                        )
+                        logger.info(
+                            "%s footprint writer active source_epoch=%s",
+                            self.exchange,
+                            source_epoch,
+                        )
+                        if not overlap_verified:
+                            logger.warning(
+                                "%s footprint handoff has no verified overlap "
+                                "source_epoch=%s",
+                                self.exchange,
+                                source_epoch,
+                            )
+                    else:
+                        try:
+                            leadership.close()
+                        except Exception as exc:
+                            self._writer_fenced.set()
+                            self._set_fatal(exc)
+                            return
+                        source_epoch = None
+                self._stream_stop_event.wait(COORDINATION_INTERVAL_SECONDS)
+                continue
+
+            if now >= next_leadership_verify:
+                if not self._verify_writer_leadership(leadership):
                     return
+                next_leadership_verify = now + LEADERSHIP_VERIFY_SECONDS
+
+            if next_rotation is not None and now >= next_rotation:
+                if self._schedule_rotation(router):
+                    next_rotation = now + self.stream_rotation_interval_seconds
+
+            self._stream_stop_event.wait(COORDINATION_INTERVAL_SECONDS)
+
+    def _schedule_rotation(self, router: _HotStandbyRouter) -> bool:
+        slot = router.rotation_candidate()
+        if slot is None or not self._request_stream_rotation(slot):
+            return False
+        logger.info(
+            "%s execution feed scheduled rotation slot=%s",
+            self.exchange,
+            slot,
+        )
+        return True
+
+    def _verify_writer_leadership(
+        self,
+        leadership: FootprintWriterLeadership,
+    ) -> bool:
+        try:
+            leadership.verify()
+        except Exception as exc:
+            self._writer_fenced.set()
+            self._set_writer_active(False)
+            self._set_fatal(exc)
+            return False
+        return True
+
+    def _join_writer_with_leadership(
+        self,
+        writer: threading.Thread,
+        leadership: FootprintWriterLeadership,
+    ) -> None:
+        next_leadership_verify = 0.0
+        while writer.is_alive():
+            now = time.monotonic()
+            if leadership.acquired and now >= next_leadership_verify:
+                if not self._verify_writer_leadership(leadership):
+                    break
+                next_leadership_verify = now + LEADERSHIP_VERIFY_SECONDS
+            writer.join(timeout=COORDINATION_INTERVAL_SECONDS)
+        writer.join()
 
     def _stream_stopping(self) -> bool:
         return (
@@ -685,6 +979,9 @@ class FootprintCollector:
             return True
 
     def _stop_active_streams(self) -> None:
+        self._set_writer_active(False)
+        self._set_feeds_ready(False)
+        self._set_handoff_verified(False)
         self._stream_stop_event.set()
         with self._feed_status_lock:
             members = tuple(self._active_stream_stop_events.values())
@@ -746,11 +1043,10 @@ class FootprintCollector:
 
     def _allocate_source_epoch_with_retry(self) -> int | None:
         attempt = 0
-        while not self.stop_event.is_set():
+        while not self._stream_stopping():
             try:
                 return self._allocate_source_epoch()
             except Exception as exc:
-                self._stop_active_streams()
                 self._close_clickhouse()
                 failure_kind = classify_clickhouse_error(exc, is_write=False)
                 if failure_kind == ClickHouseFailureKind.FATAL:
@@ -763,7 +1059,7 @@ class FootprintCollector:
                     self.exchange,
                     delay,
                 )
-                if self.stop_event.wait(delay):
+                if self._stream_stop_event.wait(delay) or self.stop_event.is_set():
                     return None
         return None
 
@@ -895,10 +1191,16 @@ class FootprintCollector:
     def _insert_with_retry(self, batch: tuple[StoredExecution, ...]) -> bool:
         attempt = 0
         while True:
+            if self._writer_fenced.is_set():
+                return False
             try:
                 self._ensure_execution_store().insert_batch(batch)
+                if self._writer_fenced.is_set():
+                    return False
                 return True
             except Exception as exc:
+                if self._writer_fenced.is_set():
+                    return False
                 self._stop_active_streams()
                 self._close_clickhouse()
                 failure_kind = (
@@ -946,12 +1248,21 @@ class FootprintCollector:
         time.sleep(min(delay, remaining))
         return time.monotonic() < deadline
 
-    def _wait_until_drained(self) -> bool:
+    def _wait_until_drained(
+        self,
+        leadership: FootprintWriterLeadership,
+    ) -> bool:
+        next_leadership_verify = 0.0
         while self._fatal_error is None:
             with self.queue.all_tasks_done:
                 if self.queue.unfinished_tasks == 0:
                     return True
                 self.queue.all_tasks_done.wait(timeout=0.1)
+            now = time.monotonic()
+            if leadership.acquired and now >= next_leadership_verify:
+                if not self._verify_writer_leadership(leadership):
+                    return False
+                next_leadership_verify = now + LEADERSHIP_VERIFY_SECONDS
         return False
 
     def _ensure_execution_store(self) -> ClickHouseExecutionStore:
