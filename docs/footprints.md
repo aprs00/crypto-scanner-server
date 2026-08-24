@@ -30,7 +30,10 @@ Each collector keeps a leader WebSocket and a continuously consumed hot
 standby. If the leader disconnects, the standby replays its bounded buffer
 through the shared trade-identity dedupe, becomes leader, and the failed socket
 reconnects independently. Both connections share the existing identity cache
-and ClickHouse writer.
+and ClickHouse writer. The collector also rotates the oldest ready connection
+once per hour, so each leg normally lives for about two hours. A planned
+rotation is postponed until both legs are subscription-ready and uses the same
+handoff and dedupe path as an isolated disconnect.
 
 HTTP chart snapshots use response gzip when the client accepts it so dense
 footprint-level JSON does not dominate transfer time. The snapshot reader keeps

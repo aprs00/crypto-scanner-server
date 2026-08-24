@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import queue
+import threading
 from decimal import Decimal
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 from django.test import SimpleTestCase
 
@@ -224,6 +225,20 @@ class CollectorNormalizationTests(SimpleTestCase):
 
 
 class CollectorRedundantFeedTests(SimpleTestCase):
+    def test_rotation_candidate_requires_both_feeds_and_prefers_the_oldest(self):
+        collector = _collector()
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+
+        with patch("footprints.collector.time.monotonic", return_value=10):
+            router.ready(0)
+        self.assertIsNone(router.rotation_candidate())
+
+        with patch("footprints.collector.time.monotonic", return_value=20):
+            router.ready(1)
+        self.assertEqual(router.rotation_candidate(), 0)
+
     def test_first_leader_drains_trades_received_before_ready(self):
         collector = _collector()
         router = _HotStandbyRouter(collector)
@@ -235,7 +250,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         executions = _queued_executions(collector)
         self.assertEqual([item.trade.trade_id for item in executions], ["one"])
 
-    def test_ready_standby_replays_once_and_becomes_leader(self):
+    def test_planned_leader_rotation_replays_once_and_stays_in_epoch(self):
         collector = _collector(queue_size=20)
         router = _HotStandbyRouter(collector)
         router.start(0)
@@ -247,7 +262,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         router.trade(1, _trade("one", sequence=1))
         router.trade(1, _trade("two", sequence=2))
 
-        self.assertTrue(router.disconnected(0))
+        self.assertTrue(router.disconnected(0, planned=True))
         router.trade(1, _trade("three", sequence=3))
 
         executions = _queued_executions(collector)
@@ -258,7 +273,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         self.assertEqual({execution.source_epoch for execution in executions}, {5})
         self.assertEqual(router.leader_slot, 1)
 
-    def test_standby_disconnect_does_not_interrupt_the_leader(self):
+    def test_planned_standby_rotation_does_not_interrupt_the_leader(self):
         collector = _collector(queue_size=20)
         router = _HotStandbyRouter(collector)
         router.start(0)
@@ -267,7 +282,7 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         router.ready(1)
         router.trade(0, _trade("one", sequence=1))
 
-        self.assertTrue(router.disconnected(1))
+        self.assertTrue(router.disconnected(1, planned=True))
         router.trade(0, _trade("two", sequence=2))
 
         executions = _queued_executions(collector)
@@ -393,6 +408,105 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         self.assertEqual(
             [execution.trade.batch_index for execution in executions],
             [0, 1],
+        )
+
+
+class CollectorStreamLifecycleTests(SimpleTestCase):
+    def test_rotation_stops_only_the_selected_attempt(self):
+        collector = _collector()
+        first = threading.Event()
+        second = threading.Event()
+        collector._register_stream_attempt(0, first)
+        collector._register_stream_attempt(1, second)
+
+        self.assertTrue(collector._request_stream_rotation(1))
+
+        self.assertFalse(first.is_set())
+        self.assertTrue(second.is_set())
+        self.assertFalse(collector._stream_stop_event.is_set())
+        self.assertTrue(collector._unregister_stream_attempt(1, second))
+        self.assertFalse(collector._unregister_stream_attempt(0, first))
+
+    def test_stale_unregister_does_not_remove_the_replacement_attempt(self):
+        collector = _collector()
+        stale = threading.Event()
+        replacement = threading.Event()
+        collector._register_stream_attempt(0, stale)
+        collector._register_stream_attempt(0, replacement)
+
+        collector._unregister_stream_attempt(0, stale)
+
+        self.assertIs(collector._active_stream_stop_events[0], replacement)
+
+    def test_global_stream_stop_stops_both_attempts(self):
+        collector = _collector()
+        first = threading.Event()
+        second = threading.Event()
+        collector._register_stream_attempt(0, first)
+        collector._register_stream_attempt(1, second)
+
+        collector._stop_active_streams()
+
+        self.assertTrue(collector._stream_stop_event.is_set())
+        self.assertTrue(first.is_set())
+        self.assertTrue(second.is_set())
+
+    def test_planned_worker_rotation_reconnects_only_the_target(self):
+        collector = _collector()
+        collector.reconnect_delay_seconds = 0
+        router = _HotStandbyRouter(collector)
+        first_ready = threading.Event()
+        replacement_ready = threading.Event()
+        attempts = []
+
+        def listen(_symbols, _on_trade, stop_event, *, on_ready):
+            attempts.append(stop_event)
+            on_ready()
+            if len(attempts) == 1:
+                first_ready.set()
+                stop_event.wait(1)
+            else:
+                replacement_ready.set()
+                collector._stream_stop_event.set()
+
+        collector.adapter = Mock(listen=listen)
+        worker = threading.Thread(
+            target=collector._stream_worker,
+            args=(0, {"BTCUSDT": MARKET_KEY}, router),
+        )
+        worker.start()
+        try:
+            self.assertTrue(first_ready.wait(1))
+            router.start(1)
+            router.ready(1)
+
+            self.assertTrue(collector._request_stream_rotation(0))
+            self.assertTrue(replacement_ready.wait(1))
+        finally:
+            collector._stop_active_streams()
+            worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(attempts), 2)
+
+    def test_rotation_loop_postpones_until_both_feeds_are_ready(self):
+        collector = _collector()
+        collector.stream_rotation_interval_seconds = 3_600
+        collector.reconnect_delay_seconds = 1
+        stream_stop_event = Mock()
+        stream_stop_event.is_set.return_value = False
+        stream_stop_event.wait.side_effect = [False, False, True]
+        collector._stream_stop_event = stream_stop_event
+        collector._request_stream_rotation = Mock(return_value=True)
+        router = Mock()
+        router.rotation_candidate.side_effect = [None, 1]
+
+        collector._rotation_loop(router)
+
+        collector._request_stream_rotation.assert_called_once_with(1)
+        self.assertEqual(
+            stream_stop_event.wait.call_args_list,
+            [call(3_600), call(1), call(3_600)],
         )
 
 

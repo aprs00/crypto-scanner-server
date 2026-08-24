@@ -54,15 +54,18 @@ STREAM_CONNECTIONS = 2
 STANDBY_BUFFER_TRADES = 50_000
 STREAM_READY_TIMEOUT_SECONDS = 15.0
 STREAM_JOIN_TIMEOUT_SECONDS = 5.0
+STREAM_ROTATION_INTERVAL_SECONDS = 60 * 60
 
 
 @dataclass(slots=True)
 class _HotStandbySlot:
     ready: bool = False
+    ready_since: float | None = None
     buffers: dict[str, deque[NormalizedTrade]] = field(default_factory=dict)
 
     def reset(self) -> None:
         self.ready = False
+        self.ready_since = None
         self.buffers.clear()
 
 
@@ -101,6 +104,7 @@ class _HotStandbyRouter:
             if self.collector._stream_stopping():
                 return
             state.ready = True
+            state.ready_since = time.monotonic()
             logger.info(
                 "%s execution feed subscription-ready slot=%s",
                 self.collector.exchange,
@@ -132,12 +136,26 @@ class _HotStandbyRouter:
                 return
             self._buffer(state, trade)
 
-    def disconnected(self, slot: int) -> bool:
+    def rotation_candidate(self) -> int | None:
+        """Return the oldest leg only when every leg is ready."""
+
+        with self.lock:
+            ready = [
+                (state.ready_since, slot)
+                for slot, state in self.slots.items()
+                if state.ready and state.ready_since is not None
+            ]
+            if len(ready) != len(self.slots):
+                return None
+            return min(ready)[1]
+
+    def disconnected(self, slot: int, *, planned: bool = False) -> bool:
         """Promote a ready standby; return false when coverage was lost."""
 
         with self.lock:
             state = self.slots[slot]
             state.ready = False
+            state.ready_since = None
             if self.collector._stream_stopping():
                 if slot == self.leader_slot:
                     self.leader_slot = None
@@ -205,11 +223,18 @@ class _HotStandbyRouter:
                     self._forward(trade)
             candidate_state.buffers.clear()
             self.leader_slot = candidate_slot
-            logger.warning(
-                "%s execution leader failed over slot=%s",
-                self.collector.exchange,
-                candidate_slot,
-            )
+            if planned:
+                logger.info(
+                    "%s execution leader rotated to slot=%s",
+                    self.collector.exchange,
+                    candidate_slot,
+                )
+            else:
+                logger.warning(
+                    "%s execution leader failed over slot=%s",
+                    self.collector.exchange,
+                    candidate_slot,
+                )
             return True
 
 
@@ -255,6 +280,7 @@ class FootprintCollector:
         self.retry_max_seconds = RETRY_MAX_SECONDS
         self.recent_trade_limit = RECENT_TRADE_LIMIT
         self.shutdown_drain_seconds = SHUTDOWN_DRAIN_SECONDS
+        self.stream_rotation_interval_seconds = STREAM_ROTATION_INTERVAL_SECONDS
 
         self.instruments: dict[str, RuntimeInstrument] = {}
         self._markets: dict[str, _MarketMetadata] = {}
@@ -272,7 +298,8 @@ class FootprintCollector:
         self._fatal_error: BaseException | None = None
         self._fatal_lock = threading.Lock()
         self._feed_status_lock = threading.RLock()
-        self._active_stream_stop_events: set[threading.Event] = set()
+        self._active_stream_stop_events: dict[int, threading.Event] = {}
+        self._planned_stream_stop_events: set[threading.Event] = set()
         self._shutdown_deadline: float | None = None
         self._uncommitted_batch_count = 0
         self._clickhouse_lock = threading.RLock()
@@ -426,7 +453,6 @@ class FootprintCollector:
                     instrument.symbol: market_key
                     for market_key, instrument in self.instruments.items()
                 }
-                self._stream_stop_event.clear()
                 logger.info(
                     "Starting %s redundant execution generation source_epoch=%s "
                     "connections=%s symbols=%s",
@@ -505,7 +531,7 @@ class FootprintCollector:
         for worker in workers:
             worker.start()
         try:
-            self._stream_stop_event.wait()
+            self._rotation_loop(router)
         finally:
             self._stop_active_streams()
             for worker in workers:
@@ -528,9 +554,9 @@ class FootprintCollector:
             attempt_stop_event = threading.Event()
             ready_event = threading.Event()
             router.start(slot)
-            self._register_stream_attempt(attempt_stop_event)
+            self._register_stream_attempt(slot, attempt_stop_event)
             if attempt_stop_event.is_set():
-                self._unregister_stream_attempt(attempt_stop_event)
+                self._unregister_stream_attempt(slot, attempt_stop_event)
                 return
 
             def report_ready() -> None:
@@ -567,9 +593,12 @@ class FootprintCollector:
                     )
             finally:
                 readiness_timeout.cancel()
-                self._unregister_stream_attempt(attempt_stop_event)
+                planned_rotation = self._unregister_stream_attempt(
+                    slot,
+                    attempt_stop_event,
+                )
 
-            if not router.disconnected(slot):
+            if not router.disconnected(slot, planned=planned_rotation):
                 if not self._stream_stopping():
                     logger.error(
                         "%s execution coverage lost; opening a new source epoch",
@@ -579,14 +608,43 @@ class FootprintCollector:
                 return
             if self._stream_stopping():
                 return
-            logger.warning(
-                "%s execution feed reconnecting slot=%s in %.3fs",
-                self.exchange,
-                slot,
-                self.reconnect_delay_seconds,
-            )
+            if planned_rotation:
+                logger.info(
+                    "%s execution feed reconnecting after rotation "
+                    "slot=%s in %.3fs",
+                    self.exchange,
+                    slot,
+                    self.reconnect_delay_seconds,
+                )
+            else:
+                logger.warning(
+                    "%s execution feed reconnecting slot=%s in %.3fs",
+                    self.exchange,
+                    slot,
+                    self.reconnect_delay_seconds,
+                )
             if self._stream_stop_event.wait(self.reconnect_delay_seconds):
                 return
+
+    def _rotation_loop(self, router: _HotStandbyRouter) -> None:
+        """Rotate one ready feed per interval, postponing unsafe rotations."""
+
+        while not self._stream_stopping():
+            if self._stream_stop_event.wait(
+                self.stream_rotation_interval_seconds
+            ):
+                return
+            while not self._stream_stopping():
+                slot = router.rotation_candidate()
+                if slot is not None and self._request_stream_rotation(slot):
+                    logger.info(
+                        "%s execution feed scheduled rotation slot=%s",
+                        self.exchange,
+                        slot,
+                    )
+                    break
+                if self._stream_stop_event.wait(self.reconnect_delay_seconds):
+                    return
 
     def _stream_stopping(self) -> bool:
         return (
@@ -597,21 +655,39 @@ class FootprintCollector:
 
     def _register_stream_attempt(
         self,
+        slot: int,
         stop_event: threading.Event,
     ) -> None:
         with self._feed_status_lock:
-            self._active_stream_stop_events.add(stop_event)
+            self._active_stream_stop_events[slot] = stop_event
             if self.stop_event.is_set() or self._stream_stop_event.is_set():
                 stop_event.set()
 
-    def _unregister_stream_attempt(self, stop_event: threading.Event) -> None:
+    def _unregister_stream_attempt(
+        self,
+        slot: int,
+        stop_event: threading.Event,
+    ) -> bool:
         with self._feed_status_lock:
-            self._active_stream_stop_events.discard(stop_event)
+            if self._active_stream_stop_events.get(slot) is stop_event:
+                self._active_stream_stop_events.pop(slot, None)
+            planned = stop_event in self._planned_stream_stop_events
+            self._planned_stream_stop_events.discard(stop_event)
+            return planned
+
+    def _request_stream_rotation(self, slot: int) -> bool:
+        with self._feed_status_lock:
+            stop_event = self._active_stream_stop_events.get(slot)
+            if stop_event is None or stop_event.is_set():
+                return False
+            self._planned_stream_stop_events.add(stop_event)
+            stop_event.set()
+            return True
 
     def _stop_active_streams(self) -> None:
         self._stream_stop_event.set()
         with self._feed_status_lock:
-            members = tuple(self._active_stream_stop_events)
+            members = tuple(self._active_stream_stop_events.values())
         for stop_event in members:
             stop_event.set()
 

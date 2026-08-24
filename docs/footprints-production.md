@@ -71,7 +71,9 @@ for chart checkpoints.
 ## Release checks
 
 - Confirm all three footprint collectors and maintenance are healthy, and that
-  collector logs show both execution feeds becoming subscription-ready.
+  collector logs show both execution feeds becoming subscription-ready. After
+  an hour, confirm one planned rotation completes, the closed leg reconnects,
+  and both legs return to subscription-ready without a new source epoch.
 - Request the market catalog, create one Tick and one TRev series, wait for
   `ready`, and confirm both snapshots are non-empty.
 - Manually smoke-test rendering, zoom, crosshair, resize, two panels sharing a
