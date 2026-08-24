@@ -56,7 +56,7 @@ COLLECTOR_OPERATION_TIMEOUT_SECONDS = 10
 STREAM_CONNECTIONS = 2
 STANDBY_BUFFER_TRADES = 50_000
 STREAM_READY_TIMEOUT_SECONDS = 15.0
-STREAM_JOIN_TIMEOUT_SECONDS = 5.0
+STREAM_SHUTDOWN_TIMEOUT_SECONDS = 15.0
 STREAM_ROTATION_INTERVAL_SECONDS = 60 * 60
 LEADERSHIP_RETRY_SECONDS = 0.5
 LEADERSHIP_VERIFY_SECONDS = 1.0
@@ -115,8 +115,13 @@ class _HotStandbyRouter:
         buffered.append(trade)
 
     def _publish_readiness(self) -> None:
-        self.collector._set_feeds_ready(
-            all(state.ready for state in self.slots.values())
+        self.collector._set_feeds_ready(self._feeds_ready())
+
+    def _feeds_ready(self) -> bool:
+        if not all(state.ready for state in self.slots.values()):
+            return False
+        return self.active or all(
+            any(state.buffers.values()) for state in self.slots.values()
         )
 
     def start(self, slot: int) -> None:
@@ -147,7 +152,7 @@ class _HotStandbyRouter:
 
     def feeds_ready(self) -> bool:
         with self.lock:
-            return all(state.ready for state in self.slots.values())
+            return self._feeds_ready()
 
     def activate(self) -> bool:
         """Replay the selected feed once both subscriptions are ready."""
@@ -214,6 +219,8 @@ class _HotStandbyRouter:
                 self._forward(trade)
                 return
             self._buffer(state, trade)
+            if not self.active:
+                self._publish_readiness()
 
     def rotation_candidate(self) -> int | None:
         """Return the oldest leg only when every leg is ready."""
@@ -715,8 +722,13 @@ class FootprintCollector:
             self._coordination_loop(router, leadership)
         finally:
             self._stop_active_streams()
+            shutdown_deadline = (
+                time.monotonic() + STREAM_SHUTDOWN_TIMEOUT_SECONDS
+            )
             for worker in workers:
-                worker.join(timeout=STREAM_JOIN_TIMEOUT_SECONDS)
+                worker.join(
+                    timeout=max(0.0, shutdown_deadline - time.monotonic())
+                )
             stuck = [worker.name for worker in workers if worker.is_alive()]
             if stuck and self._fatal_error is None:
                 self._set_fatal(

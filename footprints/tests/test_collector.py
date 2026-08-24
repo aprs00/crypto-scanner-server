@@ -234,6 +234,23 @@ class CollectorNormalizationTests(SimpleTestCase):
 
 
 class CollectorRedundantFeedTests(SimpleTestCase):
+    def test_inactive_readiness_requires_a_trade_from_each_ready_feed(self):
+        collector = _collector()
+        collector._set_feeds_ready = Mock()
+        router = _HotStandbyRouter(collector)
+        router.start(0)
+        router.start(1)
+        router.ready(0)
+        router.ready(1)
+
+        self.assertFalse(router.feeds_ready())
+        router.trade(0, _trade("slot-zero", sequence=1))
+        self.assertFalse(router.feeds_ready())
+        router.trade(1, _trade("slot-one", sequence=2))
+
+        self.assertTrue(router.feeds_ready())
+        collector._set_feeds_ready.assert_called_with(True)
+
     def test_rotation_candidate_requires_both_feeds_and_prefers_the_oldest(self):
         collector = _collector()
         router = _HotStandbyRouter(collector)
@@ -581,6 +598,7 @@ class CollectorStreamLifecycleTests(SimpleTestCase):
         router.start(1)
         router.trade(0, _trade("shared", sequence=1))
         router.trade(0, _trade("new", sequence=2))
+        router.trade(1, _trade("shared", sequence=1))
         router.ready(0)
         router.ready(1)
         leadership = Mock(acquired=False)
@@ -637,6 +655,8 @@ class CollectorStreamLifecycleTests(SimpleTestCase):
         router = _HotStandbyRouter(collector)
         router.start(0)
         router.start(1)
+        router.trade(0, _trade("slot-zero", sequence=1))
+        router.trade(1, _trade("slot-one", sequence=2))
         router.ready(0)
         router.ready(1)
         leadership = Mock(acquired=False)
@@ -666,6 +686,8 @@ class CollectorStreamLifecycleTests(SimpleTestCase):
         router = _HotStandbyRouter(collector)
         router.start(0)
         router.start(1)
+        router.trade(0, _trade("slot-zero", sequence=1))
+        router.trade(1, _trade("slot-one", sequence=2))
         router.ready(0)
         router.ready(1)
         leadership = Mock(acquired=True)
@@ -677,6 +699,32 @@ class CollectorStreamLifecycleTests(SimpleTestCase):
         self.assertFalse(router.active)
         self.assertTrue(collector._writer_fenced.is_set())
         self.assertIsInstance(collector._fatal_error, RuntimeError)
+
+    def test_stream_workers_share_one_bounded_shutdown_deadline(self):
+        collector = _collector()
+        collector._coordination_loop = Mock()
+        first = Mock()
+        second = Mock()
+        first.is_alive.return_value = False
+        second.is_alive.return_value = False
+
+        with (
+            patch(
+                "footprints.collector.threading.Thread",
+                side_effect=[first, second],
+            ),
+            patch(
+                "footprints.collector.time.monotonic",
+                side_effect=[100.0, 100.0, 105.0],
+            ),
+        ):
+            collector._run_stream_generation(
+                {"BTCUSDT": MARKET_KEY},
+                Mock(),
+            )
+
+        first.join.assert_called_once_with(timeout=15.0)
+        second.join.assert_called_once_with(timeout=10.0)
 
     def test_shutdown_fences_the_writer_if_leadership_is_lost_while_draining(self):
         collector = _collector()
