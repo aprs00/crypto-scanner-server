@@ -148,6 +148,80 @@ class ProjectorExecutionStoreTests(SimpleTestCase):
         self.assertEqual(parameters["after_source_epoch"], 3)
         self.assertEqual(operation, "stream_projector_executions")
 
+    def test_captures_latest_cursor_or_empty_replay_window(self):
+        latest = (3, 41, 2, 1_700_000_000_000_123, "trade-41")
+        access = _FakeAccess(query_results=((latest,), ()))
+        store = self._store(access)
+
+        self.assertEqual(
+            store.latest_cursor(
+                market_id=7,
+                start_timestamp_us=1_699_000_000_000_000,
+            ),
+            latest,
+        )
+        self.assertIsNone(
+            store.latest_cursor(
+                market_id=8,
+                start_timestamp_us=1_699_000_000_000_000,
+            )
+        )
+
+        sql, parameters, _settings, operation = access.queries[0]
+        compact_sql = " ".join(sql.split())
+        self.assertIn(
+            "ORDER BY source_epoch DESC, source_sequence DESC, "
+            "batch_index DESC, timestamp_us DESC, trade_id DESC LIMIT 1",
+            compact_sql,
+        )
+        self.assertEqual(parameters["market_id"], 7)
+        self.assertEqual(operation, "read_projector_latest_cursor")
+
+    def test_streams_inclusively_through_fixed_cursor_without_limit(self):
+        first = _raw_projector_row(source_sequence=41, trade_id="trade-41")
+        last = _raw_projector_row(source_sequence=42, trade_id="trade-42")
+        through = (last[0], last[1], last[2], last[3], last[4])
+        access = _FakeAccess(stream_rows=(first, last))
+
+        executions = list(
+            self._store(access).iter_executions(
+                market_id=7,
+                start_timestamp_us=1_699_000_000_000_000,
+                after_cursor=(
+                    first[0],
+                    first[1] - 1,
+                    first[2],
+                    first[3],
+                    "trade-40",
+                ),
+                through_cursor=through,
+            )
+        )
+
+        self.assertEqual(
+            [row.trade_id for row in executions],
+            ["trade-41", "trade-42"],
+        )
+        sql, parameters, _settings, _operation = access.stream_queries[0]
+        compact_sql = " ".join(sql.split())
+        self.assertIn(
+            "timestamp_us = {through_timestamp_us:Int64} "
+            "AND trade_id <= {through_trade_id:String}",
+            compact_sql,
+        )
+        self.assertNotIn(" LIMIT ", f" {compact_sql} ")
+        self.assertEqual(parameters["through_trade_id"], "trade-42")
+
+        beyond = _raw_projector_row(source_sequence=43, trade_id="trade-43")
+        with self.assertRaisesRegex(ProjectorDataError, "beyond its through cursor"):
+            list(
+                self._store(_FakeAccess(stream_rows=(beyond,))).iter_executions(
+                    market_id=7,
+                    start_timestamp_us=1,
+                    through_cursor=through,
+                )
+            )
+
     def test_rejects_nondivisible_atoms_and_unknown_specification(self):
         nondivisible = _FakeAccess(
             stream_rows=(_raw_projector_row(price_atoms=25_051),)
@@ -159,14 +233,10 @@ class ProjectorExecutionStoreTests(SimpleTestCase):
                 )
             )
 
-        unknown = _FakeAccess(
-            stream_rows=(_raw_projector_row(instrument_spec_id=99),)
-        )
+        unknown = _FakeAccess(stream_rows=(_raw_projector_row(instrument_spec_id=99),))
         with self.assertRaisesRegex(ProjectorDataError, "specification 99"):
             list(
-                self._store(unknown).iter_executions(
-                    market_id=7, start_timestamp_us=1
-                )
+                self._store(unknown).iter_executions(market_id=7, start_timestamp_us=1)
             )
 
     def test_loads_and_caches_a_divisor_created_after_store_startup(self):
@@ -193,9 +263,7 @@ class ProjectorExecutionStoreTests(SimpleTestCase):
             load_spec_divisor=load_spec_divisor,
         )
 
-        executions = list(
-            store.iter_executions(market_id=7, start_timestamp_us=1)
-        )
+        executions = list(store.iter_executions(market_id=7, start_timestamp_us=1))
 
         self.assertEqual(loaded_ids, [99])
         self.assertEqual([row.price_tick for row in executions], [1_002, 1_002])
@@ -210,12 +278,12 @@ class ProjectorExecutionStoreTests(SimpleTestCase):
         )
         self.assertEqual(len(identical), 1)
 
-        conflict = _FakeAccess(stream_rows=(row, _raw_projector_row(quantity_atoms=130)))
+        conflict = _FakeAccess(
+            stream_rows=(row, _raw_projector_row(quantity_atoms=130))
+        )
         with self.assertRaisesRegex(ProjectorDataError, "conflicting executions"):
             list(
-                self._store(conflict).iter_executions(
-                    market_id=7, start_timestamp_us=1
-                )
+                self._store(conflict).iter_executions(market_id=7, start_timestamp_us=1)
             )
 
 
@@ -228,7 +296,9 @@ class ClickHouseChartStoreTests(SimpleTestCase):
         self.assertEqual(len(access.commands), 3)
         raw_ddl = " ".join(access.commands[1][0].split())
         chart_ddl = " ".join(access.commands[2][0].split())
-        self.assertIn("CREATE TABLE IF NOT EXISTS `footprints`.`raw_executions`", raw_ddl)
+        self.assertIn(
+            "CREATE TABLE IF NOT EXISTS `footprints`.`raw_executions`", raw_ddl
+        )
         self.assertIn("ORDER BY (series_id, bar_index)", chart_ddl)
         self.assertIn("ENGINE = ReplacingMergeTree()", chart_ddl)
         self.assertEqual(len(RAW_EXECUTION_COLUMNS), 10)

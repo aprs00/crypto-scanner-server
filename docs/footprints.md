@@ -41,26 +41,29 @@ validated ClickHouse level arrays in their native layout until JSON encoding,
 avoiding one temporary Python object per footprint level.
 
 A chart request supplies an integer `lookbackDays` from 1 through 30. The
-entire selected raw window is replayed in resumable 100,000-execution chunks;
-100,000 is a work-unit size, not a history cap. Engine state and the raw cursor
-are checkpointed after each durable chart-bar write so live maintenance runs
-between chunks and interrupted builds resume without starting over. Ready
-series are advanced incrementally instead of being replayed for each update.
-Pending configurations for one market share one execution stream instead of
-scanning ClickHouse independently.
+entire selected raw window is replayed with one fixed ClickHouse stream. Engine
+state and the raw cursor are checkpointed every 100,000 executions after
+durable chart-bar writes, so interrupted builds resume without starting over.
+Ready series are advanced incrementally instead of being replayed for each
+update. Pending configurations for one market and one lookback anchor share one
+execution stream instead of scanning ClickHouse independently.
 Tick trade counts and TRev thresholds are integers from 1 through 4,000. One
 market may have at most 16 requested configurations with a live 30-minute
 lease. The client renews a lease by repeating the idempotent series request or
-subscribing to its WebSocket; idle rows are removed and their orphaned
-ClickHouse bars age out under the existing table TTL.
+subscribing to its WebSocket. Ready series remain cached for 24 hours and resume
+from their saved checkpoint when requested again; the oldest dormant entry is
+evicted when market capacity is needed. Orphaned ClickHouse bars age out under
+the existing table TTL. The frontend's default TRev 314/471 five-day series is
+kept warm for every enabled market.
 
 The maintenance process recovers interrupted builds at startup. A durable raw
 insert wakes it immediately for the affected markets, and a series request
 wakes the queued builder. A five-second full catch-up covers lost Redis
-wakeups. Each build claim includes all queued configurations for the oldest
-waiting market, including partially completed builds that need another chunk.
-The maintenance process holds a dedicated PostgreSQL advisory lock and exits
-if another copy already owns it or its lock connection is lost.
+wakeups. Each build claim includes queued configurations with the same market
+and lookback anchor. Two worker processes run independent replay batches while
+the coordinator continues advancing ready series. The maintenance process holds
+a dedicated PostgreSQL advisory lock and exits if another copy already owns it
+or its lock connection is lost.
 Failed builds remain failed and later requests only observe that state, so
 readiness polling cannot start a replay loop. V0 retry is an explicit operator
 action such as deleting the failed series row. A build interrupted by a

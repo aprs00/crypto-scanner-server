@@ -52,7 +52,9 @@ class ChartApiTests(TestCase):
         payload = response.json()
         self.assertEqual(set(payload), {"markets"})
         market = next(
-            item for item in payload["markets"] if item["marketKey"] == self.market.market_key
+            item
+            for item in payload["markets"]
+            if item["marketKey"] == self.market.market_key
         )
         self.assertEqual(
             set(market),
@@ -70,9 +72,7 @@ class ChartApiTests(TestCase):
         )
 
         self.assertEqual((tick.status_code, trev.status_code), (202, 202))
-        self.assertEqual(
-            set(tick.json()), {"seriesKey", "status", "errorCode"}
-        )
+        self.assertEqual(set(tick.json()), {"seriesKey", "status", "errorCode"})
         self.assertEqual(ChartSeries.objects.count(), 2)
         for series in ChartSeries.objects.all():
             self.assertEqual(series.anchor_at, self.anchor)
@@ -112,6 +112,32 @@ class ChartApiTests(TestCase):
         self.assertEqual(second.json()["seriesKey"], first.json()["seriesKey"])
         series.refresh_from_db()
         self.assertGreater(series.last_requested_at, previous)
+
+    def test_dormant_ready_series_is_queued_from_its_saved_checkpoint(self):
+        checkpoint = {"engine": {"saved": True}, "cursor": [1, 2, 0, 3, "4"]}
+        series = ChartSeries.objects.create(
+            market=self.market,
+            chart_type=ChartType.TICK,
+            parameter_a=502,
+            status=ChartSeriesStatus.READY,
+            anchor_at=self.anchor,
+            checkpoint_state=checkpoint,
+        )
+        ChartSeries.objects.filter(pk=series.pk).update(
+            last_requested_at=timezone.now()
+            - timedelta(seconds=CHART_SERIES_LEASE_SECONDS + 1)
+        )
+
+        response = self.post_series(
+            {"chartType": "tick", "tradesPerBar": series.parameter_a}
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["seriesKey"], str(series.public_key))
+        series.refresh_from_db()
+        self.assertEqual(series.status, ChartSeriesStatus.QUEUED)
+        self.assertEqual(series.checkpoint_state, checkpoint)
+        self.publish_build_wakeup.assert_called_once_with()
 
     def test_market_capacity_is_bounded_and_expired_rows_are_reclaimed(self):
         for trades_per_bar in range(1, CHART_MAX_SERIES_PER_MARKET + 1):
@@ -255,9 +281,7 @@ class ChartApiTests(TestCase):
         )
 
     @patch("footprints.chart_api._chart_bar_store")
-    def test_chart_bars_page_back_without_repeating_the_active_bar(
-        self, store_factory
-    ):
+    def test_chart_bars_page_back_without_repeating_the_active_bar(self, store_factory):
         series = self._ready_tick_series()
         store = MagicMock()
         store.read_snapshot.return_value = [
@@ -309,9 +333,7 @@ class ChartApiTests(TestCase):
         self.assertEqual(len(payload["bars"]), 20)
 
     @patch("footprints.chart_api._chart_bar_store")
-    def test_newly_closed_row_wins_over_a_stale_active_checkpoint(
-        self, store_factory
-    ):
+    def test_newly_closed_row_wins_over_a_stale_active_checkpoint(self, store_factory):
         series = self._ready_tick_series()
         store = MagicMock()
         store.read_snapshot.return_value = [self._bar(series, 3), self._bar(series, 2)]

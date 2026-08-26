@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
+import os
 import signal
 import threading
 import time
+from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 
 import psycopg
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import close_old_connections
+from django.db import close_old_connections, connections
 from django.utils import timezone
 from redis.exceptions import RedisError
 
@@ -16,10 +20,18 @@ from core.redis_config import get_redis_connection
 from footprints.chart_service import (
     TransientChartBuildError,
     advance_ready_series,
-    build_next_queued_series,
+    build_claimed_series,
+    claim_queued_market_series,
+    discard_series_runtimes,
+    ensure_default_chart_series,
     expire_stale_series,
     open_chart_stores,
     recover_interrupted_builds,
+    requeue_claimed_series,
+)
+from footprints.storage.clickhouse import (
+    ClickHouseFailureKind,
+    classify_clickhouse_error,
 )
 from footprints.wakeups import wait_for_wakeups
 
@@ -29,8 +41,17 @@ STORAGE_RETRY_SECONDS = 5.0
 EXPIRED_SERIES_CLEANUP_SECONDS = 60.0
 SINGLETON_VERIFY_SECONDS = 5.0
 FULL_CATCHUP_SECONDS = 5.0
+WARM_SERIES_REFRESH_SECONDS = 5 * 60.0
 WAKEUP_WAIT_SECONDS = 1
+BUILD_WORKERS = 2
+BUILD_QUERY_TIMEOUT_SECONDS = 60 * 60
 MAINTENANCE_ADVISORY_LOCK_ID = 0x435346504D41494E
+
+_BUILD_STOP = None
+
+
+class ChartBuildWorkerSetupError(RuntimeError):
+    """A build worker cannot safely start with its current configuration."""
 
 
 class Command(BaseCommand):
@@ -39,10 +60,23 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         stop = threading.Event()
         previous_handlers = _install_signal_handlers(stop)
+        build_stop = None
+        build_executor = None
         stores = None
         singleton = None
         wakeup_client = None
         try:
+            connections.close_all()
+            process_context = multiprocessing.get_context("fork")
+            build_stop = process_context.Event()
+            build_executor = ProcessPoolExecutor(
+                max_workers=BUILD_WORKERS,
+                mp_context=process_context,
+                initializer=_initialize_build_worker,
+                initargs=(build_stop,),
+            )
+            # Fork workers before the coordinator owns any live connection.
+            build_executor.submit(_build_worker_ready).result()
             singleton = _acquire_singleton()
             stores = open_chart_stores(role="chart-maintenance")
             recovered = recover_interrupted_builds()
@@ -51,15 +85,45 @@ class Command(BaseCommand):
             expired = expire_stale_series(now=timezone.now())
             if expired:
                 logger.info("Expired %s idle chart series", expired)
+            warmed = ensure_default_chart_series(now=timezone.now())
+            if warmed:
+                logger.info("Queued %s default chart series", warmed)
             next_cleanup = time.monotonic() + EXPIRED_SERIES_CLEANUP_SECONDS
             next_singleton_verify = time.monotonic() + SINGLETON_VERIFY_SECONDS
             next_full_catchup = time.monotonic() + FULL_CATCHUP_SECONDS
+            next_warm_series = time.monotonic() + WARM_SERIES_REFRESH_SECONDS
+            next_build_retry = 0.0
             pending_market_ids: set[int] = set()
+            builds: dict[Future, tuple[int, ...]] = {}
             full_advance_requested = True
             build_requested = True
 
             while not stop.is_set():
                 started = time.monotonic()
+                for future in tuple(builds):
+                    if not future.done():
+                        continue
+                    series_ids = builds.pop(future)
+                    discard_series_runtimes(series_ids)
+                    try:
+                        completed = future.result()
+                    except TransientChartBuildError:
+                        logger.warning(
+                            "Chart build storage is temporarily unavailable; "
+                            "retrying series=%s",
+                            series_ids,
+                        )
+                        next_build_retry = started + STORAGE_RETRY_SECONDS
+                    except BrokenProcessPool:
+                        raise
+                    except ChartBuildWorkerSetupError:
+                        raise
+                    except Exception:
+                        logger.exception("Chart build failed series=%s", series_ids)
+                    else:
+                        if completed:
+                            full_advance_requested = True
+                    build_requested = True
                 if started >= next_singleton_verify:
                     _verify_singleton(singleton)
                     next_singleton_verify = started + SINGLETON_VERIFY_SECONDS
@@ -68,6 +132,12 @@ class Command(BaseCommand):
                     if expired:
                         logger.info("Expired %s idle chart series", expired)
                     next_cleanup = started + EXPIRED_SERIES_CLEANUP_SECONDS
+                if started >= next_warm_series:
+                    warmed = ensure_default_chart_series(now=timezone.now())
+                    if warmed:
+                        logger.info("Queued %s default chart series", warmed)
+                        build_requested = True
+                    next_warm_series = started + WARM_SERIES_REFRESH_SECONDS
                 if started >= next_full_catchup:
                     full_advance_requested = True
                     build_requested = True
@@ -90,26 +160,17 @@ class Command(BaseCommand):
                             break
                         continue
 
-                if build_requested:
+                if build_requested and started >= next_build_retry:
                     build_requested = False
-                    build_ok, build_result = _guard(
-                        "queued chart build",
-                        build_next_queued_series,
-                        execution_store=stores.executions,
-                        bar_store=stores.bars,
-                    )
-                    if not build_ok:
-                        if isinstance(build_result, TransientChartBuildError):
-                            build_requested = True
-                            if stop.wait(STORAGE_RETRY_SECONDS):
-                                break
-                            continue
-                    elif build_result:
-                        # Drain another queued build without delaying live
-                        # advancement for series that are already ready.
-                        full_advance_requested = True
-                        build_requested = True
-                        continue
+                    while len(builds) < BUILD_WORKERS:
+                        series_ids = claim_queued_market_series()
+                        if not series_ids:
+                            break
+                        future = build_executor.submit(
+                            _run_claimed_build,
+                            series_ids,
+                        )
+                        builds[future] = series_ids
 
                 try:
                     if wakeup_client is None:
@@ -133,12 +194,63 @@ class Command(BaseCommand):
                     build_requested = build_requested or wakeup.build_requested
         finally:
             _close_wakeup_client(wakeup_client)
+            if build_stop is not None:
+                build_stop.set()
+            if build_executor is not None:
+                build_executor.shutdown(wait=True, cancel_futures=True)
             if stores is not None:
                 stores.close()
             if singleton is not None:
                 singleton.close()
             close_old_connections()
             _restore_signal_handlers(previous_handlers)
+
+
+def _initialize_build_worker(stop_event) -> None:
+    global _BUILD_STOP
+    _BUILD_STOP = stop_event
+    connections.close_all()
+
+
+def _build_worker_ready() -> None:
+    return None
+
+
+def _run_claimed_build(series_ids: tuple[int, ...]) -> bool:
+    close_old_connections()
+    stores = None
+    try:
+        try:
+            stores = open_chart_stores(
+                role=f"chart-build-{os.getpid()}",
+                operation_timeout_seconds=BUILD_QUERY_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            requeue_claimed_series(series_ids)
+            if (
+                classify_clickhouse_error(exc, is_write=False)
+                == ClickHouseFailureKind.RETRYABLE
+            ):
+                raise TransientChartBuildError(
+                    "chart build storage could not be opened"
+                ) from exc
+            raise ChartBuildWorkerSetupError(
+                "chart build worker could not initialize"
+            ) from exc
+        return build_claimed_series(
+            series_ids,
+            execution_store=stores.executions,
+            bar_store=stores.bars,
+            should_stop=_build_stop_requested,
+        )
+    finally:
+        if stores is not None:
+            stores.close()
+        close_old_connections()
+
+
+def _build_stop_requested() -> bool:
+    return _BUILD_STOP is not None and _BUILD_STOP.is_set()
 
 
 def _guard(label, operation, *args, **kwargs):

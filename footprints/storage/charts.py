@@ -69,11 +69,57 @@ class ClickHouseProjectorExecutionStore:
         load_spec_divisor: Callable[[int], ProjectorSpecDivisors | None] | None = None,
     ):
         if not spec_divisors:
-            raise ValueError("at least one instrument specification divisor is required")
+            raise ValueError(
+                "at least one instrument specification divisor is required"
+            )
         self.access = access
         self.qualified_table = qualified_table(database, "raw_executions")
         self.spec_divisors = dict(spec_divisors)
         self.load_spec_divisor = load_spec_divisor
+
+    def latest_cursor(
+        self,
+        *,
+        market_id: int,
+        start_timestamp_us: int,
+    ) -> ProjectorCursor | None:
+        """Capture the last execution currently visible in one replay window."""
+
+        _positive_int(market_id, "market_id")
+        _positive_int(start_timestamp_us, "start_timestamp_us")
+        result = self.access.query(
+            f"""
+            SELECT
+                source_epoch, source_sequence, batch_index, timestamp_us, trade_id
+            FROM {self.qualified_table}
+            WHERE
+                market_id = {{market_id:UInt64}}
+                AND timestamp_us >= {{start_timestamp_us:Int64}}
+            ORDER BY
+                source_epoch DESC, source_sequence DESC, batch_index DESC,
+                timestamp_us DESC, trade_id DESC
+            LIMIT 1
+            """,
+            parameters={
+                "market_id": market_id,
+                "start_timestamp_us": start_timestamp_us,
+            },
+            operation="read_projector_latest_cursor",
+        )
+        rows = tuple(getattr(result, "result_rows", ()))
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ProjectorDataError(
+                "latest projector cursor query returned more than one row"
+            )
+        row = rows[0]
+        if not isinstance(row, (list, tuple)):
+            raise ProjectorDataError("latest projector cursor row has an invalid shape")
+        try:
+            return _projector_cursor(tuple(row), label="latest")
+        except ValueError as exc:
+            raise ProjectorDataError("latest projector cursor is invalid") from exc
 
     def iter_executions(
         self,
@@ -81,12 +127,18 @@ class ClickHouseProjectorExecutionStore:
         market_id: int,
         start_timestamp_us: int,
         after_cursor: ProjectorCursor | None = None,
+        through_cursor: ProjectorCursor | None = None,
         limit: int | None = None,
     ) -> Iterator[ProjectorExecution]:
         _positive_int(market_id, "market_id")
         _positive_int(start_timestamp_us, "start_timestamp_us")
         if after_cursor is not None:
-            after_cursor = _projector_cursor(after_cursor)
+            after_cursor = _projector_cursor(after_cursor, label="after")
+        if through_cursor is not None:
+            through_cursor = _projector_cursor(
+                through_cursor,
+                label="through",
+            )
         if limit is not None:
             _positive_int(limit, "limit")
 
@@ -127,6 +179,35 @@ class ClickHouseProjectorExecutionStore:
                     "after_trade_id": after_cursor[4],
                 }
             )
+        if through_cursor is not None:
+            conditions.append(
+                "("
+                "source_epoch < {through_source_epoch:UInt32} "
+                "OR (source_epoch = {through_source_epoch:UInt32} "
+                "AND source_sequence < {through_source_sequence:UInt64}) "
+                "OR (source_epoch = {through_source_epoch:UInt32} "
+                "AND source_sequence = {through_source_sequence:UInt64} "
+                "AND batch_index < {through_batch_index:UInt32}) "
+                "OR (source_epoch = {through_source_epoch:UInt32} "
+                "AND source_sequence = {through_source_sequence:UInt64} "
+                "AND batch_index = {through_batch_index:UInt32} "
+                "AND timestamp_us < {through_timestamp_us:Int64}) "
+                "OR (source_epoch = {through_source_epoch:UInt32} "
+                "AND source_sequence = {through_source_sequence:UInt64} "
+                "AND batch_index = {through_batch_index:UInt32} "
+                "AND timestamp_us = {through_timestamp_us:Int64} "
+                "AND trade_id <= {through_trade_id:String})"
+                ")"
+            )
+            parameters.update(
+                {
+                    "through_source_epoch": through_cursor[0],
+                    "through_source_sequence": through_cursor[1],
+                    "through_batch_index": through_cursor[2],
+                    "through_timestamp_us": through_cursor[3],
+                    "through_trade_id": through_cursor[4],
+                }
+            )
         limit_clause = ""
         if limit is not None:
             parameters["limit"] = limit
@@ -158,6 +239,10 @@ class ClickHouseProjectorExecutionStore:
             if after_cursor is not None and execution_cursor <= after_cursor:
                 raise ProjectorDataError(
                     "projector execution did not advance after its cursor"
+                )
+            if through_cursor is not None and execution_cursor > through_cursor:
+                raise ProjectorDataError(
+                    "projector execution advanced beyond its through cursor"
                 )
             if previous is not None:
                 assert previous_cursor is not None
@@ -239,9 +324,7 @@ class ClickHouseProjectorExecutionStore:
             raise ProjectorDataError(
                 f"no native-unit divisors exist for instrument specification {spec_id}"
             )
-        price_tick, price_remainder = divmod(
-            price_atoms, divisors.price_atoms_per_tick
-        )
+        price_tick, price_remainder = divmod(price_atoms, divisors.price_atoms_per_tick)
         quantity_units, quantity_remainder = divmod(
             quantity_atoms, divisors.quantity_atoms_per_unit
         )
@@ -418,21 +501,28 @@ class ClickHouseChartStore:
             operation="read_chart_snapshot_bars",
         )
         return [
-            _snapshot_bar_from_row(row)
-            for row in getattr(result, "result_rows", ())
+            _snapshot_bar_from_row(row) for row in getattr(result, "result_rows", ())
         ]
 
 
-def _projector_cursor(value: ProjectorCursor) -> ProjectorCursor:
+def _projector_cursor(
+    value: ProjectorCursor,
+    *,
+    label: str,
+) -> ProjectorCursor:
     if not isinstance(value, tuple) or len(value) != 5:
-        raise ValueError("after_cursor must contain five values")
-    source_epoch = _database_int(value[0], "after source_epoch", minimum=1)
-    source_sequence = _database_int(value[1], "after source_sequence", minimum=0)
-    batch_index = _database_int(value[2], "after batch_index", minimum=0)
-    timestamp_us = _database_int(value[3], "after timestamp_us", minimum=1)
+        raise ValueError(f"{label}_cursor must contain five values")
+    source_epoch = _database_int(value[0], f"{label} source_epoch", minimum=1)
+    source_sequence = _database_int(
+        value[1],
+        f"{label} source_sequence",
+        minimum=0,
+    )
+    batch_index = _database_int(value[2], f"{label} batch_index", minimum=0)
+    timestamp_us = _database_int(value[3], f"{label} timestamp_us", minimum=1)
     trade_id = value[4]
     if not isinstance(trade_id, str) or not trade_id:
-        raise ValueError("after trade_id must be a nonempty string")
+        raise ValueError(f"{label} trade_id must be a nonempty string")
     return source_epoch, source_sequence, batch_index, timestamp_us, trade_id
 
 
@@ -471,7 +561,9 @@ def _snapshot_bar_from_row(row: Sequence[object]) -> ChartSnapshotBar:
     previous_tick = 0
     for tick, buy, sell in zip(raw_ticks, raw_buys, raw_sells, strict=True):
         if type(tick) is not int or tick <= previous_tick:
-            raise ChartDataError("chart levels must be strictly positive and price-sorted")
+            raise ChartDataError(
+                "chart levels must be strictly positive and price-sorted"
+            )
         if (
             type(buy) is not int
             or buy < 0
@@ -486,9 +578,7 @@ def _snapshot_bar_from_row(row: Sequence[object]) -> ChartSnapshotBar:
     bar_index = _database_int(row[1], "bar_index", minimum=0)
     opened_at = _required_utc_datetime(row[2], "opened_at")
     _required_utc_datetime(row[3], "ended_at")
-    instrument_spec_id = _database_int(
-        row[4], "instrument_spec_id", minimum=1
-    )
+    instrument_spec_id = _database_int(row[4], "instrument_spec_id", minimum=1)
     open_tick = _database_int(row[5], "open_tick", minimum=1)
     high_tick = _database_int(row[6], "high_tick", minimum=1)
     low_tick = _database_int(row[7], "low_tick", minimum=1)
