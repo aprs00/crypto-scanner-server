@@ -7,8 +7,9 @@ from decimal import Decimal, InvalidOperation
 
 import websocket
 
-from footprints.types import NormalizedTrade, TakerSide
 from footprints.collectors.common import close_stream_on_error, run_websocket
+from footprints.collectors.rejected import reject
+from footprints.types import NormalizedTrade, TakerSide
 
 
 def _is_synthetic_trade(data: dict) -> bool:
@@ -22,6 +23,11 @@ def _is_synthetic_trade(data: dict) -> bool:
 
 def normalize_trade(data: dict, market_key: str) -> NormalizedTrade:
     trade_id = int(data["t"])
+    if trade_id < 0:
+        raise ValueError("Binance trade ID cannot be negative")
+    price, quantity = Decimal(str(data["p"])), Decimal(str(data["q"]))
+    if not price.is_finite() or not quantity.is_finite():
+        raise ValueError("Binance trade has non-finite values")
     maker_value = data["m"]
     if not isinstance(maker_value, bool):
         raise ValueError("Binance trade has an invalid maker flag")
@@ -31,8 +37,8 @@ def normalize_trade(data: dict, market_key: str) -> NormalizedTrade:
         exchange_timestamp_us=int(data["T"]) * 1_000,
         trade_id=str(trade_id),
         venue_sequence=trade_id,
-        price=Decimal(str(data["p"])),
-        quantity=Decimal(str(data["q"])),
+        price=price,
+        quantity=quantity,
         taker_side=TakerSide.SELL if maker else TakerSide.BUY,
     )
 
@@ -62,7 +68,13 @@ def listen(
 
     def handle_message(socket, message: str) -> None:
         nonlocal ready
-        payload = json.loads(message)
+        try:
+            payload = json.loads(message)
+            if not isinstance(payload, dict):
+                raise ValueError("expected an object")
+        except (ValueError, TypeError) as error:
+            reject("binance", message, error)
+            return
         if payload.get("id") == subscription_request_id:
             if "result" in payload and payload["result"] is None:
                 if not ready:
@@ -79,12 +91,20 @@ def listen(
                 )
             return
         data = payload.get("data", payload)
+        if not isinstance(data, dict):
+            reject("binance", data, ValueError("expected a trade object"))
+            return
         symbol = str(data.get("s", ""))
         market_key = markets.get(symbol)
         if market_key and data.get("e") == "trade":
             if _is_synthetic_trade(data):
                 return
-            on_trade(normalize_trade(data, market_key))
+            try:
+                trade = normalize_trade(data, market_key)
+            except (ValueError, TypeError, KeyError, InvalidOperation) as error:
+                reject("binance", data, error)
+                return
+            on_trade(trade)
 
     ws = websocket.WebSocketApp(
         url,

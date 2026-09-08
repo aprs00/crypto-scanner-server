@@ -65,7 +65,9 @@ class ClickHouseSettings:
     ) -> "ClickHouseSettings":
         values = os.environ if environment is None else environment
         host = values.get("CLICKHOUSE_HOST", "clickhouse").strip()
-        database = values.get("CLICKHOUSE_DATABASE", DEFAULT_CLICKHOUSE_DATABASE).strip()
+        database = values.get(
+            "CLICKHOUSE_DATABASE", DEFAULT_CLICKHOUSE_DATABASE
+        ).strip()
         username = values.get("CLICKHOUSE_USER", "footprints").strip()
         password = values.get("CLICKHOUSE_PASSWORD", "")
         if not host:
@@ -116,9 +118,7 @@ def create_clickhouse_client(
         ) from exc
 
     default_timeout = (
-        DEFAULT_INSERT_TIMEOUT_SECONDS
-        if for_inserts
-        else DEFAULT_QUERY_TIMEOUT_SECONDS
+        DEFAULT_INSERT_TIMEOUT_SECONDS if for_inserts else DEFAULT_QUERY_TIMEOUT_SECONDS
     )
     timeout = (
         default_timeout
@@ -204,7 +204,8 @@ class ClickHouseAccess:
     ) -> object:
         safe_table = validate_qualified_identifier(table)
         safe_columns = tuple(
-            validate_identifier(name, label="ClickHouse column") for name in column_names
+            validate_identifier(name, label="ClickHouse column")
+            for name in column_names
         )
         return self._observe(
             operation,
@@ -464,6 +465,48 @@ class ClickHouseExecutionStore:
         _validate_uint(epoch, 32, label="maximum execution source epoch")
         return epoch
 
+    def missing_executions(
+        self, executions: Sequence[StoredExecution]
+    ) -> tuple[StoredExecution, ...]:
+        """Resolve an ambiguous insert by identity, independent of block dedupe TTL."""
+        found = {}
+        for market_id in {e.market_id for e in executions}:
+            members = [e for e in executions if e.market_id == market_id]
+            result = self.access.query(
+                f"""SELECT market_id,trade_id,timestamp_us,price_atoms,quantity_atoms,
+                    is_taker_buy,instrument_spec_id FROM {self.qualified_table}
+                    WHERE market_id={{market:UInt64}} AND trade_id IN {{ids:Array(String)}}
+                    AND timestamp_us BETWEEN {{start:Int64}} AND {{end:Int64}}""",
+                parameters={
+                    "market": market_id,
+                    "ids": [e.trade.trade_id for e in members],
+                    "start": min(e.trade.exchange_timestamp_us for e in members),
+                    "end": max(e.trade.exchange_timestamp_us for e in members),
+                },
+                operation="resolve_outbox_insert",
+            )
+            for row in result.result_rows:
+                key, signature = (row[0], row[1]), tuple(row[2:])
+                if key in found and found[key] != signature:
+                    raise ExecutionIdentityConflict(
+                        f"Conflicting stored identity: {key}"
+                    )
+                found[key] = signature
+        missing = []
+        for execution in executions:
+            signature = (
+                execution.trade.exchange_timestamp_us,
+                execution.price_atoms,
+                execution.quantity_atoms,
+                execution.trade.taker_side == TakerSide.BUY,
+                execution.instrument_spec_id,
+            )
+            if execution.identity not in found:
+                missing.append(execution)
+            elif found[execution.identity] != signature:
+                raise ExecutionIdentityConflict(_identity_conflict_message(execution))
+        return tuple(missing)
+
     def recent_execution_identities(
         self,
         market_ids: Sequence[int],
@@ -547,7 +590,9 @@ class ClickHouseExecutionStore:
         execution: StoredExecution,
     ) -> tuple[object, ...]:
         trade = execution.trade
-        _validate_uint(execution.market_id, 64, label="execution market ID", positive=True)
+        _validate_uint(
+            execution.market_id, 64, label="execution market ID", positive=True
+        )
         _validate_uint(
             execution.instrument_spec_id,
             64,
@@ -568,7 +613,9 @@ class ClickHouseExecutionStore:
             label="execution timestamp microseconds",
             positive=True,
         )
-        _validate_int64(execution.price_atoms, label="execution price atoms", positive=True)
+        _validate_int64(
+            execution.price_atoms, label="execution price atoms", positive=True
+        )
         _validate_uint(
             execution.quantity_atoms,
             64,
@@ -646,9 +693,9 @@ def classify_clickhouse_error(
         numeric_code = int(code) if code is not None else None
     except (TypeError, ValueError):
         numeric_code = None
-    network_failure = isinstance(error, (ConnectionError, TimeoutError, OSError)) or any(
-        cls.__name__ in _NETWORK_EXCEPTION_NAMES for cls in type(error).__mro__
-    )
+    network_failure = isinstance(
+        error, (ConnectionError, TimeoutError, OSError)
+    ) or any(cls.__name__ in _NETWORK_EXCEPTION_NAMES for cls in type(error).__mro__)
     if numeric_code in _NETWORK_ERROR_CODES or network_failure:
         return (
             ClickHouseFailureKind.AMBIGUOUS_WRITE
@@ -673,7 +720,9 @@ def validate_qualified_identifier(value: str) -> str:
         raise ClickHouseConfigurationError("ClickHouse table must be a string")
     components = value.split(".")
     if len(components) not in {1, 2}:
-        raise ClickHouseConfigurationError("ClickHouse table must be a table or database.table")
+        raise ClickHouseConfigurationError(
+            "ClickHouse table must be a table or database.table"
+        )
     return ".".join(validate_identifier(component) for component in components)
 
 

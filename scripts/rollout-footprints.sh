@@ -31,7 +31,7 @@ Usage: scripts/rollout-footprints.sh [OPTIONS]
 
 Options:
   --image IMAGE          Roll out this already-built image. Defaults to
-                         APP_IMAGE in .env.
+                         the exchange image pin, then APP_IMAGE in .env.
   --exchange EXCHANGE    all, binance, bybit, or hyperliquid (default: all).
   --bootstrap-legacy     Allow the old collector to lack rollout state files.
                          Use only for the first lock-aware rollout.
@@ -108,9 +108,19 @@ read_image_from_env() {
     return
   fi
   local value
+  local image_key=APP_IMAGE
+  case "$TARGET_EXCHANGE" in
+    binance) image_key=BINANCE_FOOTPRINT_IMAGE ;;
+    bybit) image_key=BYBIT_FOOTPRINT_IMAGE ;;
+  esac
   value=$(sed -n \
-    's/^[[:space:]]*APP_IMAGE[[:space:]]*=[[:space:]]*//p' \
+    "s/^[[:space:]]*${image_key}[[:space:]]*=[[:space:]]*//p" \
     "$ENV_FILE" | tail -n 1 | tr -d '\r')
+  if [[ -z "$value" && "$image_key" != APP_IMAGE ]]; then
+    value=$(sed -n \
+      's/^[[:space:]]*APP_IMAGE[[:space:]]*=[[:space:]]*//p' \
+      "$ENV_FILE" | tail -n 1 | tr -d '\r')
+  fi
   if [[ "$value" == \"*\" && "$value" == *\" ]]; then
     value=${value:1:${#value}-2}
   elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
@@ -238,7 +248,9 @@ rollout_exchange() {
   fi
 
   CANDIDATE=$candidate
-  APP_IMAGE="$TARGET_IMAGE" "${COMPOSE[@]}" run -d --no-deps \
+  BINANCE_FOOTPRINT_IMAGE="$TARGET_IMAGE" \
+    BYBIT_FOOTPRINT_IMAGE="$TARGET_IMAGE" \
+    APP_IMAGE="$TARGET_IMAGE" "${COMPOSE[@]}" run -d --no-deps \
     --name "$CANDIDATE" "$service" \
     python manage.py footprint_trades --exchange "$exchange" --standby >/dev/null
   docker update --restart=no "$CANDIDATE" >/dev/null
@@ -260,7 +272,9 @@ rollout_exchange() {
 
   promote "$CANDIDATE"
 
-  APP_IMAGE="$TARGET_IMAGE" "${COMPOSE[@]}" up -d --no-deps \
+  BINANCE_FOOTPRINT_IMAGE="$TARGET_IMAGE" \
+    BYBIT_FOOTPRINT_IMAGE="$TARGET_IMAGE" \
+    APP_IMAGE="$TARGET_IMAGE" "${COMPOSE[@]}" up -d --no-deps \
     --force-recreate "$service" >/dev/null
   wait_for_states "$canonical" "$READY_TIMEOUT_SECONDS" feeds-ready
 
@@ -283,28 +297,29 @@ rollout_exchange() {
 }
 
 persist_image() {
+  local image_key=${1:-APP_IMAGE}
   local temporary
   temporary=$(mktemp "${ENV_FILE}.tmp.XXXXXX")
-  if ! awk -v image="$TARGET_IMAGE" '
+  if ! awk -v image="$TARGET_IMAGE" -v image_key="$image_key" '
     BEGIN { replaced = 0 }
-    /^[[:space:]]*APP_IMAGE[[:space:]]*=/ {
+    $0 ~ "^[[:space:]]*" image_key "[[:space:]]*=" {
       if (!replaced) {
-        print "APP_IMAGE=" image
+        print image_key "=" image
         replaced = 1
       }
       next
     }
     { print }
     END {
-      if (!replaced) print "APP_IMAGE=" image
+      if (!replaced) print image_key "=" image
     }
   ' "$ENV_FILE" >"$temporary"; then
     rm -f "$temporary"
-    fail "collectors use $TARGET_IMAGE, but APP_IMAGE could not be updated in $ENV_FILE"
+    fail "collectors use $TARGET_IMAGE, but $image_key could not be updated in $ENV_FILE"
   fi
   chmod --reference="$ENV_FILE" "$temporary"
   mv -f "$temporary" "$ENV_FILE"
-  printf 'Persisted APP_IMAGE=%s in %s\n' "$TARGET_IMAGE" "$ENV_FILE"
+  printf 'Persisted %s=%s in %s\n' "$image_key" "$TARGET_IMAGE" "$ENV_FILE"
 }
 
 cd "$REPO_DIR"
@@ -318,6 +333,12 @@ fi
 
 if [[ "$TARGET_EXCHANGE" == all && "$IMAGE_WAS_EXPLICIT" == true ]]; then
   persist_image
+  persist_image BINANCE_FOOTPRINT_IMAGE
+  persist_image BYBIT_FOOTPRINT_IMAGE
+elif [[ "$IMAGE_WAS_EXPLICIT" == true && "$TARGET_EXCHANGE" == binance ]]; then
+  persist_image BINANCE_FOOTPRINT_IMAGE
+elif [[ "$IMAGE_WAS_EXPLICIT" == true && "$TARGET_EXCHANGE" == bybit ]]; then
+  persist_image BYBIT_FOOTPRINT_IMAGE
 fi
 
 printf 'Footprint rollout finished successfully.\n'

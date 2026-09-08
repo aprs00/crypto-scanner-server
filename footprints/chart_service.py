@@ -52,6 +52,11 @@ from footprints.storage.clickhouse import (
     create_clickhouse_client,
 )
 from footprints.storage.clickhouse_schema import ensure_clickhouse_schema
+from footprints.storage.reconciled import (
+    ReconciledExecutionStore,
+    is_reconciled_cursor,
+    segment_changed,
+)
 from footprints.tick import TickConfig, TickEngine
 from footprints.trev import TrevConfig, TrevEngine, TrevExpansionLimitError
 
@@ -98,7 +103,7 @@ def open_chart_stores(
         ensure_clickhouse_schema(access, configuration.database)
         return ChartStores(
             client=client,
-            executions=ClickHouseProjectorExecutionStore(
+            executions=ReconciledExecutionStore(
                 access,
                 database=configuration.database,
                 spec_divisors=_projector_spec_divisors(),
@@ -468,7 +473,7 @@ def build_series_batch(
                 if (
                     item.engine.state.last_order is not None
                     and item.cursor is not None
-                    and execution.source_epoch != item.cursor[0]
+                    and segment_changed(execution, item.cursor)
                 ):
                     segment_bars = item.engine.truncate_segment().bars
                 else:
@@ -699,9 +704,8 @@ def _advance_market(
             if runtime.cursor is not None and execution_cursor <= runtime.cursor:
                 continue
             try:
-                if (
-                    runtime.cursor is not None
-                    and execution.source_epoch != runtime.cursor[0]
+                if runtime.cursor is not None and segment_changed(
+                    execution, runtime.cursor
                 ):
                     for bar in runtime.engine.truncate_segment().bars:
                         stored = _stored_bar(series, bar)
@@ -923,6 +927,18 @@ def _decode_checkpoint(
 
 
 def _parse_cursor_value(value: object) -> ProjectorCursor:
+    if isinstance(value, (list, tuple)) and is_reconciled_cursor(value):
+        if (
+            any(type(v) is not int for v in value[:7])
+            or value[1] < 0
+            or value[2] not in (0, 1)
+            or value[3] <= 0
+            or min(value[4:7]) < 0
+            or not isinstance(value[7], str)
+            or not value[7]
+        ):
+            raise ValueError("CHART_CHECKPOINT_CURSOR")
+        return tuple(value)
     if not isinstance(value, (list, tuple)) or len(value) != 5:
         raise ValueError("CHART_CHECKPOINT_CURSOR")
     source_epoch, sequence, batch_index, timestamp_us, trade_id = value

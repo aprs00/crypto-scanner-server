@@ -14,7 +14,9 @@ from footprints.storage.clickhouse import (
 from footprints.storage.clickhouse_schema import CHART_BAR_COLUMNS
 
 
-ProjectorCursor = tuple[int, int, int, int, str]
+ProjectorCursor = (
+    tuple[int, int, int, int, str] | tuple[int, int, int, int, int, int, int, str]
+)
 
 
 class ProjectorDataError(ValueError):
@@ -45,9 +47,13 @@ class ProjectorExecution(NamedTuple):
     quantity_units: int
     is_taker_buy: bool
     instrument_spec_id: int
+    replay_cursor: tuple | None = None
+    segment_start: bool = False
 
     @property
     def cursor(self) -> ProjectorCursor:
+        if self.replay_cursor is not None:
+            return self.replay_cursor
         return (
             self.source_epoch,
             self.source_sequence,
@@ -220,7 +226,7 @@ class ClickHouseProjectorExecutionStore:
         sql = f"""
             SELECT {columns}
             FROM {self.qualified_table}
-            WHERE {' AND '.join(conditions)}
+            WHERE {" AND ".join(conditions)}
             ORDER BY
                 market_id, source_epoch, source_sequence, batch_index,
                 timestamp_us, trade_id
@@ -479,18 +485,18 @@ class ClickHouseChartStore:
             parameters["before_bar_index"] = before_bar_index
         result = self.access.query(
             f"""
-            SELECT {', '.join(CHART_BAR_COLUMNS)}
+            SELECT {", ".join(CHART_BAR_COLUMNS)}
             FROM
             (
                 SELECT
-                    {', '.join(CHART_BAR_COLUMNS)},
+                    {", ".join(CHART_BAR_COLUMNS)},
                     sum(length(level_ticks)) OVER
                     (
                         ORDER BY bar_index DESC
                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                     ) AS cumulative_levels
                 FROM {self.qualified_table} FINAL
-                WHERE {' AND '.join(conditions)}
+                WHERE {" AND ".join(conditions)}
                 ORDER BY bar_index DESC
                 LIMIT {{limit:UInt64}}
             )

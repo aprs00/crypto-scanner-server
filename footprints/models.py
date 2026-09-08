@@ -18,6 +18,13 @@ class ChartType(models.TextChoices):
     TREV = "trev", "trev"
 
 
+class RecoveryStatus(models.TextChoices):
+    PENDING = "pending", "pending"
+    CHECKED = "checked", "checked"
+    VERIFIED = "verified", "verified"
+    FAILED = "failed", "failed"
+
+
 class ChartSeriesStatus(models.TextChoices):
     QUEUED = "queued", "queued"
     BUILDING = "building", "building"
@@ -33,6 +40,7 @@ class FootprintMarket(models.Model):
     enabled = models.BooleanField(default=True)
     price_scale = models.PositiveSmallIntegerField(default=12)
     quantity_scale = models.PositiveSmallIntegerField(default=12)
+    recovery_enabled = models.BooleanField(default=False)
 
     class Meta:
         db_table = "cs_footprint_markets"
@@ -50,6 +58,29 @@ class FootprintMarket(models.Model):
 
     def __str__(self) -> str:
         return self.market_key
+
+
+class TradeRecoveryDay(models.Model):
+    market = models.ForeignKey(FootprintMarket, on_delete=models.CASCADE)
+    day = models.DateField()
+    start_us = models.BigIntegerField()
+    status = models.CharField(
+        max_length=16, choices=RecoveryStatus.choices, default=RecoveryStatus.PENDING
+    )
+    report = models.JSONField(default=dict)
+    fingerprint = models.CharField(max_length=64, blank=True)
+    active_import = models.UUIDField(null=True, blank=True)
+    checked_at = models.DateTimeField(null=True, blank=True)
+    retry_at = models.DateTimeField(null=True, blank=True)
+    error = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "cs_trade_recovery_days"
+        constraints = [
+            models.UniqueConstraint(
+                fields=("market", "day"), name="unique_trade_recovery_day"
+            )
+        ]
 
 
 class InstrumentSpec(models.Model):

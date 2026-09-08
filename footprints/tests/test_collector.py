@@ -130,7 +130,9 @@ class CollectorNormalizationTests(SimpleTestCase):
         self.assertIsNotNone(collector._fatal_error)
         self.assertNotIn("second", collector._recent_trades[7])
 
-    def test_hyperliquid_sequence_is_monotonic_per_epoch_and_dedupe_survives_reconnect(self):
+    def test_hyperliquid_sequence_is_monotonic_per_epoch_and_dedupe_survives_reconnect(
+        self,
+    ):
         market_key = "hyperliquid:perpetual:BTCUSDT"
         collector = _collector("hyperliquid", recent_trade_limit=2)
         first = _trade("one", market_key=market_key, sequence=None)
@@ -302,19 +304,22 @@ class CollectorRedundantFeedTests(SimpleTestCase):
         self.assertEqual(collector.queue.get_nowait().trade.trade_id, "new")
 
     @patch("footprints.collector.STANDBY_BUFFER_TRADES", 2)
-    def test_warm_process_stops_instead_of_dropping_buffered_trades(self):
+    def test_warm_process_retains_newest_overlap_and_reports_eviction(self):
         collector = _collector(standby=True)
         router = _HotStandbyRouter(collector)
         router.start(0)
         router.trade(0, _trade("one", sequence=1))
         router.trade(0, _trade("two", sequence=2))
 
-        with self.assertRaisesRegex(RuntimeError, "warm-standby buffer is full"):
-            router.trade(0, _trade("three", sequence=3))
+        router.trade(0, _trade("three", sequence=3))
 
-        self.assertIsInstance(collector._fatal_error, RuntimeError)
-        self.assertTrue(collector.stop_event.is_set())
-        self.assertTrue(collector._stream_stop_event.is_set())
+        self.assertEqual(
+            [row.trade_id for row in router.slots[0].buffers[MARKET_KEY]],
+            ["two", "three"],
+        )
+        self.assertIsNone(collector._fatal_error)
+        self.assertFalse(collector.stop_event.is_set())
+        self.assertEqual(collector._coverage_issue["reason"], "warm_buffer_evicted")
 
     def test_planned_leader_rotation_replays_once_and_stays_in_epoch(self):
         collector = _collector(queue_size=20)
@@ -631,9 +636,7 @@ class CollectorStreamLifecycleTests(SimpleTestCase):
         self.assertEqual(collector.queue.get_nowait().trade.trade_id, "new")
         marker_calls = collector._set_state_marker.call_args_list
         self.assertLess(
-            marker_calls.index(
-                call(HANDOFF_VERIFIED_MARKER, True, required=True)
-            ),
+            marker_calls.index(call(HANDOFF_VERIFIED_MARKER, True, required=True)),
             marker_calls.index(call(WRITER_ACTIVE_MARKER, True)),
         )
 

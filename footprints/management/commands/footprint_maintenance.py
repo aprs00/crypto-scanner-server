@@ -286,7 +286,7 @@ def _close_wakeup_client(client) -> None:
         logger.warning("Failed to close the chart maintenance wakeup client")
 
 
-def _acquire_singleton():
+def _acquire_singleton(lock_id=MAINTENANCE_ADVISORY_LOCK_ID):
     configuration = settings.DATABASES["default"]
     connection = psycopg.connect(
         dbname=configuration["NAME"],
@@ -301,7 +301,7 @@ def _acquire_singleton():
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT pg_try_advisory_lock(%s)",
-                (MAINTENANCE_ADVISORY_LOCK_ID,),
+                (lock_id,),
             )
             row = cursor.fetchone()
         if row != (True,):

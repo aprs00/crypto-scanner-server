@@ -20,7 +20,8 @@ services:
   binance-klines:
     volumes: !reset []
   binance-footprints:
-    volumes: !reset []
+    volumes: !override
+      - binance_footprint_outbox:/var/lib/footprints
   binance-correlations:
     volumes: !reset []
   binance-zscore:
@@ -42,7 +43,8 @@ services:
   bybit-klines:
     volumes: !reset []
   bybit-footprints:
-    volumes: !reset []
+    volumes: !override
+      - bybit_footprint_outbox:/var/lib/footprints
   bybit-correlations:
     volumes: !reset []
   bybit-zscore:
@@ -60,6 +62,8 @@ services:
     volumes: !reset []
 
   footprint-maintenance:
+    volumes: !reset []
+  footprint-recovery:
     volumes: !reset []
   db-maintenance:
     volumes: !reset []

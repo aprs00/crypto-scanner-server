@@ -31,9 +31,9 @@ from footprints.storage.clickhouse import (
 )
 from footprints.storage.clickhouse_schema import ensure_clickhouse_schema
 from footprints.storage.executions import StoredExecution
+from footprints.storage.outbox import ExecutionOutbox
 from footprints.types import NormalizedTrade, RuntimeInstrument, TakerSide
 from footprints.wakeups import publish_execution_wakeup
-
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,17 @@ class _HotStandbyRouter:
             deque(maxlen=STANDBY_BUFFER_TRADES),
         )
         if not self.active and len(buffered) >= STANDBY_BUFFER_TRADES:
+            if self.collector.exchange in ("binance", "bybit"):
+                # Keep the newest overlap. Activation must still prove continuity.
+                if not getattr(self, "buffer_eviction_reported", False):
+                    logger.warning(
+                        "%s warm buffer reached capacity; retaining newest overlap",
+                        self.collector.exchange,
+                    )
+                    self.collector._record_coverage_issue("warm_buffer_evicted")
+                    self.buffer_eviction_reported = True
+                buffered.append(trade)
+                return
             error = RuntimeError(
                 "footprint warm-standby buffer is full "
                 f"exchange={self.collector.exchange} market={trade.market_key}"
@@ -312,6 +323,7 @@ class _HotStandbyRouter:
                     replay.setdefault(market_key, tuple(buffered))
             else:
                 source_epoch = self.collector._advance_source_epoch()
+                self.collector._record_coverage_issue("unverified_feed_handoff")
                 self.anchors.clear()
                 logger.error(
                     "%s execution handoff had no overlap; source_epoch=%s",
@@ -413,6 +425,18 @@ class FootprintCollector:
         self._clickhouse_access: ClickHouseAccess | None = None
         self._execution_store: ClickHouseExecutionStore | None = None
         self._wakeup_redis = None
+        self._outbox_directory = (
+            os.environ.get("FOOTPRINT_OUTBOX_DIR", "").strip()
+            if exchange in ("binance", "bybit")
+            else ""
+        )
+        self._outbox: ExecutionOutbox | None = None
+        self._outbox_ready = threading.Event()
+        self._last_trade_at = 0.0
+        self._coverage_issue = None
+
+    def _record_coverage_issue(self, reason):
+        self._coverage_issue = {"at": time.time(), "reason": reason}
 
     def promote(self) -> None:
         """Allow an explicitly warm candidate to compete for leadership."""
@@ -479,6 +503,7 @@ class FootprintCollector:
         )
 
     def on_trade(self, trade: NormalizedTrade) -> None:
+        self._last_trade_at = time.time()
         market = self._markets.get(trade.market_key)
         if market is None:
             return
@@ -645,7 +670,7 @@ class FootprintCollector:
                     break
                 if not self._wait_until_drained(leadership):
                     break
-                if leadership.acquired:
+                if leadership.acquired and not self._outbox_directory:
                     try:
                         leadership.close()
                     except Exception as exc:
@@ -673,6 +698,8 @@ class FootprintCollector:
                         self._fatal_error = error
             self._close_clickhouse()
             self._close_wakeup_redis()
+            if self._outbox is not None:
+                self._outbox.close()
             try:
                 leadership.close()
             except Exception:
@@ -689,9 +716,7 @@ class FootprintCollector:
 
     def stop(self) -> None:
         if self._shutdown_deadline is None:
-            self._shutdown_deadline = (
-                time.monotonic() + self.shutdown_drain_seconds
-            )
+            self._shutdown_deadline = time.monotonic() + self.shutdown_drain_seconds
         self.stop_event.set()
         self._stop_active_streams()
 
@@ -722,13 +747,9 @@ class FootprintCollector:
             self._coordination_loop(router, leadership)
         finally:
             self._stop_active_streams()
-            shutdown_deadline = (
-                time.monotonic() + STREAM_SHUTDOWN_TIMEOUT_SECONDS
-            )
+            shutdown_deadline = time.monotonic() + STREAM_SHUTDOWN_TIMEOUT_SECONDS
             for worker in workers:
-                worker.join(
-                    timeout=max(0.0, shutdown_deadline - time.monotonic())
-                )
+                worker.join(timeout=max(0.0, shutdown_deadline - time.monotonic()))
             stuck = [worker.name for worker in workers if worker.is_alive()]
             if stuck and self._fatal_error is None:
                 self._set_fatal(
@@ -803,8 +824,7 @@ class FootprintCollector:
                 return
             if planned_rotation:
                 logger.info(
-                    "%s execution feed reconnecting after rotation "
-                    "slot=%s in %.3fs",
+                    "%s execution feed reconnecting after rotation slot=%s in %.3fs",
                     self.exchange,
                     slot,
                     self.reconnect_delay_seconds,
@@ -834,6 +854,16 @@ class FootprintCollector:
 
         while not self._stream_stopping():
             now = time.monotonic()
+            if (
+                self._outbox_ready.is_set()
+                and leadership.acquired
+                and now >= next_leadership_verify
+            ):
+                # Delivery keeps running even while the next feed generation
+                # warms up; its lease must be verified during that period too.
+                if not self._verify_writer_leadership(leadership):
+                    return
+                next_leadership_verify = now + LEADERSHIP_VERIFY_SECONDS
             if not activated:
                 if not self._promotion_event.is_set() or not router.feeds_ready():
                     self._stream_stop_event.wait(COORDINATION_INTERVAL_SECONDS)
@@ -864,6 +894,10 @@ class FootprintCollector:
                             return
                         if not self._verify_writer_leadership(leadership):
                             return
+                        if self._outbox_directory:
+                            self._bridge_recent_trades(router)
+                            if not self._verify_writer_leadership(leadership):
+                                return
                     if router.activate():
                         activated = True
                         overlap_verified = router.activation_overlap_verified
@@ -885,13 +919,14 @@ class FootprintCollector:
                             source_epoch,
                         )
                         if not overlap_verified:
+                            self._record_coverage_issue("unverified_activation")
                             logger.warning(
                                 "%s footprint handoff has no verified overlap "
                                 "source_epoch=%s",
                                 self.exchange,
                                 source_epoch,
                             )
-                    else:
+                    elif not self._outbox_directory:
                         try:
                             leadership.close()
                         except Exception as exc:
@@ -923,6 +958,68 @@ class FootprintCollector:
             slot,
         )
         return True
+
+    def _bridge_recent_trades(self, router):
+        """Fetch outside the router lock; admit only a bridge with two shared IDs."""
+        from footprints.recovery import recent_trades
+
+        with router.lock:
+            slot = router.leader_slot
+            if slot is None:
+                return
+            starts = {
+                key: rows[0] for key, rows in router.slots[slot].buffers.items() if rows
+            }
+        for key, first in starts.items():
+            market = self._markets[key]
+            known = self._recent_trades.get(market.market_id, {})
+            if not known or first.trade_id in known:
+                continue
+            tail = next(reversed(known))
+            try:
+                snapshot = recent_trades(
+                    self.exchange, self.instruments[key].symbol, key
+                )
+                identities = [trade.trade_id for trade in snapshot]
+                left, right = identities.index(tail), identities.index(first.trade_id)
+                if snapshot[right] != first:
+                    raise ValueError(
+                        "recent snapshot disagrees with the buffered endpoint"
+                    )
+                if left >= right or len(set(identities)) != len(identities):
+                    raise ValueError(
+                        "recent snapshot does not bridge the stored and buffered tails"
+                    )
+                bridge = snapshot[left:right]
+                if self.exchange == "binance":
+                    ids = [int(value) for value in identities[left : right + 1]]
+                    if any(b != a + 1 for a, b in zip(ids, ids[1:])):
+                        raise ValueError("recent Binance snapshot has an ID gap")
+                sequences = [
+                    trade.venue_sequence for trade in snapshot[left : right + 1]
+                ]
+                if sequences != sorted(sequences):
+                    raise ValueError("recent snapshot source order regressed")
+                with router.lock:
+                    rows = router.slots[slot].buffers.get(key)
+                    if router.leader_slot != slot or not rows or rows[0] != first:
+                        continue
+                    # Replay the known endpoint too, to verify its immutable fields.
+                    if len(rows) + len(bridge) > STANDBY_BUFFER_TRADES:
+                        raise ValueError("recent bridge exceeds warm buffer capacity")
+                    rows.extendleft(reversed(bridge))
+                logger.info(
+                    "%s public REST bridge prepared trades=%s",
+                    self.exchange,
+                    len(bridge) - 1,
+                )
+            except Exception as exc:
+                self._record_coverage_issue("recent_bridge_unavailable")
+                logger.warning(
+                    "%s recent bridge unavailable; archive verification remains pending: %s",
+                    self.exchange,
+                    exc,
+                )
 
     def _verify_writer_leadership(
         self,
@@ -1079,13 +1176,29 @@ class FootprintCollector:
         market_ids = sorted(self._market_scales)
         if not market_ids:
             raise RuntimeError("cannot allocate a source epoch without markets")
-        store = self._ensure_execution_store()
-        recent = store.recent_execution_identities(
-            market_ids,
-            per_market_limit=self.recent_trade_limit,
-        )
+        if self._outbox_directory and self._outbox is None:
+            self._outbox = ExecutionOutbox(
+                self._outbox_directory,
+                max_bytes=int(
+                    os.environ.get("FOOTPRINT_OUTBOX_MAX_BYTES", 2 * 1024**3)
+                ),
+                reserve_bytes=int(
+                    os.environ.get("FOOTPRINT_DISK_RESERVE_BYTES", 5 * 1024**3)
+                ),
+            )
+        if self._outbox is not None and self._outbox.state("epoch") is not None:
+            observed = self._outbox.state("epoch")
+            recent = self._outbox.recent()
+        else:
+            store = self._ensure_execution_store()
+            recent = store.recent_execution_identities(
+                market_ids, per_market_limit=self.recent_trade_limit
+            )
+            self._seed_recent_trades(recent)
+            observed = store.max_source_epoch(market_ids)
+            if self._outbox is not None:
+                self._outbox.seed(observed, recent)
         self._seed_recent_trades(recent)
-        observed = store.max_source_epoch(market_ids)
         source_epoch = max(observed, self._last_source_epoch) + 1
         if source_epoch > _MAX_SOURCE_EPOCH:
             raise OverflowError("ClickHouse execution source epoch exhausted UInt32")
@@ -1095,6 +1208,9 @@ class FootprintCollector:
             self._next_hyperliquid_sequence = 0
             self._bybit_sequence_order.clear()
             self._last_admitted_cursors.clear()
+        if self._outbox is not None:
+            self._outbox.set_state("epoch", source_epoch)
+            self._outbox_ready.set()
         return source_epoch
 
     def _advance_source_epoch(self) -> int:
@@ -1113,6 +1229,8 @@ class FootprintCollector:
             self._next_hyperliquid_sequence = 0
             self._bybit_sequence_order.clear()
             self._last_admitted_cursors.clear()
+            if self._outbox is not None:
+                self._outbox.set_state("epoch", source_epoch)
             return source_epoch
 
     def _seed_recent_trades(
@@ -1154,6 +1272,9 @@ class FootprintCollector:
             self._recent_trades = seeded
 
     def _writer_loop(self) -> None:
+        if self._outbox_directory:
+            self._journal_loop()
+            return
         while self._fatal_error is None:
             if self.stop_event.is_set():
                 if self.queue.empty():
@@ -1242,6 +1363,116 @@ class FootprintCollector:
                 )
                 if not self.stop_event.is_set():
                     self.stop_event.wait(delay)
+
+    def _journal_loop(self) -> None:
+        drainer = threading.Thread(target=self._drain_outbox, daemon=False)
+        drainer.start()
+        next_health = 0.0
+        try:
+            while not self.stop_event.is_set() or not self.queue.empty():
+                if time.monotonic() >= next_health:
+                    self._write_outbox_health()
+                    next_health = time.monotonic() + 5
+                try:
+                    first = self.queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                batch = [first]
+                deadline = time.monotonic() + 0.1
+                while len(batch) < self.commit_batch_size:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        batch.append(self.queue.get(timeout=remaining))
+                    except queue.Empty:
+                        break
+                try:
+                    if self._outbox is None:
+                        raise RuntimeError(
+                            "execution admitted before outbox initialization"
+                        )
+                    self._outbox.append(batch)
+                except Exception as exc:
+                    self._uncommitted_batch_count += len(batch)
+                    self._set_fatal(exc)
+                    break
+                finally:
+                    for _ in batch:
+                        self.queue.task_done()
+        except Exception as exc:
+            self._set_fatal(exc)
+        finally:
+            drainer.join()
+            self._write_outbox_health()
+
+    def _drain_outbox(self) -> None:
+        reconcile = True
+        attempt = 0
+        while not self.stop_event.is_set() and not self._writer_fenced.is_set():
+            if not self._outbox_ready.wait(0.1):
+                continue
+            try:
+                pending = self._outbox.first()
+                if pending is None:
+                    self.stop_event.wait(0.1)
+                    continue
+                batch_id, batch = pending
+                store = self._ensure_execution_store()
+                missing = store.missing_executions(batch) if reconcile else batch
+                if self._writer_fenced.is_set() or self.stop_event.is_set():
+                    return
+                if missing:
+                    store.insert_batch(missing)
+                if self._writer_fenced.is_set():
+                    return
+                self._outbox.acknowledge(batch_id)
+                self._notify_committed_executions(batch)
+                reconcile, attempt = False, 0
+            except Exception as exc:
+                if (
+                    classify_clickhouse_error(exc, is_write=True)
+                    == ClickHouseFailureKind.FATAL
+                ):
+                    self._set_fatal(exc)
+                    return
+                self._close_clickhouse()
+                reconcile = True
+                attempt += 1
+                logger.warning(
+                    "%s delivery delayed; durable capture continues: %s",
+                    self.exchange,
+                    exc,
+                )
+                self.stop_event.wait(self._retry_delay(attempt))
+
+    def _write_outbox_health(self) -> None:
+        if self._state_directory is None:
+            return
+        try:
+            import json
+
+            state = {
+                "at": time.time(),
+                "last_trade_at": self._last_trade_at,
+                "capture": not self.stop_event.is_set(),
+                "fatal": str(self._fatal_error or ""),
+                "initialized": self._outbox_ready.is_set(),
+            }
+            if self._outbox is not None:
+                state.update(self._outbox.stats())
+                if self._coverage_issue is not None:
+                    self._outbox.set_state("coverage_issue", self._coverage_issue)
+                state["coverage_issue"] = self._outbox.state("coverage_issue")
+            from footprints.collectors.rejected import rejection_stats
+
+            state.update(rejection_stats(self.exchange))
+            self._state_directory.mkdir(parents=True, exist_ok=True)
+            temporary = self._state_directory / "health.json.tmp"
+            temporary.write_text(json.dumps(state))
+            temporary.replace(self._state_directory / "health.json")
+        except Exception:
+            logger.exception("Failed to write %s outbox health", self.exchange)
 
     def _retry_delay(self, attempt: int) -> float:
         exponent = max(0, min(attempt - 1, 30))

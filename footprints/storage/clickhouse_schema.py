@@ -112,3 +112,21 @@ def ensure_clickhouse_schema(access: ClickHouseAccess, database: str) -> None:
         """,
         operation="ensure_chart_bars_table",
     )
+
+
+def ensure_archive_schema(access: ClickHouseAccess, database: str) -> None:
+    """Additive schema; original V0 tables and Hyperliquid are untouched."""
+    access.command(
+        f"""
+        CREATE TABLE IF NOT EXISTS {quote_identifier(database)}.archive_executions (
+            market_id UInt64, day Date, import_id UUID, ordinal UInt64,
+            timestamp_us Int64, trade_id String, price_atoms Int64,
+            quantity_atoms UInt64, is_taker_buy Bool, instrument_spec_id UInt64
+        ) ENGINE = MergeTree
+        PARTITION BY toYYYYMM(day)
+        ORDER BY (market_id,day,import_id,ordinal)
+        TTL day + INTERVAL 31 DAY DELETE
+        SETTINGS non_replicated_deduplication_window = 10000
+    """,
+        operation="ensure_archive_executions",
+    )

@@ -6,9 +6,11 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest import skipUnless
+from unittest.mock import Mock
 
 from django.test import SimpleTestCase
 
+from footprints.chart_service import _push_execution
 from footprints.storage.charts import (
     ChartLevel,
     ClickHouseChartStore,
@@ -24,10 +26,19 @@ from footprints.storage.clickhouse import (
     create_clickhouse_client,
     quote_identifier,
 )
-from footprints.storage.clickhouse_schema import ensure_clickhouse_schema
+from footprints.storage.clickhouse_schema import (
+    ensure_archive_schema,
+    ensure_clickhouse_schema,
+)
 from footprints.storage.executions import StoredExecution
+from footprints.storage.reconciled import (
+    DAY_US,
+    ReconciledExecutionStore,
+    segment_changed,
+)
+from footprints.tick import TickConfig, TickEngine
+from footprints.trev import TrevConfig, TrevEngine
 from footprints.types import NormalizedTrade, TakerSide
-
 
 INTEGRATION_ENABLED = os.environ.get("FOOTPRINT_CLICKHOUSE_INTEGRATION") == "1"
 CURRENT_EVENT_US = int(datetime.now(timezone.utc).timestamp()) * 1_000_000
@@ -44,7 +55,7 @@ class _CommitThenLoseAcknowledgement:
         return getattr(self.delegate, name)
 
     def insert(self, *args, **kwargs):
-        result = self.delegate.insert(*args, **kwargs)
+        self.delegate.insert(*args, **kwargs)
         self.inserted = True
         raise TimeoutError("simulated lost ClickHouse insert acknowledgement")
 
@@ -57,6 +68,138 @@ class RealClickHouseExecutionStoreTests(SimpleTestCase):
     """Real-server contracts in a test-owned UUID database."""
 
     databases = set()
+
+    def test_outbox_resolution_does_not_depend_on_clickhouse_dedupe_window(self):
+        execution = self.execution(
+            market_id=220,
+            source_epoch=1,
+            sequence=1,
+            trade_id="ack-lost",
+            timestamp_us=CURRENT_EVENT_US,
+        )
+        self.store.insert_batch((execution,))
+        table = f"{self.test_database}.raw_executions"
+        try:
+            self.data_access.command(
+                f"ALTER TABLE {table} MODIFY SETTING non_replicated_deduplication_window=0"
+            )
+            self.assertEqual(self.store.missing_executions((execution,)), ())
+            self.assertEqual(len(self._raw_rows(220)), 1)
+        finally:
+            self.data_access.command(
+                f"ALTER TABLE {table} MODIFY SETTING non_replicated_deduplication_window=10000"
+            )
+
+    def test_reconciled_order_midnight_seams_and_incremental_chart_equivalence(self):
+        market_id = 221
+        today = CURRENT_EVENT_US // DAY_US
+        first_day = today - 2
+        originals = [
+            self.execution(
+                market_id=market_id,
+                source_epoch=4,
+                sequence=i + 1,
+                trade_id=f"seam-{i}",
+                timestamp_us=(first_day + i // 2) * DAY_US + (i % 2 + 1) * 1000,
+                price=str(100 + i),
+            )
+            for i in range(6)
+        ]
+        self.store.insert_batch(tuple(originals))
+        ensure_archive_schema(self.data_access, self.test_database)
+        imports = {first_day: str(uuid.uuid4()), first_day + 1: str(uuid.uuid4())}
+        staged = []
+        for i, execution in enumerate(originals[:4]):
+            day = first_day + i // 2
+            staged.append(
+                (
+                    market_id,
+                    datetime.fromtimestamp(day * 86400, timezone.utc).date(),
+                    imports[day],
+                    i % 2,
+                    execution.trade.exchange_timestamp_us,
+                    execution.trade.trade_id,
+                    execution.price_atoms,
+                    execution.quantity_atoms,
+                    True,
+                    11,
+                )
+            )
+        self.data_access.insert(
+            f"{self.test_database}.archive_executions",
+            staged,
+            column_names=(
+                "market_id",
+                "day",
+                "import_id",
+                "ordinal",
+                "timestamp_us",
+                "trade_id",
+                "price_atoms",
+                "quantity_atoms",
+                "is_taker_buy",
+                "instrument_spec_id",
+            ),
+        )
+        reader = ReconciledExecutionStore(
+            self.data_access,
+            database=self.test_database,
+            spec_divisors={11: ProjectorSpecDivisors(1, 1)},
+        )
+        reader._inputs = Mock(return_value=imports)
+        start = first_day * DAY_US
+        through = reader.latest_cursor(market_id=market_id, start_timestamp_us=start)
+        # A newly published pointer must not change a build already in progress.
+        reader._inputs.return_value = {first_day: str(uuid.uuid4())}
+        rebuilt = list(
+            reader.iter_executions(
+                market_id=market_id, start_timestamp_us=start, through_cursor=through
+            )
+        )
+        self.assertEqual(
+            [row.trade_id for row in rebuilt], [row.trade.trade_id for row in originals]
+        )
+        self.assertFalse(any(row.segment_start for row in rebuilt))
+        reader._inputs.return_value = imports
+        incremental = []
+        cursor = None
+        while page := list(
+            reader.iter_executions(
+                market_id=market_id,
+                start_timestamp_us=start,
+                after_cursor=cursor,
+                limit=1,
+            )
+        ):
+            incremental.extend(page)
+            cursor = page[-1].cursor
+        self.assertEqual(incremental, rebuilt)
+        raw_reader = ClickHouseProjectorExecutionStore(
+            self.data_access,
+            database=self.test_database,
+            spec_divisors={11: ProjectorSpecDivisors(1, 1)},
+        )
+        raw = list(
+            raw_reader.iter_executions(market_id=market_id, start_timestamp_us=start)
+        )
+        for make_engine in (
+            lambda: TickEngine(TickConfig(trades_per_bar=3)),
+            lambda: TrevEngine(
+                TrevConfig(continuation_ticks=1000, reversal_ticks=2000)
+            ),
+        ):
+            results = []
+            for executions in (raw, rebuilt, incremental):
+                engine = make_engine()
+                bars, previous = [], None
+                for execution in executions:
+                    if previous is not None and segment_changed(execution, previous):
+                        bars.extend(engine.truncate_segment().bars)
+                    bars.extend(_push_execution(engine, execution).bars)
+                    previous = execution.cursor
+                results.append((bars, engine.snapshot()))
+            self.assertEqual(results[0], results[1])
+            self.assertEqual(results[1], results[2])
 
     @classmethod
     def setUpClass(cls):

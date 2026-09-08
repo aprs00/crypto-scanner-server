@@ -142,6 +142,15 @@ services:
 
   binance-footprints:
     <<: *chart-common
+    image: ${BINANCE_FOOTPRINT_IMAGE:-${APP_IMAGE:-crypto-scanner:latest}}
+    environment:
+      <<: *footprint-environment
+      FOOTPRINT_OUTBOX_DIR: /var/lib/footprints
+      FOOTPRINT_OUTBOX_MAX_BYTES: ${FOOTPRINT_OUTBOX_MAX_BYTES:-2147483648}
+      FOOTPRINT_DISK_RESERVE_BYTES: ${FOOTPRINT_DISK_RESERVE_BYTES:-5368709120}
+    volumes:
+      - .:/code
+      - binance_footprint_outbox:/var/lib/footprints
     container_name: cs-binance-footprints
     command: python manage.py footprint_trades --exchange binance
     depends_on:
@@ -151,7 +160,7 @@ services:
         condition: service_healthy
     stop_grace_period: 60s
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f '[f]ootprint_trades --exchange binance' >/dev/null"]
+      test: ["CMD", "python", "manage.py", "footprint_health", "--exchange", "binance", "--capture-only"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -292,6 +301,15 @@ services:
 
   bybit-footprints:
     <<: *chart-common
+    image: ${BYBIT_FOOTPRINT_IMAGE:-${APP_IMAGE:-crypto-scanner:latest}}
+    environment:
+      <<: *footprint-environment
+      FOOTPRINT_OUTBOX_DIR: /var/lib/footprints
+      FOOTPRINT_OUTBOX_MAX_BYTES: ${FOOTPRINT_OUTBOX_MAX_BYTES:-2147483648}
+      FOOTPRINT_DISK_RESERVE_BYTES: ${FOOTPRINT_DISK_RESERVE_BYTES:-5368709120}
+    volumes:
+      - .:/code
+      - bybit_footprint_outbox:/var/lib/footprints
     container_name: cs-bybit-footprints
     command: python manage.py footprint_trades --exchange bybit
     depends_on:
@@ -301,7 +319,7 @@ services:
         condition: service_healthy
     stop_grace_period: 60s
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f '[f]ootprint_trades --exchange bybit' >/dev/null"]
+      test: ["CMD", "python", "manage.py", "footprint_health", "--exchange", "bybit", "--capture-only"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -432,6 +450,18 @@ services:
       timeout: 10s
       retries: 3
 
+  footprint-recovery:
+    <<: *chart-common
+    container_name: cs-footprint-recovery
+    command: python manage.py footprint_reconcile --exchange both --loop
+    depends_on:
+      db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    stop_grace_period: 60s
+    # Start in audit mode. --repair is an explicit operator decision.
+
   db-maintenance:
     <<: *app-common
     container_name: cs-db-maintenance
@@ -448,5 +478,7 @@ services:
       retries: 3
 
 volumes:
+  binance_footprint_outbox:
+  bybit_footprint_outbox:
   pgdata18:
   clickhouse_data:

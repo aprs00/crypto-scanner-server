@@ -15,6 +15,20 @@ from footprints.models import ChartSeries, ChartType, FootprintMarket
 
 
 class ChartLiveContractTests(SimpleTestCase):
+    def test_replacement_notice_unsubscribes_old_series(self):
+        consumer = SimpleNamespace(
+            subscriptions={"retired": "group"},
+            send_json=AsyncMock(),
+            _unsubscribe=AsyncMock(),
+        )
+        async_to_sync(ChartConsumer.chart_error)(
+            consumer, {"series_key": "retired", "code": "CHART_SERIES_REPLACED"}
+        )
+        consumer._unsubscribe.assert_awaited_once_with("retired")
+        consumer.send_json.assert_awaited_once_with(
+            {"type": "error", "seriesKey": "retired", "code": "CHART_SERIES_REPLACED"}
+        )
+
     def test_binary_and_oversized_frames_close_before_json_decoding(self):
         frames = (
             {"bytes_data": b"{}"},
@@ -172,9 +186,7 @@ class ChartLiveLeaseTests(TestCase):
         series.refresh_from_db()
         self.assertGreater(series.last_requested_at, previous)
 
-        expired_at = timezone.now() - timedelta(
-            seconds=CHART_SERIES_LEASE_SECONDS + 1
-        )
+        expired_at = timezone.now() - timedelta(seconds=CHART_SERIES_LEASE_SECONDS + 1)
         ChartSeries.objects.filter(pk=series.pk).update(last_requested_at=expired_at)
         self.assertIsNone(_series_status(str(series.public_key)))
         series.refresh_from_db()

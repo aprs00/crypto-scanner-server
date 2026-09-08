@@ -12,6 +12,61 @@ from footprints.types import TakerSide
 
 
 class CollectorWebSocketTests(SimpleTestCase):
+    def test_malformed_records_do_not_close_feeds_or_drop_valid_batch_members(self):
+        for adapter, payload in (
+            (
+                binance,
+                {
+                    "e": "trade",
+                    "s": "BTCUSDT",
+                    "T": 1723000000000,
+                    "t": 123,
+                    "m": False,
+                    "p": "100",
+                    "q": "0.1",
+                },
+            ),
+            (
+                bybit,
+                {
+                    "i": "abc",
+                    "seq": 123,
+                    "T": 1723000000000,
+                    "S": "Buy",
+                    "p": "100",
+                    "v": "0.1",
+                },
+            ),
+        ):
+            with (
+                self.subTest(adapter=adapter.__name__),
+                patch.object(adapter.websocket, "WebSocketApp") as socket,
+                patch.object(adapter, "run_websocket"),
+                patch.object(adapter, "reject") as reject,
+            ):
+                on_trade, stop = Mock(), threading.Event()
+                adapter.listen({"BTCUSDT": "market"}, on_trade, stop)
+                receive = socket.call_args.kwargs["on_message"]
+                invalid = dict(payload, p="0")
+                receive(Mock(), "not-json")
+                if adapter is bybit:
+                    receive(
+                        Mock(),
+                        json.dumps(
+                            {
+                                "topic": "publicTrade.BTCUSDT",
+                                "data": [invalid, payload, dict(payload, p="Infinity")],
+                            }
+                        ),
+                    )
+                else:
+                    receive(Mock(), json.dumps(invalid))
+                    receive(Mock(), json.dumps(payload))
+                    receive(Mock(), json.dumps(dict(payload, p="Infinity")))
+                on_trade.assert_called_once()
+                self.assertEqual(reject.call_count, 3)
+                self.assertFalse(stop.is_set())
+
     @patch("footprints.collectors.binance.run_websocket")
     @patch("footprints.collectors.binance.websocket.WebSocketApp")
     def test_adapter_error_closes_stream_for_a_new_epoch(
@@ -265,23 +320,49 @@ class CollectorNormalizationTests(SimpleTestCase):
     def test_live_normalizers_reject_unknown_side_tokens(self):
         with self.assertRaisesRegex(ValueError, "maker flag"):
             normalize_binance(
-                {"T": 1_700_000_000_000, "t": 99, "m": "false", "p": "68000.1", "q": "0.3"},
+                {
+                    "T": 1_700_000_000_000,
+                    "t": 99,
+                    "m": "false",
+                    "p": "68000.1",
+                    "q": "0.3",
+                },
                 "binance:perpetual:BTCUSDT",
             )
         with self.assertRaisesRegex(ValueError, "taker side"):
             normalize_bybit(
-                {"T": 1_700_000_000_000, "i": "abc", "S": "Unknown", "p": "68000.1", "v": "0.01"},
+                {
+                    "T": 1_700_000_000_000,
+                    "i": "abc",
+                    "S": "Unknown",
+                    "p": "68000.1",
+                    "v": "0.01",
+                },
                 "bybit:perpetual:BTCUSDT",
             )
         with self.assertRaisesRegex(ValueError, "taker side"):
             normalize_hyperliquid(
-                {"time": 1_700_000_000_000, "coin": "BTC", "tid": 7, "side": "?", "px": "68000", "sz": "0.001"},
+                {
+                    "time": 1_700_000_000_000,
+                    "coin": "BTC",
+                    "tid": 7,
+                    "side": "?",
+                    "px": "68000",
+                    "sz": "0.001",
+                },
                 "hyperliquid:perpetual:BTC",
             )
 
     def test_bybit_preserves_sequence_and_batch_order(self):
         trade = normalize_bybit(
-            {"T": 1_700_000_000_000, "i": "abc", "seq": 12, "S": "Buy", "p": "68000.1", "v": "0.01"},
+            {
+                "T": 1_700_000_000_000,
+                "i": "abc",
+                "seq": 12,
+                "S": "Buy",
+                "p": "68000.1",
+                "v": "0.01",
+            },
             "bybit:perpetual:BTCUSDT",
             batch_index=7,
         )
@@ -290,7 +371,14 @@ class CollectorNormalizationTests(SimpleTestCase):
 
     def test_hyperliquid_has_global_trade_identity_and_arrival_order(self):
         trade = normalize_hyperliquid(
-            {"time": 1_700_000_000_000, "coin": "BTC", "tid": 7, "side": "A", "px": "68000", "sz": "0.001"},
+            {
+                "time": 1_700_000_000_000,
+                "coin": "BTC",
+                "tid": 7,
+                "side": "A",
+                "px": "68000",
+                "sz": "0.001",
+            },
             "hyperliquid:perpetual:BTC",
             venue_sequence=42,
         )

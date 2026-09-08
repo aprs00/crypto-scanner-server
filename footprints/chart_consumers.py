@@ -127,6 +127,9 @@ class ChartConsumer(AsyncJsonWebsocketConsumer):
                 "seriesKey": series_key,
             }
         )
+        if event.get("code") == "CHART_SERIES_REPLACED":
+            # A late old-worker publication must not resurrect the retired feed.
+            await self._unsubscribe(series_key)
 
     async def _ack(self, series_key: str) -> None:
         await self.send_json(
