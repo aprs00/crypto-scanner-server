@@ -28,6 +28,18 @@ class ChartSeriesModelTests(TestCase):
         with self.assertRaises(IntegrityError), transaction.atomic():
             self._create()
 
+    def test_trev_has_one_continuous_configuration_without_a_lookback(self):
+        values = dict(
+            chart_type=ChartType.TREV, parameter_a=3, parameter_b=2, lookback_days=None
+        )
+        self._create(**values)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._create(**values)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._create(**{**values, "parameter_a": 4, "lookback_days": 5})
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._create(lookback_days=None)
+
     def test_database_rejects_invalid_chart_parameters(self):
         invalid = [
             {"parameter_a": 0},

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest import skipUnless
 from unittest.mock import Mock
@@ -422,6 +422,44 @@ class RealClickHouseExecutionStoreTests(SimpleTestCase):
         self.assertEqual(snapshot[0].level_ticks, (100, 101))
         self.assertEqual(snapshot[0].level_buy_units, (1, 1))
         self.assertEqual(snapshot[0].level_sell_units, (1, 0))
+
+    def test_history_window_and_commit_bound_exclude_uncommitted_candles(self):
+        now = datetime.now(timezone.utc)
+        # The first bar straddles the cutoff. Later timestamps can regress,
+        # so filter the contiguous index range rather than individual candles.
+        rows = [
+            replace(
+                self.chart_bar(series_id=204, bar_index=0),
+                opened_at=now - timedelta(days=3),
+                ended_at=now - timedelta(days=2),
+            ),
+            replace(
+                self.chart_bar(series_id=204, bar_index=1),
+                opened_at=now - timedelta(days=2),
+                ended_at=now,
+            ),
+            replace(
+                self.chart_bar(series_id=204, bar_index=2),
+                opened_at=now - timedelta(days=2),
+                ended_at=now - timedelta(days=2),
+            ),
+            self.chart_bar(series_id=204, bar_index=3),
+        ]
+        self.chart_store.append(rows)
+        start = self.chart_store.history_start_index(
+            series_id=204, before_bar_index=3, since=now - timedelta(days=1)
+        )
+        self.assertEqual(start, 1)
+        snapshot = self.chart_store.read_snapshot(
+            series_id=204, before_bar_index=3, min_bar_index=start
+        )
+        self.assertEqual([bar.bar_index for bar in snapshot], [2, 1])
+        self.assertEqual(
+            self.chart_store.history_start_index(
+                series_id=204, before_bar_index=1, since=now - timedelta(days=1)
+            ),
+            1,
+        )
 
     def test_immediate_chart_bar_retry_is_physically_deduplicated(self):
         bar = self.chart_bar(series_id=203, bar_index=1)

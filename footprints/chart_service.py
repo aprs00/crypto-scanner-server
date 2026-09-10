@@ -19,6 +19,7 @@ from footprints.constants import (
     CHART_DEFAULT_LOOKBACK_DAYS,
     CHART_LIVE_MAX_LEVELS,
     CHART_MAX_LEVELS_PER_BAR,
+    CHART_MAX_LOOKBACK_DAYS,
     CHART_MAX_SERIES_PER_MARKET,
     CHART_SERIES_CACHE_SECONDS,
     CHART_SERIES_LEASE_SECONDS,
@@ -117,10 +118,15 @@ def open_chart_stores(
 
 
 def recover_interrupted_builds() -> int:
-    return ChartSeries.objects.filter(status=ChartSeriesStatus.BUILDING).update(
+    recovered = ChartSeries.objects.filter(status=ChartSeriesStatus.BUILDING).update(
         status=ChartSeriesStatus.QUEUED,
         error_code="",
     )
+    # A saved ready state may be behind after a maintenance restart.
+    ChartSeries.objects.filter(
+        chart_type=ChartType.TREV, status=ChartSeriesStatus.READY
+    ).update(status=ChartSeriesStatus.CATCHING_UP)
+    return recovered
 
 
 def series_lease_cutoff(value: datetime) -> datetime:
@@ -135,10 +141,16 @@ def expire_stale_series(*, now: datetime, market_id: int | None = None) -> int:
     rows = ChartSeries.objects.filter(
         Q(
             status=ChartSeriesStatus.READY,
+            chart_type=ChartType.TICK,
             last_requested_at__lt=series_cache_cutoff(now),
         )
         | Q(
-            status__in=(ChartSeriesStatus.QUEUED, ChartSeriesStatus.FAILED),
+            status=ChartSeriesStatus.QUEUED,
+            chart_type=ChartType.TICK,
+            last_requested_at__lt=series_lease_cutoff(now),
+        )
+        | Q(
+            status=ChartSeriesStatus.FAILED,
             last_requested_at__lt=series_lease_cutoff(now),
         )
     )
@@ -147,7 +159,6 @@ def expire_stale_series(*, now: datetime, market_id: int | None = None) -> int:
         chart_type=ChartType.TREV,
         parameter_a=CHART_WARM_TREV_CONTINUATION_TICKS,
         parameter_b=CHART_WARM_TREV_REVERSAL_TICKS,
-        lookback_days=CHART_WARM_LOOKBACK_DAYS,
     )
     if market_id is not None:
         rows = rows.filter(market_id=market_id)
@@ -163,6 +174,7 @@ def request_chart_series(
     parameter_b: int,
     lookback_days: int,
     now: datetime,
+    catch_up: bool = True,
 ) -> ChartSeries | None:
     """Create or renew one bounded shared configuration for a market."""
 
@@ -174,14 +186,21 @@ def request_chart_series(
             chart_type=chart_type,
             parameter_a=parameter_a,
             parameter_b=parameter_b,
-            lookback_days=lookback_days,
+            lookback_days=None if chart_type == ChartType.TREV else lookback_days,
         ).first()
         if series is not None:
             was_dormant = series.last_requested_at < series_lease_cutoff(now)
             series.last_requested_at = now
             update_fields = ["last_requested_at"]
-            if was_dormant and series.status == ChartSeriesStatus.READY:
-                series.status = ChartSeriesStatus.QUEUED
+            if series.status == ChartSeriesStatus.READY and (
+                (chart_type == ChartType.TREV and catch_up)
+                or (chart_type == ChartType.TICK and was_dormant)
+            ):
+                series.status = (
+                    ChartSeriesStatus.CATCHING_UP
+                    if chart_type == ChartType.TREV
+                    else ChartSeriesStatus.QUEUED
+                )
                 series.error_code = ""
                 update_fields.extend(["status", "error_code"])
             series.save(update_fields=update_fields)
@@ -219,14 +238,19 @@ def request_chart_series(
             chart_type=chart_type,
             parameter_a=parameter_a,
             parameter_b=parameter_b,
-            lookback_days=lookback_days,
-            anchor_at=lookback_anchor(now, lookback_days),
+            lookback_days=None if chart_type == ChartType.TREV else lookback_days,
+            anchor_at=lookback_anchor(
+                now,
+                CHART_MAX_LOOKBACK_DAYS
+                if chart_type == ChartType.TREV
+                else lookback_days,
+            ),
             last_requested_at=now,
         )
 
 
 def ensure_default_chart_series(*, now: datetime) -> int:
-    """Keep the frontend's default five-day TREV series warm."""
+    """Keep the frontend's default continuous TREV configuration warm."""
 
     queued = 0
     for market in FootprintMarket.objects.filter(enabled=True).order_by("pk"):
@@ -235,7 +259,6 @@ def ensure_default_chart_series(*, now: datetime) -> int:
             chart_type=ChartType.TREV,
             parameter_a=CHART_WARM_TREV_CONTINUATION_TICKS,
             parameter_b=CHART_WARM_TREV_REVERSAL_TICKS,
-            lookback_days=CHART_WARM_LOOKBACK_DAYS,
             status=ChartSeriesStatus.FAILED,
         ).exists()
         if failed_exists:
@@ -247,6 +270,7 @@ def ensure_default_chart_series(*, now: datetime) -> int:
             parameter_b=CHART_WARM_TREV_REVERSAL_TICKS,
             lookback_days=CHART_WARM_LOOKBACK_DAYS,
             now=now,
+            catch_up=False,
         )
         if series is not None and series.status == ChartSeriesStatus.QUEUED:
             queued += 1
@@ -279,8 +303,8 @@ def claim_queued_market_series() -> tuple[int, ...]:
             ChartSeries.objects.select_for_update(skip_locked=True)
             .filter(
                 status=ChartSeriesStatus.QUEUED,
-                last_requested_at__gte=cutoff,
             )
+            .filter(Q(chart_type=ChartType.TREV) | Q(last_requested_at__gte=cutoff))
             .order_by("created_at", "pk")
             .first()
         )
@@ -292,8 +316,8 @@ def claim_queued_market_series() -> tuple[int, ...]:
                 market_id=oldest.market_id,
                 anchor_at=oldest.anchor_at,
                 status=ChartSeriesStatus.QUEUED,
-                last_requested_at__gte=cutoff,
             )
+            .filter(Q(chart_type=ChartType.TREV) | Q(last_requested_at__gte=cutoff))
             .order_by("created_at", "pk")
             .values_list("pk", flat=True)[:CHART_MAX_SERIES_PER_MARKET]
         )
@@ -396,6 +420,7 @@ def _pending_build(series: ChartSeries) -> _PendingBuild:
         cursor = None
     else:
         engine, cursor = _decode_checkpoint(series)
+    _validate_replay_window(series, engine)
     return _PendingBuild(
         series=series,
         engine=engine,
@@ -549,7 +574,13 @@ def _persist_build_state(
             locked = locked_rows[item.series.pk]
             if item.error is None:
                 locked.status = (
-                    ChartSeriesStatus.READY if complete else ChartSeriesStatus.BUILDING
+                    (
+                        ChartSeriesStatus.CATCHING_UP
+                        if locked.chart_type == ChartType.TREV
+                        else ChartSeriesStatus.READY
+                    )
+                    if complete
+                    else ChartSeriesStatus.BUILDING
                 )
                 locked.checkpoint_state = _checkpoint_state(
                     item.engine,
@@ -605,7 +636,7 @@ def advance_ready_series(
     bar_store: ClickHouseChartStore,
     market_ids: Iterable[int] | None = None,
 ) -> int:
-    """Read each market tail once and fan it into every ready chart engine."""
+    """Advance live and catching-up engines from their durable checkpoints."""
 
     selected_market_ids = None
     if market_ids is not None:
@@ -621,8 +652,12 @@ def advance_ready_series(
             raise ValueError("market_ids must contain positive integers")
 
     query = ChartSeries.objects.filter(
-        status=ChartSeriesStatus.READY,
-        last_requested_at__gte=series_lease_cutoff(datetime.now(tz=dt_timezone.utc)),
+        status__in=(ChartSeriesStatus.READY, ChartSeriesStatus.CATCHING_UP),
+    ).filter(
+        Q(chart_type=ChartType.TREV)
+        | Q(
+            last_requested_at__gte=series_lease_cutoff(datetime.now(tz=dt_timezone.utc))
+        )
     )
     if selected_market_ids is not None:
         query = query.filter(market_id__in=selected_market_ids)
@@ -643,11 +678,22 @@ def advance_ready_series(
             )
             runtime = None
         if runtime is None:
-            ChartSeries.objects.filter(pk=series.pk).update(
-                status=ChartSeriesStatus.QUEUED,
-                error_code="MISSING_CHECKPOINT",
-                checkpoint_state=None,
-            )
+            if series.chart_type == ChartType.TREV:
+                # A fresh generation fences old bars; an empty engine must not
+                # resume midway through a continuous series whose state was lost.
+                from footprints.recovery import replace_series
+
+                with transaction.atomic():
+                    market = FootprintMarket.objects.select_for_update().get(
+                        pk=series.market_id
+                    )
+                    replace_series(market, series_id=series.pk)
+            else:
+                ChartSeries.objects.filter(pk=series.pk).update(
+                    status=ChartSeriesStatus.QUEUED,
+                    error_code="MISSING_CHECKPOINT",
+                    checkpoint_state=None,
+                )
             _RUNTIMES.pop(series.pk, None)
             continue
         by_market.setdefault(series.market_id, []).append((series, runtime))
@@ -682,22 +728,33 @@ def _advance_market(
     start_timestamp_us = min(
         _datetime_us(series.anchor_at) for series, _runtime in entries
     )
-    stream = execution_store.iter_executions(
+    through_cursor = execution_store.latest_cursor(
         market_id=market_id,
         start_timestamp_us=start_timestamp_us,
-        after_cursor=earliest_cursor,
-        limit=LIVE_EXECUTION_LIMIT,
     )
+    stream = ()
+    if through_cursor is not None and (
+        earliest_cursor is None or earliest_cursor < through_cursor
+    ):
+        stream = execution_store.iter_executions(
+            market_id=market_id,
+            start_timestamp_us=start_timestamp_us,
+            after_cursor=earliest_cursor,
+            through_cursor=through_cursor,
+            limit=LIVE_EXECUTION_LIMIT,
+        )
     emitted: dict[int, deque[DetailedChartBar]] = {
         series.pk: deque(maxlen=CHART_SNAPSHOT_BARS) for series, _runtime in entries
     }
     bar_batch: list[DetailedChartBar] = []
     touched: set[int] = set()
     raw_count = 0
+    last_cursor = earliest_cursor
     failed: dict[int, Exception] = {}
     for execution in stream:
         raw_count += 1
         execution_cursor = execution.cursor
+        last_cursor = execution_cursor
         for series, runtime in entries:
             if series.pk in failed:
                 continue
@@ -725,6 +782,14 @@ def _advance_market(
 
     bar_store.append(bar_batch)
 
+    if (
+        through_cursor is not None
+        and (earliest_cursor is None or earliest_cursor < through_cursor)
+        and last_cursor != through_cursor
+        and raw_count < LIVE_EXECUTION_LIMIT
+    ):
+        raise ProjectorDataError("chart catch-up ended before its fixed cursor")
+
     publications: list[tuple[ChartSeries, SeriesRuntime, deque[DetailedChartBar]]] = []
     with transaction.atomic():
         for series, runtime in entries:
@@ -737,7 +802,13 @@ def _advance_market(
                 )
                 _RUNTIMES.pop(series.pk, None)
                 continue
-            if series.pk not in touched:
+            caught_up = through_cursor is None or (
+                runtime.cursor is not None and runtime.cursor >= through_cursor
+            )
+            status = (
+                ChartSeriesStatus.READY if caught_up else ChartSeriesStatus.CATCHING_UP
+            )
+            if series.pk not in touched and status == series.status:
                 continue
             new_bars = emitted[series.pk]
             checkpoint = _checkpoint_state(
@@ -746,14 +817,17 @@ def _advance_market(
             )
             updated = ChartSeries.objects.filter(
                 pk=series.pk,
-                status=ChartSeriesStatus.READY,
+                # A request arriving during an ordinary live pass must remain
+                # catching_up until the coordinator observes that request.
+                status=series.status,
             ).update(
+                status=status,
                 checkpoint_state=checkpoint,
                 error_code="",
             )
-            if updated:
+            if updated and series.pk in touched:
                 publications.append((series, runtime, new_bars))
-            else:
+            elif not updated:
                 _RUNTIMES.pop(series.pk, None)
 
     for series, _runtime in entries:
@@ -816,27 +890,49 @@ def _live_update_chunks(bars: list[dict], active: dict | None):
 
 
 def active_bar_for_series(series: ChartSeries):
+    return snapshot_state_for_series(series)[0]
+
+
+def snapshot_state_for_series(series: ChartSeries):
+    """Read active state and the exclusive closed-bar bound from one checkpoint."""
     if not series.checkpoint_state:
-        return None
+        return None, 0
     engine, _cursor = _decode_checkpoint(series)
     active = engine.active_snapshot()
     _ensure_native_level_limit(active)
-    return active
+    return active, engine.state.next_bar_index
 
 
 def _runtime_for(series: ChartSeries) -> SeriesRuntime | None:
     current = _RUNTIMES.get(series.pk)
     if current is not None:
+        _validate_replay_window(series, current.engine)
         return current
     if not series.checkpoint_state:
         return None
     engine, cursor = _decode_checkpoint(series)
+    _validate_replay_window(series, engine)
     runtime = SeriesRuntime(
         engine=engine,
         cursor=cursor,
     )
     _RUNTIMES[series.pk] = runtime
     return runtime
+
+
+def _validate_replay_window(
+    series: ChartSeries, engine: TickEngine | TrevEngine
+) -> None:
+    if series.chart_type == ChartType.TREV:
+        replay_start = (
+            engine.state.last_order.timestamp_us
+            if engine.state.last_order is not None
+            else _datetime_us(series.anchor_at)
+        )
+        if replay_start < _datetime_us(
+            datetime.now(tz=dt_timezone.utc) - timedelta(days=31)
+        ):
+            raise ValueError("CHART_CHECKPOINT_EXPIRED")
 
 
 def _new_engine(series: ChartSeries) -> TickEngine | TrevEngine:
@@ -923,6 +1019,12 @@ def _decode_checkpoint(
         engine = TrevEngine.restore(wrapper.get("engine"), config=fresh.config)
     cursor_value = wrapper.get("cursor")
     cursor = None if cursor_value is None else _parse_cursor_value(cursor_value)
+    last_order = engine.state.last_order
+    if (cursor is None) != (last_order is None) or (
+        cursor is not None
+        and last_order.timestamp_us != cursor[6 if is_reconciled_cursor(cursor) else 3]
+    ):
+        raise ValueError("CHART_CHECKPOINT_CURSOR")
     return engine, cursor
 
 

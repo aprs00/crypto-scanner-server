@@ -13,6 +13,7 @@ import psycopg
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections, connections
+from django.db.models import Q
 from django.utils import timezone
 from redis.exceptions import RedisError
 
@@ -28,11 +29,13 @@ from footprints.chart_service import (
     open_chart_stores,
     recover_interrupted_builds,
     requeue_claimed_series,
+    series_lease_cutoff,
 )
 from footprints.storage.clickhouse import (
     ClickHouseFailureKind,
     classify_clickhouse_error,
 )
+from footprints.models import ChartSeries, ChartSeriesStatus, ChartType
 from footprints.wakeups import wait_for_wakeups
 
 
@@ -159,6 +162,18 @@ class Command(BaseCommand):
                         if stop.wait(STORAGE_RETRY_SECONDS):
                             break
                         continue
+                    pending_market_ids.update(
+                        ChartSeries.objects.filter(status=ChartSeriesStatus.CATCHING_UP)
+                        .filter(
+                            Q(chart_type=ChartType.TREV)
+                            | Q(
+                                last_requested_at__gte=series_lease_cutoff(
+                                    timezone.now()
+                                )
+                            )
+                        )
+                        .values_list("market_id", flat=True)
+                    )
 
                 if build_requested and started >= next_build_retry:
                     build_requested = False
@@ -171,6 +186,11 @@ class Command(BaseCommand):
                             series_ids,
                         )
                         builds[future] = series_ids
+
+                # Drain bounded catch-up passes without waiting for another raw
+                # insert or the five-second fallback. Other loop work still runs.
+                if pending_market_ids:
+                    continue
 
                 try:
                     if wakeup_client is None:

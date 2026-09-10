@@ -24,9 +24,10 @@ class ChartConsumer(AsyncJsonWebsocketConsumer):
         if bytes_data is not None or text_data is None:
             await self.close(code=4400)
             return
-        if len(text_data) > MAX_CHART_FRAME_BYTES or len(
-            text_data.encode("utf-8")
-        ) > MAX_CHART_FRAME_BYTES:
+        if (
+            len(text_data) > MAX_CHART_FRAME_BYTES
+            or len(text_data.encode("utf-8")) > MAX_CHART_FRAME_BYTES
+        ):
             await self.close(code=4400)
             return
         await super().receive(text_data=text_data)
@@ -70,7 +71,9 @@ class ChartConsumer(AsyncJsonWebsocketConsumer):
             )
             return
         status = series
-        if status != "ready":
+        # Another panel can request catch-up between HTTP and subscription.
+        # The group still publishes only committed updates during catch-up.
+        if status not in ("ready", "catching_up"):
             await self.send_json(
                 {
                     "type": "error",

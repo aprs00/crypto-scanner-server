@@ -28,6 +28,7 @@ class RecoveryStatus(models.TextChoices):
 class ChartSeriesStatus(models.TextChoices):
     QUEUED = "queued", "queued"
     BUILDING = "building", "building"
+    CATCHING_UP = "catching_up", "catching_up"
     READY = "ready", "ready"
     FAILED = "failed", "failed"
 
@@ -119,7 +120,8 @@ class ChartSeries(models.Model):
     chart_type = models.CharField(max_length=8, choices=ChartType.choices)
     parameter_a = models.PositiveIntegerField()
     parameter_b = models.PositiveIntegerField(default=0)
-    lookback_days = models.PositiveSmallIntegerField(default=2)
+    # TREV has a continuous origin; only Tick's construction depends on lookback.
+    lookback_days = models.PositiveSmallIntegerField(default=2, null=True, blank=True)
     status = models.CharField(
         max_length=16,
         choices=ChartSeriesStatus.choices,
@@ -142,12 +144,23 @@ class ChartSeries(models.Model):
                     "parameter_b",
                     "lookback_days",
                 ],
+                condition=models.Q(chart_type=ChartType.TICK),
                 name="unique_chart_series_key",
             ),
+            models.UniqueConstraint(
+                fields=["market", "chart_type", "parameter_a", "parameter_b"],
+                condition=models.Q(chart_type=ChartType.TREV),
+                name="unique_trev_series_key",
+            ),
             models.CheckConstraint(
-                condition=models.Q(
-                    lookback_days__gte=1,
-                    lookback_days__lte=CHART_MAX_LOOKBACK_DAYS,
+                condition=(
+                    models.Q(chart_type=ChartType.TREV, lookback_days__isnull=True)
+                    | models.Q(
+                        chart_type=ChartType.TICK,
+                        lookback_days__isnull=False,
+                        lookback_days__gte=1,
+                        lookback_days__lte=CHART_MAX_LOOKBACK_DAYS,
+                    )
                 ),
                 name="valid_chart_series_lookback",
             ),

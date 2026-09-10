@@ -28,6 +28,7 @@ from django.utils import timezone as django_timezone
 from footprints.chart_live import publish_chart_error
 from footprints.models import (
     ChartSeries,
+    ChartType,
     FootprintMarket,
     RecoveryStatus,
     TradeRecoveryDay,
@@ -137,9 +138,11 @@ def recent_trades(exchange, symbol, market_key):
     raise ValueError("unsupported recovery exchange")
 
 
-def replace_series(market, *, start_us=None):
+def replace_series(market, *, start_us=None, series_id=None):
     """Caller holds the market row lock. New IDs fence old builds and caches."""
     query = ChartSeries.objects.filter(market=market)
+    if series_id is not None:
+        query = query.filter(pk=series_id)
     if start_us is not None:
         query = query.filter(
             anchor_at__lt=datetime.fromtimestamp(start_us / 1e6, timezone.utc)
@@ -148,13 +151,19 @@ def replace_series(market, *, start_us=None):
     old_keys = [str(row.public_key) for row in rows]
     query.delete()
     for row in rows:
+        anchor = row.anchor_at
+        if row.chart_type == ChartType.TREV:
+            from footprints.chart_service import lookback_anchor
+            from footprints.constants import CHART_MAX_LOOKBACK_DAYS
+
+            anchor = lookback_anchor(django_timezone.now(), CHART_MAX_LOOKBACK_DAYS)
         ChartSeries.objects.create(
             market=market,
             chart_type=row.chart_type,
             parameter_a=row.parameter_a,
             parameter_b=row.parameter_b,
             lookback_days=row.lookback_days,
-            anchor_at=row.anchor_at,
+            anchor_at=anchor,
             last_requested_at=row.last_requested_at,
         )
 

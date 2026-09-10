@@ -460,6 +460,35 @@ class ClickHouseChartStore:
         )
         return len(rows)
 
+    def history_start_index(
+        self,
+        *,
+        series_id: int,
+        before_bar_index: int,
+        since: datetime | None = None,
+    ) -> int:
+        """Locate the retained, committed history boundary for a display window."""
+        _positive_int(series_id, "series_id")
+        _nonnegative_int(before_bar_index, "before_bar_index")
+        conditions = [
+            "series_id = {series_id:UInt64}",
+            "bar_index < {before_bar_index:UInt64}",
+        ]
+        parameters = {"series_id": series_id, "before_bar_index": before_bar_index}
+        if since is not None:
+            parameters["since"] = _aware_datetime(since, "since")
+            conditions.append("ended_at >= {since:DateTime64(6, 'UTC')}")
+        result = self.access.query(
+            f"SELECT minOrNull(bar_index) FROM {self.qualified_table} FINAL "
+            f"WHERE {' AND '.join(conditions)}",
+            parameters=parameters,
+            operation="read_chart_history_start",
+        )
+        rows = result.result_rows
+        if not rows or rows[0][0] is None:
+            return before_bar_index
+        return _database_int(rows[0][0], "history_start_index", minimum=0)
+
     def read_snapshot(
         self,
         *,
@@ -467,12 +496,14 @@ class ClickHouseChartStore:
         limit: int = CHART_SNAPSHOT_BARS,
         max_levels: int = CHART_SNAPSHOT_MAX_LEVELS,
         before_bar_index: int | None = None,
+        min_bar_index: int = 0,
     ) -> list[ChartSnapshotBar]:
         """Read validated native arrays without allocating one object per level."""
 
         _positive_int(series_id, "series_id")
         _positive_int(limit, "limit")
         _positive_int(max_levels, "max_levels")
+        _nonnegative_int(min_bar_index, "min_bar_index")
         conditions = ["series_id = {series_id:UInt64}"]
         parameters = {
             "series_id": series_id,
@@ -483,6 +514,9 @@ class ClickHouseChartStore:
             _nonnegative_int(before_bar_index, "before_bar_index")
             conditions.append("bar_index < {before_bar_index:UInt64}")
             parameters["before_bar_index"] = before_bar_index
+        if min_bar_index:
+            conditions.append("bar_index >= {min_bar_index:UInt64}")
+            parameters["min_bar_index"] = min_bar_index
         result = self.access.query(
             f"""
             SELECT {", ".join(CHART_BAR_COLUMNS)}

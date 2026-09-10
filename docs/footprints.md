@@ -40,21 +40,30 @@ footprint-level JSON does not dominate transfer time. The snapshot reader keeps
 validated ClickHouse level arrays in their native layout until JSON encoding,
 avoiding one temporary Python object per footprint level.
 
-A chart request supplies an integer `lookbackDays` from 1 through 30. The
-entire selected raw window is replayed with one fixed ClickHouse stream. Engine
-state and the raw cursor are checkpointed every 100,000 executions after
+A chart request supplies an integer `lookbackDays` from 1 through 30. Tick
+construction starts at that lookback's anchor. TRev has one continuous series
+per market and continuation/reversal threshold pair; its lookback only filters
+the displayed history. A new TRev configuration bootstraps forward from a fixed
+30-day anchor, then keeps that origin and its candle indexes. Changing lookback
+does not rebuild TRev or change its recent candle boundaries.
+
+Engine state and the raw cursor are checkpointed every 100,000 executions after
 durable chart-bar writes, so interrupted builds resume without starting over.
-Ready series are advanced incrementally instead of being replayed for each
-update. Pending configurations for one market and one lookback anchor share one
-execution stream instead of scanning ClickHouse independently.
+Opening a saved TRev series requests `catching_up`: the maintenance coordinator
+restores its checkpoint and reads only the subsequent trade tail, sharing
+market reads with other warm configurations. It becomes `ready` after reaching
+the latest cursor observed for a catch-up pass. New arrivals continue through
+live updates. A completed cold TRev bootstrap also catches up before becoming
+ready. Cold builds run separately in the existing worker pool.
 Tick trade counts and TRev thresholds are integers from 1 through 4,000. One
 market may have at most 16 requested configurations with a live 30-minute
 lease. The client renews a lease by repeating the idempotent series request or
-subscribing to its WebSocket. Ready series remain cached for 24 hours and resume
-from their saved checkpoint when requested again; the oldest dormant entry is
-evicted when market capacity is needed. Orphaned ClickHouse bars age out under
-the existing table TTL. The frontend's default TRev 314/471 five-day series is
-kept warm for every enabled market.
+subscribing to its WebSocket. Ready Tick series remain cached for 24 hours.
+Retained TRev series keep advancing even without viewers and do not expire
+after 24 hours. Viewing leases still determine which idle ready configuration
+can be evicted when market capacity is needed. Orphaned ClickHouse bars age out
+under the existing table TTL. The default TRev 314/471 configuration is kept
+warm for every enabled market.
 
 The maintenance process recovers interrupted builds at startup. A durable raw
 insert wakes it immediately for the affected markets, and a series request
@@ -84,12 +93,13 @@ Collectors and maintenance create both tables with idempotent `CREATE ... IF
 NOT EXISTS` statements. V0 has no ClickHouse migration ledger or manual
 migration command.
 
-Because the initial schema is intentionally rewritten during V0 development,
-an already-applied local schema is not upgraded in place. Stop the footprint
-services, run `python manage.py migrate footprints zero` followed by
-`python manage.py migrate footprints`, and drop only the configured ClickHouse
-footprint database before restarting. This deletes local footprint data; do not
-remove the shared PostgreSQL volume.
+For the continuous TRev upgrade, stop chart API and maintenance processes, run
+`python manage.py migrate footprints`, and deploy the matching backend and
+frontend before restarting chart services. Migrations `0004` and `0005` replace
+old lookback-specific TRev series with one queued 30-day generation per threshold
+pair. This causes a one-time forward bootstrap. Tick series and raw executions
+are preserved; no ClickHouse reset is required. Fresh series keys invalidate
+old client caches. The migration must run before the updated chart services.
 
 ## HTTP API
 
@@ -128,26 +138,44 @@ Create or reuse a TRev series:
 }
 ```
 
-The response is `{ "seriesKey", "status", "errorCode" }`. Queued and
-building series return HTTP 202. A seventeenth live configuration for one
+The response is `{ "seriesKey", "status", "errorCode" }`. Queued, building,
+and catching-up series return HTTP 202. A seventeenth live configuration for one
 market returns HTTP 429 with `SERIES_CAPACITY_REACHED`. Request bodies are
 limited to 4 KiB.
 
 Read the latest 500 closed bars and current active bar:
 
 ```http
-GET /api/v1/footprints/chart-bars?seriesKey=...
+GET /api/v1/footprints/chart-bars?seriesKey=...&lookbackDays=5
 ```
 
 The response is `{ "seriesKey", "bars", "activeBar", "hasMore",
-"nextBeforeBarIndex" }`. It contains at most 500 closed bars and 40,000 native
-levels, including the active bar. Read older pages with the returned cursor:
+"nextBeforeBarIndex", "historyStartBarIndex" }`. It contains at most 500
+closed bars and 40,000 native levels, including the active bar. TRev snapshots
+default to five display days when `lookbackDays` is omitted. Tick reads keep
+their existing series-defined history window.
+
+While the series is queued, building, or catching up, the latest snapshot
+returns HTTP 409 with `CHART_SERIES_NOT_READY` and its status. The frontend
+retries this GET once per second using the same series key; it does not repeat
+POST to poll readiness. Initial rendering waits for a successful snapshot,
+including when IndexedDB or query caches contain old candles. Failed series
+remain terminal. Regular five-minute POST lease renewal also discovers replaced
+series and requests catch-up without hiding an already visible chart.
+
+Closed snapshot bars always have indexes below the checkpoint's `nextBarIndex`,
+and the active bar is restored from that same checkpoint. Bar writes not yet
+covered by the checkpoint remain invisible. `historyStartBarIndex` bounds
+retained history and the requested lookback, including candles straddling the
+cutoff; subsequent indexes remain contiguous despite timestamp regressions.
+Read older pages with the returned cursor:
 
 ```http
-GET /api/v1/footprints/chart-bars?seriesKey=...&beforeBarIndex=1200&limit=500
+GET /api/v1/footprints/chart-bars?seriesKey=...&lookbackDays=5&beforeBarIndex=1200&limit=500
 ```
 
-Historical pages omit the active bar. The browser caches downloaded closed
+Historical pages omit the active bar and can be read during catch-up. They
+read persisted candles and never start a trade replay. The browser caches downloaded closed
 bars in IndexedDB and requests another page when the user scrolls near the
 left edge. IndexedDB is a disposable per-device cache; ClickHouse remains the
 authoritative complete history.

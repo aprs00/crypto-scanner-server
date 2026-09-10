@@ -9,15 +9,19 @@ from django.utils import timezone
 
 from footprints import chart_service
 from footprints.constants import (
-    CHART_BUILD_EXECUTION_CHUNK,
     CHART_MAX_SERIES_PER_MARKET,
     CHART_SERIES_CACHE_SECONDS,
-    CHART_WARM_LOOKBACK_DAYS,
     CHART_WARM_TREV_CONTINUATION_TICKS,
     CHART_WARM_TREV_REVERSAL_TICKS,
 )
 from footprints.management.commands import footprint_maintenance
-from footprints.models import ChartSeries, ChartSeriesStatus, ChartType, FootprintMarket
+from footprints.models import (
+    ChartSeries,
+    ChartSeriesStatus,
+    ChartType,
+    FootprintMarket,
+    InstrumentSpec,
+)
 from footprints.storage.charts import ProjectorExecution
 
 
@@ -111,6 +115,7 @@ class ChartServiceTests(TestCase):
             "parameter_a": 2 if chart_type == ChartType.TICK else 5,
             "parameter_b": 0 if chart_type == ChartType.TICK else 5,
             "status": ChartSeriesStatus.BUILDING,
+            "lookback_days": None if chart_type == ChartType.TREV else 2,
             "anchor_at": self.anchor,
         }
         values.update(overrides)
@@ -285,7 +290,7 @@ class ChartServiceTests(TestCase):
 
         tick.refresh_from_db()
         trev.refresh_from_db()
-        self.assertEqual((tick.status, trev.status), ("ready", "ready"))
+        self.assertEqual((tick.status, trev.status), ("ready", "catching_up"))
         self.assertEqual(len(executions.calls), 1)
         self.assertEqual(len(executions.latest_calls), 1)
         self.assertEqual(executions.calls[0]["market_id"], self.market.pk)
@@ -589,7 +594,7 @@ class ChartServiceTests(TestCase):
         self.assertFalse(ChartSeries.objects.filter(pk=oldest.pk).exists())
         self.assertEqual(ChartSeries.objects.count(), CHART_MAX_SERIES_PER_MARKET)
 
-    def test_warms_frontend_default_five_day_trev_series(self):
+    def test_warms_frontend_default_continuous_trev_series(self):
         enabled_markets = FootprintMarket.objects.filter(enabled=True).count()
 
         queued = chart_service.ensure_default_chart_series(now=timezone.now())
@@ -603,7 +608,7 @@ class ChartServiceTests(TestCase):
         self.assertEqual(warm.count(), queued)
         self.assertEqual(
             set(warm.values_list("lookback_days", flat=True)),
-            {CHART_WARM_LOOKBACK_DAYS},
+            {None},
         )
 
     def test_failed_warm_series_waits_for_operator_action(self):
@@ -612,7 +617,7 @@ class ChartServiceTests(TestCase):
             ChartType.TREV,
             parameter_a=CHART_WARM_TREV_CONTINUATION_TICKS,
             parameter_b=CHART_WARM_TREV_REVERSAL_TICKS,
-            lookback_days=CHART_WARM_LOOKBACK_DAYS,
+            lookback_days=None,
             status=ChartSeriesStatus.FAILED,
         )
         ChartSeries.objects.filter(pk=failed.pk).update(
@@ -632,7 +637,7 @@ class ChartServiceTests(TestCase):
                 chart_type=ChartType.TREV,
                 parameter_a=CHART_WARM_TREV_CONTINUATION_TICKS,
                 parameter_b=CHART_WARM_TREV_REVERSAL_TICKS,
-                lookback_days=CHART_WARM_LOOKBACK_DAYS,
+                lookback_days=None,
             ).count(),
             1,
         )
@@ -669,6 +674,265 @@ class ChartServiceTests(TestCase):
         )
         self.assertEqual(renewed.pk, building.pk)
         self.assertEqual(ChartSeries.objects.count(), CHART_MAX_SERIES_PER_MARKET)
+
+    def test_trev_lookbacks_share_a_fixed_thirty_day_origin(self):
+        now = timezone.now()
+        request = dict(
+            market=self.market,
+            chart_type=ChartType.TREV,
+            parameter_a=3,
+            parameter_b=2,
+            now=now,
+        )
+        first = chart_service.request_chart_series(**request, lookback_days=1)
+        second = chart_service.request_chart_series(**request, lookback_days=30)
+        self.assertEqual(first.pk, second.pk)
+        self.assertIsNone(first.lookback_days)
+        self.assertEqual(first.anchor_at, chart_service.lookback_anchor(now, 30))
+
+    @patch("footprints.chart_service.publish_chart_update")
+    def test_warm_trev_survives_idle_expiry_and_advances_without_renewing_lease(
+        self, publish
+    ):
+        series = self.series(ChartType.TREV)
+        first = self.execution(1, 100)
+        bars = FakeBarStore()
+        chart_service.build_series(
+            series.pk, execution_store=FakeExecutionStore([first]), bar_store=bars
+        )
+        chart_service.advance_ready_series(
+            execution_store=FakeExecutionStore([first]), bar_store=bars
+        )
+        idle = timezone.now() - timedelta(days=2)
+        ChartSeries.objects.filter(pk=series.pk).update(last_requested_at=idle)
+        self.assertEqual(chart_service.expire_stale_series(now=timezone.now()), 0)
+        tail = FakeExecutionStore([first, self.execution(2, 105)])
+        self.assertEqual(
+            chart_service.advance_ready_series(execution_store=tail, bar_store=bars), 1
+        )
+        series.refresh_from_db()
+        self.assertEqual(series.status, ChartSeriesStatus.READY)
+        self.assertEqual(series.last_requested_at, idle)
+        self.assertEqual(tail.calls[0]["after_cursor"], first.cursor)
+
+    @patch("footprints.chart_service.publish_chart_update")
+    def test_reopen_waits_for_all_tail_batches_independently_of_cold_builds(
+        self, publish
+    ):
+        series = self.series(ChartType.TREV)
+        rows = [self.execution(i, 100 + i) for i in range(1, 8)]
+        bars = FakeBarStore()
+        chart_service.build_series(
+            series.pk, execution_store=FakeExecutionStore(rows[:3]), bar_store=bars
+        )
+        chart_service.advance_ready_series(
+            execution_store=FakeExecutionStore(rows[:3]), bar_store=bars
+        )
+        series.refresh_from_db()
+        checkpoint = series.checkpoint_state
+        request = dict(
+            market=self.market,
+            chart_type=ChartType.TREV,
+            parameter_a=series.parameter_a,
+            parameter_b=series.parameter_b,
+            lookback_days=1,
+            now=timezone.now(),
+        )
+        for _ in range(2):
+            opened = chart_service.request_chart_series(**request)
+            self.assertEqual(opened.pk, series.pk)
+            self.assertEqual(opened.status, ChartSeriesStatus.CATCHING_UP)
+            self.assertEqual(opened.checkpoint_state, checkpoint)
+        cold = self.series(
+            ChartType.TREV, parameter_a=20, status=ChartSeriesStatus.QUEUED
+        )
+        self.assertEqual(chart_service.claim_queued_market_series(), (cold.pk,))
+        tail = FakeExecutionStore(rows)
+        with patch.object(chart_service, "LIVE_EXECUTION_LIMIT", 2):
+            for expected_status in (
+                ChartSeriesStatus.CATCHING_UP,
+                ChartSeriesStatus.READY,
+            ):
+                self.assertEqual(
+                    chart_service.advance_ready_series(
+                        execution_store=tail, bar_store=bars
+                    ),
+                    2,
+                )
+                series.refresh_from_db()
+                self.assertEqual(series.status, expected_status)
+        self.assertEqual(
+            [call["after_cursor"] for call in tail.calls],
+            [rows[2].cursor, rows[4].cursor],
+        )
+        self.assertFalse(any(key[0] == cold.pk for key in bars.rows))
+        cold.refresh_from_db()
+        self.assertEqual(cold.status, ChartSeriesStatus.BUILDING)
+
+    @patch("footprints.chart_service.publish_chart_update")
+    def test_trev_resume_matches_full_replay_at_every_trade_boundary(self, publish):
+        series = self.series(ChartType.TREV, parameter_a=3, parameter_b=2)
+        spec = InstrumentSpec.objects.create(
+            market=self.market,
+            effective_from=self.anchor + timedelta(seconds=1),
+            tick_size="0.01",
+            quantity_step="0.001",
+        )
+        rows = [
+            self.execution(
+                i, price, epoch=1 if i < 7 else 2, buy=i % 2 == 0, quantity=i
+            )
+            for i, price in enumerate(
+                (100, 101, 109, 107, 100, 95, 93, 97, 100, 99), start=1
+            )
+        ]
+        rows[4] = rows[4]._replace(timestamp_us=rows[2].timestamp_us)
+        rows[8:] = [row._replace(instrument_spec_id=spec.pk) for row in rows[8:]]
+        expected = FakeBarStore()
+        chart_service.build_series(
+            series.pk, execution_store=FakeExecutionStore(rows), bar_store=expected
+        )
+        series.refresh_from_db()
+        expected_checkpoint = series.checkpoint_state
+
+        for split in range(1, len(rows)):
+            with self.subTest(split=split):
+                ChartSeries.objects.filter(pk=series.pk).update(
+                    status="building", checkpoint_state=None
+                )
+                bars = FakeBarStore()
+                chart_service.build_series(
+                    series.pk,
+                    execution_store=FakeExecutionStore(rows[:split]),
+                    bar_store=bars,
+                )
+                tail = FakeExecutionStore(rows)
+                with patch.object(chart_service, "LIVE_EXECUTION_LIMIT", 2):
+                    while True:
+                        chart_service._RUNTIMES.clear()
+                        chart_service.advance_ready_series(
+                            execution_store=tail, bar_store=bars
+                        )
+                        series.refresh_from_db()
+                        if series.status == ChartSeriesStatus.READY:
+                            break
+                self.assertEqual(tail.calls[0]["after_cursor"], rows[split - 1].cursor)
+                self.assertEqual(bars.rows, expected.rows)
+                self.assertEqual(series.checkpoint_state, expected_checkpoint)
+
+    @patch("footprints.chart_service.publish_chart_update")
+    def test_catchup_retries_from_durable_state_after_lost_bar_acknowledgement(
+        self, publish
+    ):
+        series = self.series(ChartType.TREV, parameter_a=3, parameter_b=2)
+        rows = [self.execution(1, 100), self.execution(2, 101), self.execution(3, 109)]
+        initial = FakeBarStore()
+        chart_service.build_series(
+            series.pk, execution_store=FakeExecutionStore(rows[:2]), bar_store=initial
+        )
+        series.refresh_from_db()
+        checkpoint = series.checkpoint_state
+        bars = CommitThenLoseAcknowledgementBarStore()
+        tail = FakeExecutionStore(rows)
+        with self.assertRaises(TimeoutError):
+            chart_service.advance_ready_series(execution_store=tail, bar_store=bars)
+        committed = dict(bars.rows)
+        self.assertTrue(committed)
+        series.refresh_from_db()
+        self.assertEqual(series.checkpoint_state, checkpoint)
+        self.assertEqual(series.status, ChartSeriesStatus.CATCHING_UP)
+        publish.assert_not_called()
+        chart_service.advance_ready_series(execution_store=tail, bar_store=bars)
+        self.assertEqual(bars.rows, committed)
+        self.assertEqual(tail.calls[0]["after_cursor"], tail.calls[1]["after_cursor"])
+        series.refresh_from_db()
+        self.assertEqual(series.status, ChartSeriesStatus.READY)
+        self.assertEqual(series.checkpoint_state["cursor"], list(rows[-1].cursor))
+
+    @patch("footprints.chart_service.publish_chart_update")
+    def test_open_during_live_pass_is_not_overwritten_by_that_pass(self, publish):
+        series = self.series(ChartType.TREV)
+        rows = [self.execution(1, 100), self.execution(2, 105)]
+        bars = FakeBarStore()
+        chart_service.build_series(
+            series.pk, execution_store=FakeExecutionStore(rows[:1]), bar_store=bars
+        )
+        chart_service.advance_ready_series(
+            execution_store=FakeExecutionStore(rows[:1]), bar_store=bars
+        )
+        original_append = bars.append
+
+        def request_during_append(batch):
+            bars.append = original_append
+            chart_service.request_chart_series(
+                market=self.market,
+                chart_type=ChartType.TREV,
+                parameter_a=5,
+                parameter_b=5,
+                lookback_days=5,
+                now=timezone.now(),
+            )
+            return original_append(batch)
+
+        bars.append = request_during_append
+        chart_service.advance_ready_series(
+            execution_store=FakeExecutionStore(rows), bar_store=bars
+        )
+        series.refresh_from_db()
+        self.assertEqual(series.status, ChartSeriesStatus.CATCHING_UP)
+        self.assertEqual(series.checkpoint_state["cursor"], list(rows[0].cursor))
+        chart_service.advance_ready_series(
+            execution_store=FakeExecutionStore(rows), bar_store=bars
+        )
+        series.refresh_from_db()
+        self.assertEqual(series.status, ChartSeriesStatus.READY)
+
+    @patch("footprints.chart_service.publish_chart_update")
+    def test_arrivals_after_a_catchup_pass_do_not_prevent_readiness(self, publish):
+        series = self.series(ChartType.TREV)
+        rows = [self.execution(1, 100), self.execution(2, 105)]
+        bars = FakeBarStore()
+        chart_service.build_series(
+            series.pk, execution_store=FakeExecutionStore(rows[:1]), bar_store=bars
+        )
+        tail = FakeExecutionStore(rows)
+        latest = tail.latest_cursor
+
+        def arriving_trade(**kwargs):
+            cursor = latest(**kwargs)
+            tail.executions.append(self.execution(3, 110))
+            return cursor
+
+        tail.latest_cursor = arriving_trade
+        chart_service.advance_ready_series(execution_store=tail, bar_store=bars)
+        series.refresh_from_db()
+        self.assertEqual(series.status, ChartSeriesStatus.READY)
+        self.assertEqual(series.checkpoint_state["cursor"], list(rows[-1].cursor))
+
+    def test_invalid_trev_checkpoint_replaces_generation_before_rebuilding(self):
+        series = self.series(
+            ChartType.TREV,
+            status=ChartSeriesStatus.CATCHING_UP,
+            checkpoint_state={"invalid": True},
+        )
+        untouched = self.series(
+            ChartType.TREV, parameter_a=6, status=ChartSeriesStatus.QUEUED
+        )
+        with self.assertLogs("footprints.chart_service", level="ERROR"):
+            chart_service.advance_ready_series(
+                execution_store=FakeExecutionStore([]), bar_store=FakeBarStore()
+            )
+        replacement = ChartSeries.objects.get(
+            market=self.market, chart_type=ChartType.TREV, parameter_a=5
+        )
+        self.assertNotEqual(replacement.pk, series.pk)
+        self.assertNotEqual(replacement.public_key, series.public_key)
+        self.assertIsNone(replacement.checkpoint_state)
+        self.assertEqual(
+            replacement.anchor_at, chart_service.lookback_anchor(timezone.now(), 30)
+        )
+        self.assertEqual(replacement.status, ChartSeriesStatus.QUEUED)
+        self.assertTrue(ChartSeries.objects.filter(pk=untouched.pk).exists())
 
     def test_live_chunks_bound_bars_and_total_levels_with_active(self):
         level = [100, 1, 0]
