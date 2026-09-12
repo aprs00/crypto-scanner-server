@@ -164,9 +164,21 @@ These timings include database writes. All runs produced **22,118** bars,
 The larger checkpoint interval preserves bar-before-checkpoint durability;
 an unexpected crash can require replaying up to one million executions.
 
-The application has not been deployed. These isolated measurements exclude
-scheduling, new live arrivals, network transport and browser rendering. They
-must not be presented as browser chart-open latency.
+These isolated measurements exclude scheduling, new live arrivals, network
+transport and browser rendering. They must not be presented as browser
+chart-open latency.
+
+### Production release, September 12
+
+Released image `crypto-scanner:1186b566710a` to the API and chart maintenance
+worker. The ARM image selects Rust and restored all six existing TREV
+checkpoints exactly; no database migration was needed.
+
+A new Bybit 501/701 configuration became available through the public API in
+22.42 seconds, including readiness polling and fetching its snapshot. Existing
+TREV reopening, Tick snapshots, history pagination and a live WebSocket update
+also passed. All three trade collectors retained their container identities
+and start times throughout the release.
 
 ### Reproduce the full build
 
