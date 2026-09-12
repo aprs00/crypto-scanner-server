@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin==1.9.6"]
+build-backend = "maturin"
+
+[project]
+name = "trev-native"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.maturin]
+features = ["python", "pyo3/extension-module", "pyo3/abi3-py310"]
+module-name = "_trev_native"

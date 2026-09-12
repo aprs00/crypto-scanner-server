@@ -14,6 +14,7 @@
 **/.eggs
 **/dist
 **/build
+**/target
 data/
 postgres-data/
 crypto_scanner/

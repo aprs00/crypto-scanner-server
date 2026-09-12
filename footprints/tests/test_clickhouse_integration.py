@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import importlib.util
+import json
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -174,6 +176,35 @@ class RealClickHouseExecutionStoreTests(SimpleTestCase):
             incremental.extend(page)
             cursor = page[-1].cursor
         self.assertEqual(incremental, rebuilt)
+        if importlib.util.find_spec("_trev_native"):
+            from footprints.tests.test_native_trev import builder, canonical_bars
+
+            reader._fixed[market_id] = imports
+            native_batches = list(reader.iter_native_batches(
+                market_id=market_id, start_timestamp_us=start,
+                through_cursor=through, batch_size=3,
+            ))
+            native_rows = []
+            for batch in native_batches:
+                rows = batch.data.executions(0)
+                if batch.seam_break:
+                    rows[0] = (*rows[0][:-1], True)
+                native_rows.extend(rows)
+            self.assertEqual(native_rows, [tuple(row) for row in rebuilt])
+            oracle = TrevEngine(TrevConfig(1000, 2000))
+            native = builder(oracle)
+            expected_bars = []
+            for execution in rebuilt:
+                expected_bars.extend(_push_execution(oracle, execution).bars)
+            actual_bytes = bytearray()
+            for batch in native_batches:
+                _, closed = native.process(batch.data, 0, 2000, batch.seam_break)
+                actual_bytes.extend(closed.canonical_bytes())
+                self.chart_store.append_native(991, closed)
+            self.assertEqual(bytes(actual_bytes), canonical_bars(expected_bars))
+            self.assertEqual(json.loads(native.snapshot_json()), oracle.snapshot())
+            persisted = self.chart_store.read_snapshot(series_id=991)
+            self.assertEqual(len(persisted), len(expected_bars))
         raw_reader = ClickHouseProjectorExecutionStore(
             self.data_access,
             database=self.test_database,
@@ -182,6 +213,15 @@ class RealClickHouseExecutionStoreTests(SimpleTestCase):
         raw = list(
             raw_reader.iter_executions(market_id=market_id, start_timestamp_us=start)
         )
+        if importlib.util.find_spec("_trev_native"):
+            raw_through = raw_reader.latest_cursor(market_id=market_id, start_timestamp_us=start)
+            native_raw = [
+                row for batch in raw_reader.iter_native_batches(
+                    market_id=market_id, start_timestamp_us=start,
+                    through_cursor=raw_through, batch_size=2,
+                ) for row in batch.data.executions(0)
+            ]
+            self.assertEqual(native_raw, [tuple(row) for row in raw])
         for make_engine in (
             lambda: TickEngine(TickConfig(trades_per_bar=3)),
             lambda: TrevEngine(

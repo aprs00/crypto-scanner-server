@@ -127,7 +127,7 @@ class ClickHouseProjectorExecutionStore:
         except ValueError as exc:
             raise ProjectorDataError("latest projector cursor is invalid") from exc
 
-    def iter_executions(
+    def _replay_query(
         self,
         *,
         market_id: int,
@@ -135,7 +135,7 @@ class ClickHouseProjectorExecutionStore:
         after_cursor: ProjectorCursor | None = None,
         through_cursor: ProjectorCursor | None = None,
         limit: int | None = None,
-    ) -> Iterator[ProjectorExecution]:
+    ) -> tuple[str, dict[str, object]]:
         _positive_int(market_id, "market_id")
         _positive_int(start_timestamp_us, "start_timestamp_us")
         if after_cursor is not None:
@@ -232,6 +232,31 @@ class ClickHouseProjectorExecutionStore:
                 timestamp_us, trade_id
             {limit_clause}
         """
+        return sql, parameters
+
+    def iter_native_batches(self, *, batch_size, **kwargs):
+        from footprints.storage.native import NativeReplayReader
+
+        sql, parameters = self._replay_query(**kwargs)
+        reader = NativeReplayReader(self, batch_size=batch_size, **kwargs)
+        yield from reader.query(sql, parameters)
+
+    def iter_executions(
+        self,
+        *,
+        market_id: int,
+        start_timestamp_us: int,
+        after_cursor: ProjectorCursor | None = None,
+        through_cursor: ProjectorCursor | None = None,
+        limit: int | None = None,
+    ) -> Iterator[ProjectorExecution]:
+        sql, parameters = self._replay_query(
+            market_id=market_id,
+            start_timestamp_us=start_timestamp_us,
+            after_cursor=after_cursor,
+            through_cursor=through_cursor,
+            limit=limit,
+        )
 
         previous: ProjectorExecution | None = None
         previous_cursor: ProjectorCursor | None = None
@@ -460,6 +485,31 @@ class ClickHouseChartStore:
         )
         return len(rows)
 
+    def append_native(self, series_id: int, bars) -> int:
+        """Persist engine-validated columns without creating one object per level."""
+        return self.append_native_batches(series_id, (bars,))
+
+    def append_native_batches(self, series_id: int, batches) -> int:
+        """Combine transport fragments into the existing durable insert boundary."""
+        from _trev_native import ClosedBars
+
+        _positive_int(series_id, "series_id")
+        batches = tuple(batches)
+        if any(not isinstance(bars, ClosedBars) for bars in batches):
+            raise ChartDataError("native chart inserts require native closed bars")
+        rows = [
+            (row[0], row[1], _native_datetime(row[2]), _native_datetime(row[3]), *row[4:])
+            for bars in batches for row in bars.rows(series_id)
+        ]
+        if not rows:
+            return 0
+        self.access.insert(
+            self.qualified_table, rows, column_names=CHART_BAR_COLUMNS,
+            settings=deduplicated_immediate_insert_settings(),
+            operation="insert_chart_bars",
+        )
+        return len(rows)
+
     def history_start_index(
         self,
         *,
@@ -564,6 +614,11 @@ def _projector_cursor(
     if not isinstance(trade_id, str) or not trade_id:
         raise ValueError(f"{label} trade_id must be a nonempty string")
     return source_epoch, source_sequence, batch_index, timestamp_us, trade_id
+
+
+def _native_datetime(timestamp_us: int) -> datetime:
+    # Match the existing Python persistence conversion, including float rounding.
+    return datetime.fromtimestamp(timestamp_us / 1_000_000, tz=timezone.utc)
 
 
 def _chart_insert_row(bar: DetailedChartBar) -> tuple[object, ...]:

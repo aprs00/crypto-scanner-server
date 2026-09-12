@@ -55,6 +55,7 @@ class ReconciledExecutionStore(ClickHouseProjectorExecutionStore):
         after=None,
         descending=False,
         limit=None,
+        native=False,
     ):
         archive = imports.get(day)
         parameters = {
@@ -71,6 +72,9 @@ class ReconciledExecutionStore(ClickHouseProjectorExecutionStore):
             parameters["import"] = archive
             conditions.append("import_id={import:UUID}")
             columns = "1,ordinal,0,timestamp_us,trade_id,price_atoms,quantity_atoms,is_taker_buy,instrument_spec_id"
+            if native:
+                # Literal 1/0 otherwise become UInt8 in RowBinary.
+                columns = "toUInt32(1),ordinal,toUInt32(0),timestamp_us,trade_id,price_atoms,quantity_atoms,is_taker_buy,instrument_spec_id"
             order = "ordinal"
             table = self.archive_table
             if after:
@@ -130,6 +134,42 @@ class ReconciledExecutionStore(ClickHouseProjectorExecutionStore):
             operation="verify_archive_boundary",
         ).result_rows
         return rows[0][0] if rows else None
+
+    def iter_native_batches(
+        self, *, market_id, start_timestamp_us, batch_size,
+        after_cursor=None, through_cursor=None,
+    ):
+        from footprints.storage.native import NativeReplayReader
+
+        imports = (
+            self._fixed.pop(market_id, None)
+            if through_cursor is not None else self._inputs(market_id)
+        )
+        if imports is None:
+            yield from super().iter_native_batches(
+                market_id=market_id, start_timestamp_us=start_timestamp_us,
+                after_cursor=after_cursor, through_cursor=through_cursor,
+                batch_size=batch_size,
+            )
+            return
+        if after_cursor is not None and not is_reconciled_cursor(after_cursor):
+            raise ValueError("old chart cursor requires a rebuild")
+        reader = NativeReplayReader(
+            self, market_id=market_id, start_timestamp_us=start_timestamp_us,
+            after_cursor=after_cursor, through_cursor=through_cursor,
+            batch_size=batch_size,
+        )
+        first_day = max(start_timestamp_us // DAY_US, after_cursor[1] if after_cursor else 0)
+        last_day = through_cursor[1] if through_cursor else int(datetime.now(timezone.utc).timestamp()) // 86400
+        for day in range(first_day, last_day + 1):
+            after = after_cursor if after_cursor and after_cursor[1] == day else None
+            sql, parameters = self._query_day(
+                market_id, day, imports, start_us=start_timestamp_us, after=after,
+                native=True,
+            )
+            yield from reader.query(sql, parameters, partition=(day, 0 if day in imports else 1))
+            if reader.decoder.done:
+                return
 
     def iter_executions(
         self,

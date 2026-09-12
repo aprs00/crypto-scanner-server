@@ -1,0 +1,216 @@
+{
+  "date": "2026-09-12",
+  "scope": "Bybit BTCUSDT on the same production ARM machine. Repeated frozen 58,738,652-execution stream with isolated database writes; application deployment unchanged.",
+  "original_decoder": {
+    "insert_calls": 59,
+    "insert_seconds": 2.995830811560154,
+    "bars": 22118,
+    "levels": 9364401,
+    "checkpoint_calls": 59,
+    "checkpoint_seconds": 0.6465331986546516,
+    "cold_build_seconds": 21.853485852479935,
+    "decode_seconds": 7.194108799099922,
+    "read_seconds": 3.382210820913315,
+    "fixed_stream_ready_seconds": 21.87761629372835,
+    "snapshot_read_seconds": 0.31904683262109756,
+    "extension": "/tmp/trev-native-verification/_trev_native/__init__.py",
+    "compression": "default",
+    "event": "result",
+    "anchor": "2026-08-12T20:00:00+00:00",
+    "cursor": [
+      25,
+      809046106917,
+      0,
+      1789157671723000,
+      "1728760e-13d8-5c20-96ea-13a8b643fab0"
+    ],
+    "executions": 58738652,
+    "status": "ready",
+    "snapshot_bars": 77,
+    "messages": [
+      "TREV cold replay stages market_id=2 read_decode_seconds=13.302 native_seconds=3.004 convert_insert_seconds=4.647 checkpoint_seconds=0.647",
+      "Processed chart build replay market_id=2 series=1 executions=58738652 bars=22118 complete=True elapsed_ms=21850.85"
+    ],
+    "checkpoint_sha256": "05f165e3ee7532827d1523b5de153c554afb4a3bd1277f402779ec4b7b5883d6",
+    "scope": "real cold build with isolated durable ClickHouse and PostgreSQL writes; fixed captured stream; excludes scheduler, live arrivals, and API transport"
+  },
+  "inline_decoder": {
+    "insert_calls": 59,
+    "insert_seconds": 2.905261240899563,
+    "bars": 22118,
+    "levels": 9364401,
+    "checkpoint_calls": 59,
+    "checkpoint_seconds": 0.6396026983857155,
+    "cold_build_seconds": 18.68938520550728,
+    "decode_seconds": 5.482732743024826,
+    "read_seconds": 3.702861174941063,
+    "fixed_stream_ready_seconds": 18.709546081721783,
+    "snapshot_read_seconds": 0.27420979738235474,
+    "extension": "/tmp/trev-full-benchmark/_trev_native/__init__.py",
+    "compression": "default",
+    "event": "result",
+    "anchor": "2026-08-12T20:00:00+00:00",
+    "cursor": [
+      25,
+      809046106917,
+      0,
+      1789157671723000,
+      "1728760e-13d8-5c20-96ea-13a8b643fab0"
+    ],
+    "executions": 58738652,
+    "status": "ready",
+    "snapshot_bars": 77,
+    "messages": [
+      "TREV cold replay stages market_id=2 read_decode_seconds=10.217 native_seconds=3.027 convert_insert_seconds=4.565 checkpoint_seconds=0.640",
+      "Processed chart build replay market_id=2 series=1 executions=58738652 bars=22118 complete=True elapsed_ms=18686.03"
+    ],
+    "checkpoint_sha256": "05f165e3ee7532827d1523b5de153c554afb4a3bd1277f402779ec4b7b5883d6",
+    "scope": "real cold build with isolated durable ClickHouse and PostgreSQL writes; fixed captured stream; excludes scheduler, live arrivals, and API transport"
+  },
+  "http_zstd_experiment": {
+    "insert_calls": 59,
+    "insert_seconds": 3.0324522852897644,
+    "bars": 22118,
+    "levels": 9364401,
+    "checkpoint_calls": 59,
+    "checkpoint_seconds": 0.7212781608104706,
+    "cold_build_seconds": 70.1984865218401,
+    "decode_seconds": 7.014625892043114,
+    "read_seconds": 51.94523797184229,
+    "fixed_stream_ready_seconds": 70.22181959450245,
+    "snapshot_read_seconds": 0.31416649371385574,
+    "extension": "/tmp/trev-native-verification/_trev_native/__init__.py",
+    "compression": "zstd",
+    "event": "result",
+    "anchor": "2026-08-12T20:00:00+00:00",
+    "cursor": [
+      25,
+      809046106917,
+      0,
+      1789157671723000,
+      "1728760e-13d8-5c20-96ea-13a8b643fab0"
+    ],
+    "executions": 58738652,
+    "status": "ready",
+    "snapshot_bars": 77,
+    "messages": [
+      "TREV cold replay stages market_id=2 read_decode_seconds=61.568 native_seconds=3.004 convert_insert_seconds=4.667 checkpoint_seconds=0.722",
+      "Processed chart build replay market_id=2 series=1 executions=58738652 bars=22118 complete=True elapsed_ms=70194.04"
+    ],
+    "checkpoint_sha256": "05f165e3ee7532827d1523b5de153c554afb4a3bd1277f402779ec4b7b5883d6",
+    "scope": "real cold build with isolated durable ClickHouse and PostgreSQL writes; fixed captured stream; excludes scheduler, live arrivals, and API transport"
+  },
+  "decoder_memory_comparison": {
+    "scope": "First 1,000,000 real executions (86 MB), held in memory; five sequential trials include decoding and releasing each batch, with no database work.",
+    "original": {
+      "extension": "/tmp/trev-native-verification/_trev_native/__init__.py",
+      "rows": 1000000,
+      "bytes": 86000000,
+      "decode_and_release_seconds": [
+        0.14890023320913315,
+        0.1451757475733757,
+        0.13698162883520126,
+        0.14811526983976364,
+        0.13612886518239975
+      ]
+    },
+    "inline": {
+      "extension": "/tmp/trev-full-benchmark/_trev_native/__init__.py",
+      "rows": 1000000,
+      "bytes": 86000000,
+      "decode_and_release_seconds": [
+        0.13430796563625336,
+        0.12027432769536972,
+        0.12036965042352676,
+        0.12108354270458221,
+        0.12060805410146713
+      ]
+    }
+  },
+  "final_source_with_snapshot": [
+    {
+      "insert_calls": 59,
+      "insert_seconds": 3.213494196534157,
+      "bars": 22118,
+      "levels": 9364401,
+      "checkpoint_calls": 59,
+      "checkpoint_seconds": 0.7816518843173981,
+      "cold_build_seconds": 24.799368612468243,
+      "decode_seconds": 5.708429582417011,
+      "read_seconds": 8.951816149055958,
+      "fixed_stream_ready_seconds": 24.81871534883976,
+      "snapshot_handler_seconds": 0.1467992141842842,
+      "snapshot_ready_seconds": 24.968531399965286,
+      "snapshot_bytes": 565877,
+      "persisted_bar_checksum": "4781992687983282044",
+      "verification_seconds": 0.21640361100435257,
+      "event": "result",
+      "backend": "rust",
+      "machine": "aarch64",
+      "python": "3.13.15",
+      "market_id": 2,
+      "continuation_ticks": 500,
+      "reversal_ticks": 700,
+      "checkpoint_every": 1000000,
+      "anchor": "2026-08-12T20:00:00+00:00",
+      "cursor": [
+        25,
+        809046106917,
+        0,
+        1789157671723000,
+        "1728760e-13d8-5c20-96ea-13a8b643fab0"
+      ],
+      "archive_imports": null,
+      "executions": 58738652,
+      "status": "ready",
+      "messages": [
+        "TREV cold replay stages market_id=2 read_decode_seconds=15.738 native_seconds=3.102 convert_insert_seconds=4.947 checkpoint_seconds=0.782",
+        "Processed chart build replay market_id=2 series=1 executions=58738652 bars=22118 complete=True elapsed_ms=24793.15"
+      ],
+      "checkpoint_sha256": "05f165e3ee7532827d1523b5de153c554afb4a3bd1277f402779ec4b7b5883d6",
+      "scope": "fixed captured stream with isolated durable ClickHouse/PostgreSQL writes and snapshot handler; excludes scheduling, live arrivals, network transport, browser rendering and post-build verification"
+    },
+    {
+      "insert_calls": 59,
+      "insert_seconds": 2.8403487876057625,
+      "bars": 22118,
+      "levels": 9364401,
+      "checkpoint_calls": 59,
+      "checkpoint_seconds": 0.7367647588253021,
+      "cold_build_seconds": 19.159720480442047,
+      "decode_seconds": 5.610148198902607,
+      "read_seconds": 4.015840977430344,
+      "fixed_stream_ready_seconds": 19.177305355668068,
+      "snapshot_handler_seconds": 0.14806972444057465,
+      "snapshot_ready_seconds": 19.327618062496185,
+      "snapshot_bytes": 565877,
+      "persisted_bar_checksum": "4781992687983282044",
+      "verification_seconds": 0.21060458570718765,
+      "event": "result",
+      "backend": "rust",
+      "machine": "aarch64",
+      "python": "3.13.15",
+      "market_id": 2,
+      "continuation_ticks": 500,
+      "reversal_ticks": 700,
+      "checkpoint_every": 1000000,
+      "anchor": "2026-08-12T20:00:00+00:00",
+      "cursor": [
+        25,
+        809046106917,
+        0,
+        1789157671723000,
+        "1728760e-13d8-5c20-96ea-13a8b643fab0"
+      ],
+      "archive_imports": null,
+      "executions": 58738652,
+      "status": "ready",
+      "messages": [
+        "TREV cold replay stages market_id=2 read_decode_seconds=10.648 native_seconds=3.026 convert_insert_seconds=4.515 checkpoint_seconds=0.737",
+        "Processed chart build replay market_id=2 series=1 executions=58738652 bars=22118 complete=True elapsed_ms=19157.0"
+      ],
+      "checkpoint_sha256": "05f165e3ee7532827d1523b5de153c554afb4a3bd1277f402779ec4b7b5883d6",
+      "scope": "fixed captured stream with isolated durable ClickHouse/PostgreSQL writes and snapshot handler; excludes scheduling, live arrivals, network transport, browser rendering and post-build verification"
+    }
+  ]
+}

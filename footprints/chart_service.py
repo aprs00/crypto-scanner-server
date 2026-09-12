@@ -4,10 +4,12 @@ import logging
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
+from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 
@@ -16,6 +18,7 @@ from footprints.chart_serialization import serialize_active_bar, serialize_chart
 from footprints.constants import (
     CHART_BAR_INSERT_CHUNK,
     CHART_BUILD_EXECUTION_CHUNK,
+    CHART_NATIVE_BUILD_EXECUTION_CHUNK,
     CHART_DEFAULT_LOOKBACK_DAYS,
     CHART_LIVE_MAX_LEVELS,
     CHART_MAX_LEVELS_PER_BAR,
@@ -35,6 +38,7 @@ from footprints.models import (
     FootprintMarket,
     InstrumentSpec,
 )
+from footprints.native import NativeTrevBuilder, native_builder
 from footprints.storage.charts import (
     ChartLevel,
     ClickHouseChartStore,
@@ -408,7 +412,7 @@ def build_series(
 @dataclass(slots=True)
 class _PendingBuild:
     series: ChartSeries
-    engine: TickEngine | TrevEngine
+    engine: TickEngine | TrevEngine | NativeTrevBuilder
     anchor_timestamp_us: int
     cursor: ProjectorCursor | None = None
     error: Exception | None = None
@@ -468,6 +472,19 @@ def build_series_batch(
         market_id=series_rows[0].market_id,
         start_timestamp_us=start_timestamp_us,
     )
+    backend = getattr(settings, "TREV_COLD_BACKEND", "python")
+    if backend not in ("python", "rust"):
+        raise ValueError("TREV_COLD_BACKEND must be python or rust")
+    if (
+        backend == "rust"
+        and any(isinstance(item.engine, TrevEngine) for item in pending)
+        and hasattr(execution_store, "iter_native_batches")
+    ):
+        return _build_native_batches(
+            pending, execution_store=execution_store, bar_store=bar_store,
+            start_timestamp_us=start_timestamp_us, after_cursor=after_cursor,
+            through_cursor=through_cursor, should_stop=should_stop, started=started,
+        )
     executions: Iterable[ProjectorExecution] = ()
     if through_cursor is not None and (
         after_cursor is None or after_cursor < through_cursor
@@ -550,6 +567,158 @@ def build_series_batch(
         started=started,
     )
     return True
+
+
+def _build_native_batches(
+    pending, *, execution_store, bar_store, start_timestamp_us,
+    after_cursor, through_cursor, should_stop, started,
+):
+    for item in pending:
+        if isinstance(item.engine, TrevEngine):
+            item.engine = native_builder(
+                item.engine, cursor=item.cursor,
+                anchor_timestamp_us=item.anchor_timestamp_us,
+            )
+    checkpoint_chunk = (
+        CHART_NATIVE_BUILD_EXECUTION_CHUNK
+        if len(pending) == 1 and isinstance(pending[0].engine, NativeTrevBuilder)
+        else CHART_BUILD_EXECUTION_CHUNK
+    )
+    needs_replay = through_cursor is not None and (
+        after_cursor is None or after_cursor < through_cursor
+    )
+    batches = execution_store.iter_native_batches(
+        market_id=pending[0].series.market_id,
+        start_timestamp_us=start_timestamp_us,
+        after_cursor=after_cursor, through_cursor=through_cursor,
+        batch_size=CHART_BUILD_EXECUTION_CHUNK,
+    ) if needs_replay else iter(())
+    execution_count = stored_bar_count = 0
+    last_cursor = None
+    read_seconds = native_seconds = store_seconds = checkpoint_seconds = 0.0
+    complete = True
+    native_bars = {item.series.pk: [] for item in pending}
+    native_bar_counts = {item.series.pk: 0 for item in pending}
+
+    def flush_native(item):
+        nonlocal stored_bar_count, store_seconds
+        fragments = native_bars[item.series.pk]
+        if not fragments:
+            return
+        stage = time.monotonic()
+        stored_bar_count += bar_store.append_native_batches(item.series.pk, fragments)
+        store_seconds += time.monotonic() - stage
+        fragments.clear()
+        native_bar_counts[item.series.pk] = 0
+
+    # Closing the generator releases the HTTP response on stop, errors and retry.
+    manager = closing(batches) if hasattr(batches, "close") else nullcontext(batches)
+    with manager as stream:
+        while True:
+            stage = time.monotonic()
+            batch = next(stream, None)
+            read_seconds += time.monotonic() - stage
+            if batch is None:
+                break
+            execution_count += len(batch)
+            last_cursor = batch.data.last_cursor
+            python_rows = None
+            for item in pending:
+                if item.error is not None:
+                    continue
+                offset = 0
+                if isinstance(item.engine, NativeTrevBuilder):
+                    while offset < len(batch):
+                        stage = time.monotonic()
+                        try:
+                            offset, bars = item.engine.native.process(
+                                batch.data, offset,
+                                CHART_BAR_INSERT_CHUNK - native_bar_counts[item.series.pk],
+                                batch.seam_break,
+                            )
+                        except OverflowError:
+                            logger.warning("TREV cold build reverting batch to Python series_id=%s", item.series.pk)
+                            item.engine = item.engine.python_engine()
+                            break
+                        except Exception as exc:
+                            item.error = exc
+                            break
+                        finally:
+                            native_seconds += time.monotonic() - stage
+                        item.cursor = item.engine.native.cursor
+                        if len(bars):
+                            native_bars[item.series.pk].append(bars)
+                            native_bar_counts[item.series.pk] += len(bars)
+                        if native_bar_counts[item.series.pk] >= CHART_BAR_INSERT_CHUNK:
+                            flush_native(item)
+                if item.error is not None or isinstance(item.engine, NativeTrevBuilder):
+                    continue
+                flush_native(item)
+                # Tick configurations and exceptional wide-integer states share
+                # the decoded stream, while their calculation remains Python.
+                if python_rows is None:
+                    python_rows = [ProjectorExecution(*row) for row in batch.data.executions(0)]
+                    if batch.seam_break:
+                        python_rows[0] = python_rows[0]._replace(segment_start=True)
+                bar_batch = []
+                for execution in python_rows[offset:]:
+                    cursor = execution.cursor
+                    if item.cursor is not None and cursor <= item.cursor:
+                        continue
+                    if execution.timestamp_us < item.anchor_timestamp_us:
+                        item.cursor = cursor
+                        continue
+                    try:
+                        segment_bars = (
+                            item.engine.truncate_segment().bars
+                            if item.cursor is not None and item.engine.state.last_order is not None
+                            and segment_changed(execution, item.cursor) else ()
+                        )
+                        execution_bars = _push_execution(item.engine, execution).bars
+                        stored = [_stored_bar(item.series, bar) for bar in (*segment_bars, *execution_bars)]
+                    except Exception as exc:
+                        item.error = exc
+                        break
+                    item.cursor = cursor
+                    bar_batch.extend(stored)
+                    if len(bar_batch) >= CHART_BAR_INSERT_CHUNK:
+                        stored_bar_count += bar_store.append(bar_batch)
+                        bar_batch.clear()
+                stored_bar_count += bar_store.append(bar_batch)
+            if execution_count % CHART_BUILD_EXECUTION_CHUNK == 0:
+                # Retain prompt shutdown and the Python fallback boundary even
+                # when a fast single-series Rust replay checkpoints less often.
+                if any(not isinstance(item.engine, NativeTrevBuilder) for item in pending):
+                    checkpoint_chunk = CHART_BUILD_EXECUTION_CHUNK
+                stop_requested = should_stop is not None and should_stop()
+                if execution_count % checkpoint_chunk == 0 or stop_requested:
+                    for item in pending:
+                        flush_native(item)
+                    stage = time.monotonic()
+                    _persist_build_state(pending, complete=False)
+                    checkpoint_seconds += time.monotonic() - stage
+                    if stop_requested:
+                        complete = False
+                        break
+    if complete:
+        for item in pending:
+            flush_native(item)
+        if needs_replay and last_cursor != through_cursor:
+            raise ProjectorDataError("chart replay ended before its fixed cursor")
+        stage = time.monotonic()
+        _persist_build_state(pending, complete=True)
+        checkpoint_seconds += time.monotonic() - stage
+    logger.info(
+        "TREV cold replay stages market_id=%s read_decode_seconds=%.3f "
+        "native_seconds=%.3f convert_insert_seconds=%.3f checkpoint_seconds=%.3f",
+        pending[0].series.market_id, read_seconds, native_seconds,
+        store_seconds, checkpoint_seconds,
+    )
+    _log_build_result(
+        pending, execution_count=execution_count,
+        stored_bar_count=stored_bar_count, complete=complete, started=started,
+    )
+    return complete
 
 
 def _persist_build_state(
@@ -997,7 +1166,7 @@ def _stored_bar(series: ChartSeries, bar) -> DetailedChartBar:
 
 
 def _checkpoint_state(
-    engine: TickEngine | TrevEngine,
+    engine: TickEngine | TrevEngine | NativeTrevBuilder,
     cursor: ProjectorCursor | None,
 ) -> dict:
     return {

@@ -252,6 +252,36 @@ class ClickHouseAccess:
             elapsed_ms,
         )
 
+    def stream_rowbinary(
+        self,
+        sql: str,
+        *,
+        parameters=None,
+        operation: str = "stream_projector_rowbinary",
+    ) -> Iterator[bytes]:
+        """Keep ClickHouse's bounded HTTP stream as bytes for native decoding."""
+        started = time.monotonic()
+        try:
+            with self.client.raw_stream(
+                sql, parameters=parameters, fmt="RowBinary"
+            ) as stream:
+                while block := stream.read(8 * 1024 * 1024):
+                    yield block
+        except Exception as exc:
+            logger.warning(
+                "ClickHouse operation failed operation=%s elapsed_ms=%s kind=%s error=%s",
+                operation,
+                round((time.monotonic() - started) * 1_000, 2),
+                classify_clickhouse_error(exc, is_write=False).value,
+                type(exc).__name__,
+            )
+            raise
+        logger.debug(
+            "ClickHouse operation completed operation=%s elapsed_ms=%s",
+            operation,
+            round((time.monotonic() - started) * 1_000, 2),
+        )
+
     def close(self) -> None:
         self.client.close()
 

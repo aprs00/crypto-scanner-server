@@ -192,6 +192,9 @@ STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# Built images select Rust. Source-only environments can run without the wheel.
+TREV_COLD_BACKEND = os.environ.get("TREV_COLD_BACKEND", "python")
+
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_HEADERS = [
     "accept",
