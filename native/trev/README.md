@@ -2,7 +2,8 @@
 
 One sequential Rust engine processes each configuration. PyO3 passes bounded
 market batches across the Python boundary; it releases the GIL during decoding
-and calculation. Tick and live projection continue to use the Python engines.
+and calculation. Tick cold builds also use Rust; live projection continues to
+use the existing Python engines.
 
 `TREV_COLD_BACKEND=rust` selects this path. New Docker images build and install
 the native wheel and select Rust. Source-only environments default to `python`;
@@ -15,7 +16,8 @@ validates order, duplicates, specification divisors, sides and scalar values.
 Archive/live seam verification remains in Python. Each market batch is decoded
 once for all grouped configurations. TREV does not create a Python object for
 each execution or footprint level. Python still owns ClickHouse insertion,
-checkpoint transactions, stopping and retries. Inserts accumulate across decoded
+checkpoint transactions, stopping and retries. Rust writes ClickHouse Native
+columns directly, avoiding Python objects for footprint levels. Inserts accumulate across decoded
 fragments up to 2,000 bars. A single native configuration checkpoints every
 1,000,000 executions; grouped builds and Python fallback keep the 100,000
 execution checkpoint interval. Stop requests are still checked every 100,000
@@ -24,8 +26,52 @@ executions and flush pending bars before saving the checkpoint.
 Prices are signed 64-bit integers, raw quantities are unsigned 64-bit integers,
 and volume sums use checked unsigned 128-bit arithmetic. A native call changes
 state only on success. Values outside native capacity select Python from the
-unchanged checkpoint/batch; there is no rounding or integer wrapping. Execution
-compression is deliberately absent.
+unchanged checkpoint/batch; there is no rounding or integer wrapping. Prepared
+TREV input combines consecutive executions at the same price and specification
+without changing their boundary trade, exact volumes, counts or event times.
+
+## Shared input preparation
+
+`TREV_PREPARED_DIR` enables a disposable, configuration-independent input cache.
+The production maintenance service mounts a dedicated Docker volume there. Its
+coordinator prepares enabled markets every five minutes; chart workers read
+immutable file prefixes through read-only memory mappings. One bounded worker
+verifies frame checksums ahead of calculation. Tick builds continue reading
+individual executions from ClickHouse.
+
+Preparation preserves the first trade of each same-price run separately because
+it can close a TREV bar. Remaining trades retain exact buy/sell sums, counts,
+first/last event times and the minimum timestamp of every original execution.
+Compact integers are used only when all values fit exactly; wider frames remain
+available. Full source identities are stored separately with compression and
+loaded only when a returned checkpoint needs an interior run cursor.
+
+Anchors, partial-frame resumes, unmatched source snapshots and the recent tail
+use the original filtered query. Missing or corrupt cache files also fall back
+to that query. A damaged generation is rebuilt by the preparer. Archive imports
+and specification divisors are part of the cache identity. Published bytes are
+never overwritten or truncated, and cache retention follows the existing
+31-day physical source retention. No source data or chart history is replaced.
+
+A single prepared TREV build checkpoints approximately every five million
+executions, with bars flushed first. Grouped builds retain their existing
+100,000-execution interval. Stop checks remain bounded by a 100,000-execution
+frame. Unexpected process loss can require replaying the last five million
+executions. Active price levels use integer hash lookup; closed bars and
+checkpoint levels remain sorted by price.
+
+Before switching production workers to a new image, seed the persistent volume:
+
+```sh
+APP_IMAGE=crypto-scanner:<commit> docker compose -f docker-compose.yml \
+  -f docker-compose.prod.yml run --rm --no-deps -T footprint-maintenance \
+  python manage.py footprint_prepare
+```
+
+Preparation is deliberately outside individual chart requests. On this host it
+takes tens of seconds from an empty cache. Raw fallback remains correct but is
+slower. Disabling the directory restores raw native replay; selecting the Python
+backend restores the original calculators without a database migration.
 
 The current 30-day initial history and retention policy are preserved. Existing
 series continue from checkpoints even when their original trades have expired.
@@ -205,3 +251,38 @@ output; capture a new baseline after source expiry or archive repair.
 
 Raw measurements: [September 11](../../benchmarks/results/trev-full-2026-09-11.json)
 and [September 12](../../benchmarks/results/trev-full-2026-09-12.json).
+
+## Prepared builds, September 12
+
+The next measurements use the actual chart service, isolated durable database
+writes, fixed retained source cursors, and the snapshot handler. Every compared
+run matched all persisted columns and the exact checkpoint. TREV uses 500/700
+and the full canonical 30-day history; Tick uses 1,000 trades/bar and one day.
+
+| Market/type | Executions | Raw reference through snapshot | Prepared/native through snapshot |
+| --- | ---: | ---: | ---: |
+| Binance TREV | 101,700,631 | 27.95 s | 4.91 s; repeat 6.23 s |
+| Bybit TREV | 58,314,719 | 22.34 s | 3.77 s |
+| Hyperliquid TREV | 9,970,341 | 3.06 s | 0.86 s |
+| Bybit Tick | 408,470 | 3.61 s (Python) | 0.34 s (Rust, raw input) |
+
+Shared input preparation took 38.00 s for Binance, 27.78 s for Bybit and 4.45 s
+for Hyperliquid. These costs are reported separately and are not included in
+the right-hand column. The Hyperliquid measurement precedes the final integer
+hash/flat output optimization. Binance's repeat demonstrates the effect of
+shared-machine load and input page availability. Five seconds is a target,
+not a guarantee for every configuration, empty cache, output size or load.
+
+```sh
+python -m benchmarks.trev_full --market-id 2 > raw.json
+python -m benchmarks.trev_full --baseline raw.json \
+  --prepared-dir /var/cache/footprints/trev --prepare > prepared.json
+python -m benchmarks.trev_full --baseline raw.json \
+  --prepared-dir /var/cache/footprints/trev > repeated.json
+python -m benchmarks.trev_full --market-id 2 --chart-type tick \
+  --trades-per-bar 1000 --lookback-days 1 --backend python > tick.json
+python -m benchmarks.trev_full --baseline tick.json --backend rust > tick-native.json
+```
+
+Raw results, including intermediate measurements and separately timed
+preparation: [prepared chart builds](../../benchmarks/results/chart-prepared-2026-09-12.json).

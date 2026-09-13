@@ -1,8 +1,39 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+
+// Keys are normalized integer prices. Multiplication distributes neighboring
+// prices over the table and its fingerprint bits without hashing byte strings.
+#[derive(Default, Clone, Debug)]
+pub struct PriceHasher(u64);
+
+impl Hasher for PriceHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(*byte)).wrapping_mul(0x9e3779b97f4a7c15);
+        }
+    }
+    fn write_i64(&mut self, price: i64) {
+        self.0 = (price as u64).wrapping_mul(0x9e3779b97f4a7c15);
+    }
+}
+
+type Levels = HashMap<i64, (u128, u128), BuildHasherDefault<PriceHasher>>;
 
 pub type Order = [u64; 2];
+
+#[derive(Default)]
+pub struct Tail {
+    pub first: u64,
+    pub last: u64,
+    pub count: u64,
+    pub buy: u128,
+    pub sell: u128,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -16,7 +47,7 @@ pub struct Active {
     pub sell_units: u128,
     pub trade_count: u64,
     #[serde(with = "levels_json")]
-    pub levels: BTreeMap<i64, (u128, u128)>,
+    pub levels: Levels,
     pub first_order: Option<Order>,
     pub last_order: Option<Order>,
 }
@@ -25,18 +56,19 @@ pub struct Active {
 mod levels_json {
     use super::*;
     pub fn serialize<S: serde::Serializer>(
-        levels: &BTreeMap<i64, (u128, u128)>,
+        levels: &Levels,
         s: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        levels
+        let mut ordered = levels
             .iter()
             .map(|(p, (b, q))| (*p, *b, *q))
-            .collect::<Vec<_>>()
-            .serialize(s)
+            .collect::<Vec<_>>();
+        ordered.sort_unstable_by_key(|level| level.0);
+        ordered.serialize(s)
     }
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(
         d: D,
-    ) -> std::result::Result<BTreeMap<i64, (u128, u128)>, D::Error> {
+    ) -> std::result::Result<Levels, D::Error> {
         Ok(Vec::<(i64, u128, u128)>::deserialize(d)?
             .into_iter()
             .map(|(p, b, s)| (p, (b, s)))
@@ -55,34 +87,60 @@ impl Active {
             buy_units: 0,
             sell_units: 0,
             trade_count: 0,
-            levels: BTreeMap::new(),
+            levels: Levels::default(),
             first_order: None,
             last_order: None,
         }
     }
 
     fn add(&mut self, order: Order, price: i64, quantity: u64, buy: bool) -> Result<()> {
-        let quantity = u128::from(quantity);
+        self.add_run(order, price, quantity, buy, &Tail::default())
+    }
+
+    fn add_run(
+        &mut self,
+        order: Order,
+        price: i64,
+        quantity: u64,
+        buy: bool,
+        tail: &Tail,
+    ) -> Result<()> {
+        let buy_units = tail
+            .buy
+            .checked_add(if buy { u128::from(quantity) } else { 0 })
+            .ok_or(Error::Overflow)?;
+        let sell_units = tail
+            .sell
+            .checked_add(if buy { 0 } else { u128::from(quantity) })
+            .ok_or(Error::Overflow)?;
         let values = self.levels.entry(price).or_insert((0, 0));
-        if buy {
-            values.0 = values.0.checked_add(quantity).ok_or(Error::Overflow)?;
-            self.buy_units = self
-                .buy_units
-                .checked_add(quantity)
-                .ok_or(Error::Overflow)?;
-        } else {
-            values.1 = values.1.checked_add(quantity).ok_or(Error::Overflow)?;
-            self.sell_units = self
-                .sell_units
-                .checked_add(quantity)
-                .ok_or(Error::Overflow)?;
-        }
-        self.trade_count = self.trade_count.checked_add(1).ok_or(Error::Overflow)?;
+        values.0 = values.0.checked_add(buy_units).ok_or(Error::Overflow)?;
+        values.1 = values.1.checked_add(sell_units).ok_or(Error::Overflow)?;
+        self.buy_units = self
+            .buy_units
+            .checked_add(buy_units)
+            .ok_or(Error::Overflow)?;
+        self.sell_units = self
+            .sell_units
+            .checked_add(sell_units)
+            .ok_or(Error::Overflow)?;
+        self.trade_count = self
+            .trade_count
+            .checked_add(1)
+            .and_then(|v| v.checked_add(tail.count))
+            .ok_or(Error::Overflow)?;
         self.last_tick = price;
         self.high_tick = self.high_tick.max(price);
         self.low_tick = self.low_tick.min(price);
         self.first_order.get_or_insert(order);
-        self.last_order = Some(order);
+        self.last_order = Some(if tail.count == 0 {
+            order
+        } else {
+            [
+                tail.last,
+                order[1].checked_add(tail.count).ok_or(Error::Overflow)?,
+            ]
+        });
         Ok(())
     }
 }
@@ -133,7 +191,7 @@ pub struct Bar {
     pub count: u64,
     pub opened: u64,
     pub ended: u64,
-    pub levels: BTreeMap<i64, (u128, u128)>,
+    pub levels: Vec<(i64, (u128, u128))>,
 }
 
 #[derive(Clone)]
@@ -143,9 +201,56 @@ pub struct Engine {
     reversal: i64,
     max_expansion: i64,
     max_levels: usize,
+    pub tick_count: Option<u64>,
 }
 
 impl Engine {
+    /// Add executions after the first trade of an unchanged-price run. The
+    /// first trade is always pushed normally because it can close a boundary.
+    pub fn push_tail(
+        &mut self,
+        price: i64,
+        first: u64,
+        last: u64,
+        count: u64,
+        buy: u128,
+        sell: u128,
+    ) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let previous = self
+            .state
+            .last_order
+            .ok_or(Error::Data("missing run origin"))?;
+        let first_order = [first, previous[1].checked_add(1).ok_or(Error::Overflow)?];
+        let last_order = [last, previous[1].checked_add(count).ok_or(Error::Overflow)?];
+        let active = self
+            .state
+            .active
+            .as_mut()
+            .ok_or(Error::Data("missing run active bar"))?;
+        let level = active.levels.entry(price).or_insert((0, 0));
+        level.0 = level.0.checked_add(buy).ok_or(Error::Overflow)?;
+        level.1 = level.1.checked_add(sell).ok_or(Error::Overflow)?;
+        active.buy_units = active.buy_units.checked_add(buy).ok_or(Error::Overflow)?;
+        active.sell_units = active.sell_units.checked_add(sell).ok_or(Error::Overflow)?;
+        active.trade_count = active
+            .trade_count
+            .checked_add(count)
+            .ok_or(Error::Overflow)?;
+        active.first_order.get_or_insert(first_order);
+        active.last_order = Some(last_order);
+        active.last_tick = price;
+        active.high_tick = active.high_tick.max(price);
+        active.low_tick = active.low_tick.min(price);
+        if active.levels.len() > self.max_levels {
+            return Err(Error::Density);
+        }
+        self.state.last_order = Some(last_order);
+        Ok(())
+    }
+
     pub fn new(
         continuation: i64,
         reversal: i64,
@@ -165,6 +270,7 @@ impl Engine {
             reversal,
             max_expansion,
             max_levels,
+            tick_count: None,
         })
     }
 
@@ -188,6 +294,11 @@ impl Engine {
             .ok_or(Error::Data("TREV bar has no event-time anchor"))?[0];
         let index = self.state.next_bar_index;
         self.state.next_bar_index = index.checked_add(1).ok_or(Error::Overflow)?;
+        // Updates use hash lookup; closed bars and checkpoints retain their
+        // canonical ascending price order. Flat closed levels also avoid tree
+        // allocation and traversal in the columnar output serializer.
+        let mut levels: Vec<_> = active.levels.into_iter().collect();
+        levels.sort_unstable_by_key(|level| level.0);
         out.push(Bar {
             index,
             spec: self
@@ -204,7 +315,7 @@ impl Engine {
             count: active.trade_count,
             opened,
             ended,
-            levels: active.levels,
+            levels,
         });
         Ok(())
     }
@@ -231,6 +342,19 @@ impl Engine {
         spec: u64,
         out: &mut Vec<Bar>,
     ) -> Result<()> {
+        self.push_run(timestamp, price, quantity, buy, spec, out, &Tail::default())
+    }
+
+    pub fn push_run(
+        &mut self,
+        timestamp: u64,
+        price: i64,
+        quantity: u64,
+        buy: bool,
+        spec: u64,
+        out: &mut Vec<Bar>,
+        tail: &Tail,
+    ) -> Result<()> {
         let rank = match self.state.last_order {
             Some(order) => order[1].checked_add(1).ok_or(Error::Overflow)?,
             None => 0,
@@ -238,6 +362,23 @@ impl Engine {
         let order = [timestamp, rank];
         if self.state.spec_id.is_some_and(|old| old != spec) {
             self.truncate(out)?;
+        }
+        if let Some(count) = self.tick_count {
+            if tail.count != 0 {
+                return Err(Error::Data("Tick requires individual executions"));
+            }
+            let active = self
+                .state
+                .active
+                .get_or_insert_with(|| Active::empty(price, self.state.break_before_next));
+            self.state.break_before_next = false;
+            active.add(order, price, quantity, buy)?;
+            self.state.spec_id = Some(spec);
+            self.state.last_order = Some(order);
+            if active.trade_count == count {
+                self.close(price, None, out)?;
+            }
+            return Ok(());
         }
         if self.state.active.is_none() {
             self.state.active = Some(Active::empty(price, self.state.break_before_next));
@@ -291,7 +432,9 @@ impl Engine {
             if final_price == Some(price) {
                 self.state.spec_id = Some(spec);
                 self.state.last_order = Some(order);
-                return Ok(());
+                return self.push_tail(
+                    price, tail.first, tail.last, tail.count, tail.buy, tail.sell,
+                );
             }
         }
         let active = self
@@ -299,12 +442,12 @@ impl Engine {
             .active
             .as_mut()
             .ok_or(Error::Data("missing active bar"))?;
-        active.add(order, price, quantity, buy)?;
+        active.add_run(order, price, quantity, buy, tail)?;
         if active.levels.len() > self.max_levels {
             return Err(Error::Density);
         }
         self.state.spec_id = Some(spec);
-        self.state.last_order = Some(order);
+        self.state.last_order = active.last_order;
         Ok(())
     }
 }

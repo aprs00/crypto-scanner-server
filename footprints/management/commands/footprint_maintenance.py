@@ -36,7 +36,7 @@ from footprints.storage.clickhouse import (
     classify_clickhouse_error,
 )
 from footprints.models import ChartSeries, ChartSeriesStatus, ChartType
-from footprints.wakeups import wait_for_wakeups
+from footprints.wakeups import publish_build_wakeup, wait_for_wakeups
 
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,7 @@ class Command(BaseCommand):
         stores = None
         singleton = None
         wakeup_client = None
+        preparation = None
         try:
             connections.close_all()
             process_context = multiprocessing.get_context("fork")
@@ -82,6 +83,11 @@ class Command(BaseCommand):
             build_executor.submit(_build_worker_ready).result()
             singleton = _acquire_singleton()
             stores = open_chart_stores(role="chart-maintenance")
+            if getattr(settings, "TREV_PREPARED_DIR", "") and settings.TREV_COLD_BACKEND == "rust":
+                from footprints.storage.prepared import run_preparation
+
+                preparation = threading.Thread(target=run_preparation, args=(stop,), name="trev-input-preparation")
+                preparation.start()
             recovered = recover_interrupted_builds()
             if recovered:
                 logger.info("Recovered %s interrupted chart builds", recovered)
@@ -186,6 +192,7 @@ class Command(BaseCommand):
                             series_ids,
                         )
                         builds[future] = series_ids
+                        future.add_done_callback(_wake_after_build)
 
                 # Drain bounded catch-up passes without waiting for another raw
                 # insert or the five-second fallback. Other loop work still runs.
@@ -213,11 +220,14 @@ class Command(BaseCommand):
                     pending_market_ids.update(wakeup.market_ids)
                     build_requested = build_requested or wakeup.build_requested
         finally:
+            stop.set()
             _close_wakeup_client(wakeup_client)
             if build_stop is not None:
                 build_stop.set()
             if build_executor is not None:
                 build_executor.shutdown(wait=True, cancel_futures=True)
+            if preparation is not None:
+                preparation.join()
             if stores is not None:
                 stores.close()
             if singleton is not None:
@@ -234,6 +244,15 @@ def _initialize_build_worker(stop_event) -> None:
 
 def _build_worker_ready() -> None:
     return None
+
+
+def _wake_after_build(_future) -> None:
+    # A completed build should enter live catch-up immediately, including when
+    # no collector is currently publishing executions.
+    try:
+        publish_build_wakeup()
+    except RedisError:
+        logger.warning("Chart build completion wakeup failed; periodic check will retry")
 
 
 def _run_claimed_build(series_ids: tuple[int, ...]) -> bool:

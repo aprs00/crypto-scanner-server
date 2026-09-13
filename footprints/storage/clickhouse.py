@@ -218,6 +218,25 @@ class ClickHouseAccess:
             is_write=True,
         )
 
+    def insert_native(
+        self, table: str, data: bytes, *, column_names: Sequence[str],
+        settings: Mapping[str, object] | None = None,
+        operation: str = "insert_native",
+    ) -> object:
+        safe_table = validate_qualified_identifier(table)
+        safe_columns = tuple(
+            validate_identifier(name, label="ClickHouse column")
+            for name in column_names
+        )
+        return self._observe(
+            operation,
+            lambda: self.client.raw_insert(
+                safe_table, column_names=safe_columns, insert_block=data,
+                settings=settings, fmt="Native",
+            ),
+            is_write=True,
+        )
+
     def stream_rows(
         self,
         sql: str,

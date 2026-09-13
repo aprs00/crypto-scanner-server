@@ -497,6 +497,21 @@ class ClickHouseChartStore:
         batches = tuple(batches)
         if any(not isinstance(bars, ClosedBars) for bars in batches):
             raise ChartDataError("native chart inserts require native closed bars")
+        if hasattr(self.access, "insert_native"):
+            count = sum(len(bars) for bars in batches)
+            if count:
+                # Serialize the entire insert before writing, so an integer
+                # range error cannot leave a partially uploaded request.
+                data = ClosedBars.native_batches(batches, series_id, [
+                    (_native_persisted_timestamp(opened), _native_persisted_timestamp(ended))
+                    for bars in batches for opened, ended in bars.timestamps()
+                ])
+                self.access.insert_native(
+                    self.qualified_table, data, column_names=CHART_BAR_COLUMNS,
+                    settings=deduplicated_immediate_insert_settings(),
+                    operation="insert_chart_bars",
+                )
+            return count
         rows = [
             (row[0], row[1], _native_datetime(row[2]), _native_datetime(row[3]), *row[4:])
             for bars in batches for row in bars.rows(series_id)
@@ -619,6 +634,13 @@ def _projector_cursor(
 def _native_datetime(timestamp_us: int) -> datetime:
     # Match the existing Python persistence conversion, including float rounding.
     return datetime.fromtimestamp(timestamp_us / 1_000_000, tz=timezone.utc)
+
+
+def _native_persisted_timestamp(timestamp_us: int) -> int:
+    # Preserve the datetime conversion used by ClickHouse Connect, including
+    # Python's rounding and datetime range validation for extreme timestamps.
+    value = _native_datetime(timestamp_us)
+    return int(value.timestamp()) * 1_000_000 + value.microsecond
 
 
 def _chart_insert_row(bar: DetailedChartBar) -> tuple[object, ...]:

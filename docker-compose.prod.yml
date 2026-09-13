@@ -62,8 +62,14 @@ services:
     volumes: !reset []
 
   footprint-maintenance:
-    volumes: !reset []
+    environment:
+      TREV_PREPARED_DIR: /var/cache/footprints/trev
+    volumes: !override
+      - trev_prepared_tapes:/var/cache/footprints/trev
   footprint-recovery:
     volumes: !reset []
   db-maintenance:
     volumes: !reset []
+
+volumes:
+  trev_prepared_tapes:

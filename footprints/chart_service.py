@@ -477,7 +477,7 @@ def build_series_batch(
         raise ValueError("TREV_COLD_BACKEND must be python or rust")
     if (
         backend == "rust"
-        and any(isinstance(item.engine, TrevEngine) for item in pending)
+        and any(isinstance(item.engine, (TrevEngine, TickEngine)) for item in pending)
         and hasattr(execution_store, "iter_native_batches")
     ):
         return _build_native_batches(
@@ -574,7 +574,7 @@ def _build_native_batches(
     after_cursor, through_cursor, should_stop, started,
 ):
     for item in pending:
-        if isinstance(item.engine, TrevEngine):
+        if isinstance(item.engine, (TrevEngine, TickEngine)):
             item.engine = native_builder(
                 item.engine, cursor=item.cursor,
                 anchor_timestamp_us=item.anchor_timestamp_us,
@@ -587,7 +587,21 @@ def _build_native_batches(
     needs_replay = through_cursor is not None and (
         after_cursor is None or after_cursor < through_cursor
     )
-    batches = execution_store.iter_native_batches(
+    prepared_directory = getattr(settings, "TREV_PREPARED_DIR", "")
+    use_prepared = bool(prepared_directory) and all(
+        type(item.engine) is NativeTrevBuilder for item in pending
+    )
+    if use_prepared:
+        from footprints.storage.prepared import iter_prepared_batches
+
+        def replay(**kwargs):
+            return iter_prepared_batches(execution_store, directory=prepared_directory, **kwargs)
+
+        if len(pending) == 1:
+            checkpoint_chunk = 5_000_000
+    else:
+        replay = execution_store.iter_native_batches
+    batches = replay(
         market_id=pending[0].series.market_id,
         start_timestamp_us=start_timestamp_us,
         after_cursor=after_cursor, through_cursor=through_cursor,
@@ -597,6 +611,9 @@ def _build_native_batches(
     last_cursor = None
     read_seconds = native_seconds = store_seconds = checkpoint_seconds = 0.0
     complete = True
+    next_checkpoint = checkpoint_chunk
+    last_checkpoint = 0
+    next_stop_check = CHART_BUILD_EXECUTION_CHUNK
     native_bars = {item.series.pk: [] for item in pending}
     native_bar_counts = {item.series.pk: 0 for item in pending}
 
@@ -631,7 +648,7 @@ def _build_native_batches(
                     while offset < len(batch):
                         stage = time.monotonic()
                         try:
-                            offset, bars = item.engine.native.process(
+                            offset, bars = item.engine.process(
                                 batch.data, offset,
                                 CHART_BAR_INSERT_CHUNK - native_bar_counts[item.series.pk],
                                 batch.seam_break,
@@ -654,8 +671,8 @@ def _build_native_batches(
                 if item.error is not None or isinstance(item.engine, NativeTrevBuilder):
                     continue
                 flush_native(item)
-                # Tick configurations and exceptional wide-integer states share
-                # the decoded stream, while their calculation remains Python.
+                # Exceptional wide-integer states retain the exact Python path
+                # and share the same validated input stream.
                 if python_rows is None:
                     python_rows = [ProjectorExecution(*row) for row in batch.data.executions(0)]
                     if batch.seam_break:
@@ -685,21 +702,24 @@ def _build_native_batches(
                         stored_bar_count += bar_store.append(bar_batch)
                         bar_batch.clear()
                 stored_bar_count += bar_store.append(bar_batch)
-            if execution_count % CHART_BUILD_EXECUTION_CHUNK == 0:
-                # Retain prompt shutdown and the Python fallback boundary even
-                # when a fast single-series Rust replay checkpoints less often.
-                if any(not isinstance(item.engine, NativeTrevBuilder) for item in pending):
-                    checkpoint_chunk = CHART_BUILD_EXECUTION_CHUNK
+            if any(not isinstance(item.engine, NativeTrevBuilder) for item in pending):
+                checkpoint_chunk = CHART_BUILD_EXECUTION_CHUNK
+                next_checkpoint = min(next_checkpoint, last_checkpoint + checkpoint_chunk)
+            stop_requested = False
+            if execution_count >= next_stop_check:
                 stop_requested = should_stop is not None and should_stop()
-                if execution_count % checkpoint_chunk == 0 or stop_requested:
-                    for item in pending:
-                        flush_native(item)
-                    stage = time.monotonic()
-                    _persist_build_state(pending, complete=False)
-                    checkpoint_seconds += time.monotonic() - stage
-                    if stop_requested:
-                        complete = False
-                        break
+                next_stop_check = (execution_count // CHART_BUILD_EXECUTION_CHUNK + 1) * CHART_BUILD_EXECUTION_CHUNK
+            if execution_count >= next_checkpoint or stop_requested:
+                for item in pending:
+                    flush_native(item)
+                stage = time.monotonic()
+                _persist_build_state(pending, complete=False)
+                checkpoint_seconds += time.monotonic() - stage
+                last_checkpoint = execution_count
+                next_checkpoint = execution_count + checkpoint_chunk
+                if stop_requested:
+                    complete = False
+                    break
     if complete:
         for item in pending:
             flush_native(item)
@@ -709,7 +729,7 @@ def _build_native_batches(
         _persist_build_state(pending, complete=True)
         checkpoint_seconds += time.monotonic() - stage
     logger.info(
-        "TREV cold replay stages market_id=%s read_decode_seconds=%.3f "
+        "Native cold replay stages market_id=%s read_decode_seconds=%.3f "
         "native_seconds=%.3f convert_insert_seconds=%.3f checkpoint_seconds=%.3f",
         pending[0].series.market_id, read_seconds, native_seconds,
         store_seconds, checkpoint_seconds,

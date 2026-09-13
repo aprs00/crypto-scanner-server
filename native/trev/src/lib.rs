@@ -2,6 +2,7 @@
 #[cfg(feature = "python")]
 mod bindings;
 pub mod engine;
+pub mod prepared;
 pub mod stream;
 
 #[derive(Debug)]
@@ -11,5 +12,6 @@ pub enum Error {
     Density,
     Data(&'static str),
     UnknownSpec(u64),
+    PreparedCursors,
 }
 pub type Result<T> = std::result::Result<T, Error>;
