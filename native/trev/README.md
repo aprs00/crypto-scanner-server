@@ -286,3 +286,33 @@ python -m benchmarks.trev_full --baseline tick.json --backend rust > tick-native
 
 Raw results, including intermediate measurements and separately timed
 preparation: [prepared chart builds](../../benchmarks/results/chart-prepared-2026-09-12.json).
+
+### Production release, September 13
+
+Image `crypto-scanner:19db1dd2f92f` is deployed to the API and chart maintenance
+service. The shared input volume was populated before switching workers. The
+image restored all eight existing checkpoints exactly; no migration was needed.
+All three collectors retained their container identities and start times.
+
+New configurations measured through the public API, including queueing,
+catch-up, polling and snapshot transfer:
+
+| Request | Public snapshot ready |
+| --- | ---: |
+| Binance TREV 502/702 | 5.98 s |
+| Bybit TREV 502/702 | 4.42 s |
+| Hyperliquid TREV 502/702 | 1.39 s |
+| Bybit Tick 1,001 trades/bar, one day | 0.65 s |
+
+History pagination and a live WebSocket update passed. Reopening the existing
+Binance configuration took 0.79 s. The five-second target is **not achieved for
+every new chart**: Binance remains around six seconds in this public check.
+TREV's canonical 30-day calculation remains intact.
+
+A final isolated transport check on 101,174,950 Binance executions measured
+4.91 s and 4.92 s for uncompressed native builds. Adding LZ4 to the native
+output request increased the build to 5.68 s, so it was not deployed. All three
+runs matched the complete persisted output and checkpoint.
+
+[Release measurements](../../benchmarks/results/chart-production-2026-09-13.json)
+include the public requests and the separate transport comparison.
