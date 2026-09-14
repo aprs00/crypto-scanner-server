@@ -8,6 +8,8 @@ lib
 venv/
 __pycache__/
 *.py[cod]
-native/trev/target/
-native/trev/*.so
-!native/trev/src/bin/
+**/target/
+!native/footprints/src/bin/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

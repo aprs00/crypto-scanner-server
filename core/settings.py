@@ -60,7 +60,6 @@ INSTALLED_APPS = [
     "corsheaders",
     "core",
     "exchange_connections",
-    "footprints",
     "correlations",
     "zscore",
     "averages",
@@ -191,10 +190,6 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-
-# Built images select Rust. Source-only environments can run without the wheel.
-TREV_COLD_BACKEND = os.environ.get("TREV_COLD_BACKEND", "python")
-TREV_PREPARED_DIR = os.environ.get("TREV_PREPARED_DIR", "")
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_HEADERS = [

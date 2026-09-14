@@ -1,165 +1,60 @@
-# Footprint V0 production deployment
+# Footprint operations and cutover
 
-This release is designed for one Docker host. It deliberately has no account
-system, WAL/backfill service, cross-host collector, Prometheus stack, or bundled
-reverse proxy. Each execution collector keeps a second subscribed WebSocket as
-a same-process hot standby for isolated connection failures.
+The Rust collectors and chart server use a separate image (`Dockerfile.footprints`). Configure `FOOTPRINT_IMAGE` with an immutable tag in production. The scanner's existing `APP_IMAGE` remains separate. Build and verify both images before changing the running application.
 
-## Before the first release
+## Configuration
 
-Footprints have not shipped yet, so initialize PostgreSQL and ClickHouse from
-the final baseline on fresh production volumes. After this release, never edit
-`footprints/migrations/0001_initial.py` or the baseline ClickHouse DDL; add
-forward migrations instead.
+| Variable | Default / purpose |
+| --- | --- |
+| `FOOTPRINT_DATABASE` | `footprints_rust`; fresh ClickHouse database |
+| `FOOTPRINT_CLICKHOUSE_URL` | `http://clickhouse:8123` |
+| `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` | Existing ClickHouse credentials |
+| `FOOTPRINT_DATA_DIR` | `/var/lib/footprints`; persistent local volume |
+| `FOOTPRINT_OUTBOX_MAX_BYTES` | `2147483648` per collector |
+| `FOOTPRINT_DISK_RESERVE_BYTES` | `5368709120` |
+| `FOOTPRINT_ALLOWED_ORIGINS` | Explicit comma-separated browser origins |
+| `FOOTPRINT_BIND` | `0.0.0.0:8010`; private container port |
+| `FOOTPRINT_COLLECTOR_URLS` | Binance, Bybit, Hyperliquid health URLs in that order |
+| `FOOTPRINT_INSTANCE` | Unique standby instance; promotion persists across restarts |
 
-Install Docker Compose 2.24.4 or newer. The production override uses Compose's
-`!reset` merge tag, and the rollout script checks this version before changing
-any containers.
+Four persistent volumes hold the collectors and server: `binance_footprint_rust`, `bybit_footprint_rust`, `hyperliquid_footprint_rust`, and `footprint_rust_control`. The production override preserves all four. Never substitute Python outbox volumes or reuse chart IDs. Loss of a journal/control volume requires an explicit new storage generation, not an empty checkpoint against old tables. Startup/delivery reject stored counters ahead of local journal/control history, preventing a fresh volume from reusing existing ordinals or bar IDs.
 
-Build and tag the application with the exact commit, for example:
+ClickHouse and the collectors start independently. Collectors journal through ClickHouse outages. The chart server retries startup if migration/storage is unavailable. Docker restarts exited processes; each process watches its critical loop so a stalled task cannot remain green indefinitely. Disk exhaustion fails readiness rather than overwriting raw data.
 
-```sh
-docker build --target runtime -t crypto-scanner:$(git rev-parse --short=12 HEAD) .
-export APP_IMAGE=crypto-scanner:$(git rev-parse --short=12 HEAD)
-```
+## Verification before cutover
 
-Keep the deployment environment in the repository's ignored `.env` file. At
-minimum use production values for
-`SECRET_KEY`, PostgreSQL credentials, a non-empty `CLICKHOUSE_PASSWORD`,
-`DJANGO_ALLOWED_HOSTS`, the currently deployed immutable `APP_IMAGE`, and:
+1. Run Rust unit/oracle tests, Clippy, the isolated ClickHouse integration test, and frontend footprint tests/build (`native/footprints/README.md`).
+2. Build the footprint image and check its CLI and health commands. Its final runtime must contain no Python executable, package, or wheel.
+3. Start an isolated Rust stack with fresh volumes/database, then inspect counts and duplicates. Exercise ClickHouse outages, collector SIGTERM/restart, standby handoff, and archive verification. Confirm queued journals drain afterward.
+4. Run `footprints soak --hours 72 --output /var/lib/footprints/soak.jsonl` inside the API container. Preserve readiness, queue growth, delivery/chart lag, reconnects, gaps, and archive errors. A short smoke test does not establish long-term uptime; record explicitly when an authorized release precedes this observation period.
+5. Compare real 30-day TRev cold/prepared loads and one-day Tick loads with the prior results in `benchmarks/results`, using the same hardware/history. The CLI scalar/prepared benchmark isolates engine speed and is not an end-to-end improvement claim.
 
-```dotenv
-DEBUG=false
-STORE_TO_DB=true
-POSTGRES_HOST=db
-POSTGRES_PORT=5432
-```
+## Initial cutover from Python
 
-`DJANGO_ALLOWED_HOSTS` contains hostnames only, without schemes or paths. Include
-the API hostname and every frontend hostname allowed to open chart WebSockets.
+After validation, stop legacy `footprint-maintenance` and `footprint-recovery` containers. Replace the three Python collectors with Rust using fresh volumes. Start `footprint-api`; it bootstraps 30 days of Binance/Bybit archives automatically. Hyperliquid history begins with Rust capture.
 
-## Initial deployment
+Recreate `app` from the new scanner image without its host port binding, then start `gateway` on the original port 8000. Footprint HTTP/WebSocket routes go to Rust; other routes go to Django. The old app must release port 8000 first. Keep the external TLS proxy and configure the real frontend origins.
 
-The production override requires an immutable `APP_IMAGE`, removes application
-source mounts, enables Django's proxy/TLS cookie settings, binds Daphne to
-localhost, and does not publish Redis.
+Deploy the coverage changes from the sibling `crypto-scanner` repository together with the gateway change. It understands repaired generation IDs, resnapshot requests, and coverage messages.
+
+After the new release passes production checks, manually delete the legacy footprint tables and legacy outbox/prepared-cache volumes, as requested for this release. There is no automatic cleanup code. Inventory dependencies before dropping PostgreSQL tables; preserve all unrelated scanner tables, the shared PostgreSQL/ClickHouse volumes, and the new Rust database/volumes. Once legacy history is deleted, rollback cannot restore that history from the old image alone.
+
+## Subsequent collector updates
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm app python manage.py migrate
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+scripts/rollout-footprints.sh REGISTRY/footprints:COMMIT all
 ```
 
-Use that broad `up -d` command only for the initial deployment. For later
-releases and routine restarts, use the rolling commands below.
+The script warms a candidate sharing the exchange journal volume with a unique instance ID. It requires socket overlap, disables the old container's restart policy, drains the old writer, promotes the candidate, and waits for verified writer readiness. It then renames that candidate to the canonical container name. There is one handoff.
 
-## Routine footprint restarts
+A failed candidate is removed before cutover. Once cutover starts, failures retain the candidate for inspection and do not force-kill a writer. SQLite persists promotion through restarts. Image pins in `.env` update after each successful exchange.
 
-From the production repository directory, restart all footprint collectors
-with:
+The promoted container retains its Compose `run` one-off label. Use this script for subsequent collector updates and `docker restart cs-EXCHANGE-footprints` for a direct restart. Do not blindly run `compose up --force-recreate` for collectors: that bypasses the staged handoff. The promoted container retains its service network alias.
 
-```sh
-./scripts/rollout-footprints.sh --exchange all
-```
+## Monitoring
 
-Restart only one exchange when needed:
+Private endpoints are `/health/live`, `/health/ready`, `/health/status`, `/metrics`, `/admin/promote`, and `/admin/drain`. The gateway excludes footprint administration. `footprints health --writer --overlap` checks promotion readiness.
 
-```sh
-./scripts/rollout-footprints.sh --exchange binance
-./scripts/rollout-footprints.sh --exchange bybit
-./scripts/rollout-footprints.sh --exchange hyperliquid
-```
+Track both socket legs, pending journal rows/bytes and oldest age, delivery/chart lag, reconnects, and explicit gaps. Inspect `archives.status`, `attempted`, and `error` in `control.sqlite3` for unavailable or conflicting history. Never relabel pending intervals as verified merely to clear an alert.
 
-Do not use `docker restart` or `docker compose restart` for footprint
-collectors. Those commands close both exchange sockets at once and create an
-ingestion gap.
-
-## Release rollout
-
-Build an immutable image, run migrations if required, then roll the three
-collectors to it:
-
-```sh
-./scripts/rollout-footprints.sh \
-  --image "crypto-scanner:$(git rev-parse --short=12 HEAD)" \
-  --exchange all
-```
-
-The script starts a warm candidate, waits for both of its feeds, transfers the
-exchange's PostgreSQL advisory-lock ownership, and requires a shared recent
-trade identity after each handoff. Only then does it remove the candidate and
-continue to the next exchange. A successful explicit all-exchange rollout
-also updates `APP_IMAGE` in `.env` atomically.
-
-For the first rollout from a collector version that does not expose leadership
-state, add `--bootstrap-legacy`. Do not use this option again after all three
-collectors run the lock-aware version:
-
-```sh
-./scripts/rollout-footprints.sh --image crypto-scanner:<commit> \
-  --exchange all --bootstrap-legacy
-```
-
-The rollout script serializes runs with a host lock. Before cutover it removes
-a failed candidate automatically; after cutover it leaves the current
-containers in place and prints recovery context so it cannot stop the active
-writer by assumption.
-If a replacement becomes active without verified feed overlap, collection
-continues in a new source epoch, but the script stops and reports a possible
-gap. It leaves that active collector running for inspection.
-
-The `db-maintenance` service keeps one-minute klines for 30 days using bounded
-50,000-row deletes, with no more than four batches per five-minute cycle.
-Cleanup defaults to enabled; set `KLINE_CLEANUP_ENABLED=false` only as a
-temporary operational override. ClickHouse system diagnostics retain three
-days. On the first release with that policy, apply the existing-table update
-before recreating ClickHouse:
-
-```sh
-docker exec -i cs-clickhouse sh -c \
-  'exec clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --multiquery' \
-  < clickhouse/apply-system-log-retention.sql
-```
-
-Use the host's existing TLS reverse proxy to forward to `127.0.0.1:8000` and
-preserve `Host`, set `X-Forwarded-Proto: https`, and pass WebSocket
-`Upgrade`/`Connection` headers. Do not expose Daphne, PostgreSQL, ClickHouse,
-or Redis directly to the Internet. The initial HSTS duration is five minutes;
-only increase it after HTTPS has been verified.
-
-Start the collectors and the single `footprint-maintenance` container before
-exposing the frontend. A second maintenance process exits instead of competing
-for chart checkpoints.
-
-## Release checks
-
-- Confirm all three footprint collectors and maintenance are healthy, and that
-  collector logs show both execution feeds becoming subscription-ready. After
-  an hour, confirm one planned rotation completes, the closed leg reconnects,
-  and both legs return to subscription-ready without a new source epoch.
-- Request the market catalog, create one Tick and one TRev series, wait for
-  `ready`, and confirm both snapshots are non-empty.
-- Manually smoke-test rendering, zoom, crosshair, resize, two panels sharing a
-  series, settings persistence, and disconnect/reconnect behavior.
-- Alert on unhealthy/restarting containers and host disk usage above 80%.
-- Keep daily off-host snapshots of the PostgreSQL and ClickHouse volumes, and
-  periodically test restoration.
-
-Rollback the footprint collectors with the same handoff using a retained
-previous lock-aware immutable image:
-
-```sh
-./scripts/rollout-footprints.sh --image crypto-scanner:<previous-commit> \
-  --exchange all
-```
-
-Roll back the other backend and frontend services through their normal image
-deployment path. Keep the PostgreSQL and ClickHouse volumes; never reset
-production data as a rollback. The legacy image from before lock-aware
-collectors cannot use this rolling path; recover from an initial deployment
-problem by fixing forward unless a deliberate collector restart gap is
-acceptable.
-
-Rolling handoff avoids a planned socket gap when both versions become ready and
-the old process drains cleanly. It cannot guarantee uninterrupted collection
-during a host, Docker daemon, network, storage, or exchange outage. Common
-failures still require historical reconciliation.
+Back up SQLite with its online backup facility or while the writer is stopped; copying only its main file during WAL writes is unsafe. Preserve volumes across container replacement. One Docker host cannot guarantee 100% uptime during host, disk, network, or exchange failures.

@@ -1,40 +1,24 @@
-# Chart ClickHouse storage
+# Footprint ClickHouse storage
 
-ClickHouse owns two 31-day tables on one persistent volume:
+Rust uses a fresh `footprints_rust` database with two tables retaining 31 days:
 
-- `raw_executions`: the exact ordered execution tape used by both projectors;
-- `chart_bars`: sparse closed Tick/TRev bars.
+- `executions`: captured executions and verified archive revisions, ordered by market, partition, revision, and ordinal;
+- `bars`: closed Tick/TRev bars, addressed by generation and bar index.
 
-The footprint maintenance service creates the database and tables
-idempotently at startup. There is no migration ledger or manual migration
-command in V0. Collectors write directly to `raw_executions`; there is no
-SQLite, Parquet, shadow-write, or relational-bar path.
+`footprints migrate` creates the schema idempotently; `footprints serve` also runs it at startup. The schema lives in `native/footprints/migrations/001_clickhouse.sql`. Delete legacy footprint storage manually only after the new release passes production checks.
 
-ClickHouse diagnostic tables are separate from footprint data. The mounted
-`config.d/system-logs.xml` limits those tables to three days and reduces text
-logging from `trace` to `warning`. Before the first restart that introduces the
-configuration, apply `clickhouse/apply-system-log-retention.sql`; it updates the
-existing table definitions and clears the disposable accumulated diagnostics so
-ClickHouse does not preserve them under numbered legacy names.
+Collectors first commit executions into their SQLite WAL journals. A separate task sends RowBinary batches with `wait_for_async_insert=1`; compatible ClickHouse writes coalesce for 100 ms. Bar writes use Native format with synchronous acknowledgement. Both tables enable fsync. SQLite chart checkpoints advance only after bars are acknowledged, and readers hide uncheckpointed output.
 
-Collectors form a batch for at most 250 ms (or 500 executions). ClickHouse
-coalesces compatible writes for up to 100 ms before acknowledgement, keeping
-updates sub-second without creating a part per handful of trades.
+Retry deduplication in ClickHouse is bounded. Readers also remove repeated ordinals/bar indices and reject conflicting contents, so retries outside that window cannot double-count chart trades. See [architecture](../docs/footprints.md) and [operations](../docs/footprints-production.md) for persistence and backup requirements.
 
-The single chart maintenance writer already batches every closed bar produced
-by one bounded insert chunk, so chart-bar writes bypass the asynchronous busy
-timeout and wait directly for a synchronous durable acknowledgement. Historical
-builds resume in 100,000-execution chunks and persist every closed bar; HTTP
-clients page those bars instead of receiving an unbounded response. This keeps
-checkpoint publication retry-safe without adding an async wait to every chart
-update.
+Diagnostic tables are separate from footprint data. `config.d/system-logs.xml` retains diagnostics for three days and reduces text logging to warnings. The existing `apply-system-log-retention.sql` concerns those disposable diagnostics only.
 
-Run the opt-in real-server test inside the app container:
+Run the Rust integration test against a disposable ClickHouse server:
 
 ```sh
-FOOTPRINT_CLICKHOUSE_INTEGRATION=1 \
-python manage.py test footprints.tests.test_clickhouse_integration
+cd native/footprints
+FOOTPRINT_TEST_CLICKHOUSE=http://127.0.0.1:18123 \
+  cargo test --locked --test integration -- --ignored
 ```
 
-This is a pre-production setup. Add off-host backups before the execution tape
-becomes irreplaceable production data.
+It creates and drops its own uniquely named database. Never use a production server for fault injection.
