@@ -2,7 +2,7 @@
 
 The rewrite is implemented in `native/footprints`. Footprint capture, recovery, chart projection, HTTP/WebSocket serving, tests, benchmarks, and operational commands no longer depend on Python. Other scanner applications retain their separate runtime.
 
-This is implementation validation, not a completed production rollout. The 72-hour soak and a comparison of full real-history workloads remain deployment gates.
+This records implementation validation before release. The user subsequently authorized deployment: production cutover completed on 14 September, and production verification plus manual legacy-data deletion completed on 15 September. See [the release record](footprints-release-2026-09-15.md). The 72-hour observation is running; a comparison of full real-history workloads remains unmeasured.
 
 The local development host's legacy footprint containers still invoke the removed `footprint_trades` Python command and are failing. They have not been replaced by the validation containers. The source checkout and old bind-mounted runtime are therefore incompatible until the coordinated rollout; retaining the old runtime requires its matching immutable image/source checkout. Production uses a separate host and immutable images.
 

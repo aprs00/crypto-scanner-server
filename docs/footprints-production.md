@@ -2,6 +2,8 @@
 
 The Rust collectors and chart server use a separate image (`Dockerfile.footprints`). Configure `FOOTPRINT_IMAGE` with an immutable tag in production. The scanner's existing `APP_IMAGE` remains separate. Build and verify both images before changing the running application.
 
+The initial production cutover and manual legacy-data deletion are recorded in [the September 2026 release](footprints-release-2026-09-15.md).
+
 ## Configuration
 
 | Variable | Default / purpose |
