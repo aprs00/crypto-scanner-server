@@ -109,6 +109,156 @@ pub fn benchmark(count: usize) -> Result<serde_json::Value> {
     )
 }
 
+/// Replay frozen on-disk chunks through the actual production projector.
+/// One sample is one pass; samples are never presented as distinct history.
+pub fn benchmark_prepared(
+    directory: &Path,
+    exchange: Exchange,
+    samples: usize,
+    continuation: u64,
+    reversal: u64,
+) -> Result<serde_json::Value> {
+    ensure!((1..=10).contains(&samples), "samples must be 1..10");
+    crate::service::Request {
+        exchange,
+        kind: Kind::Trev,
+        a: continuation,
+        b: reversal,
+        lookback: 30,
+    }
+    .validate()?;
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .context("missing filename")?
+            .to_string_lossy();
+        let fields: Vec<_> = name.trim_end_matches(".bin").split('_').collect();
+        if fields.len() != 6
+            || fields[0] != exchange.id().to_string()
+            || fields[4] != "true"
+            || fields[5] != "0"
+            || !name.ends_with(".bin")
+        {
+            continue;
+        }
+        paths.push((
+            (
+                fields[1].parse::<i32>()?,
+                fields[2].parse::<u64>()?,
+                fields[3].parse::<u64>()?,
+            ),
+            path,
+        ));
+    }
+    paths.sort_by_key(|(key, _)| *key);
+    ensure!(!paths.is_empty(), "no matching prepared chunks");
+    let mut observed = Vec::new();
+    let mut expected = None;
+    for _ in 0..samples {
+        let mut series = Series {
+            id: 1,
+            key: "read-only-benchmark".into(),
+            config_key: String::new(),
+            exchange,
+            kind: Kind::Trev,
+            a: continuation,
+            b: reversal,
+            lookback: 30,
+            anchor: 0,
+            requested: 0,
+            status: "building".into(),
+            error: None,
+            checkpoint: Checkpoint::default(),
+            manifest: BTreeMap::new(),
+            active: true,
+            supersedes: None,
+        };
+        let (mut rows, mut runs, mut bars, mut bytes) = (0usize, 0usize, 0usize, 0u64);
+        let (mut load_ms, mut project_ms, mut encode_ms) = (0., 0., 0.);
+        let (mut codec_encode_ms, mut codec_decode_ms, mut codec_bytes, mut fixed_chunks) =
+            (0., 0., 0, 0);
+        let mut hash = sha2::Sha256::new();
+        use sha2::Digest;
+        let started = Instant::now();
+        for ((day, revision, after), path) in &paths {
+            if let Some(cursor) = series.checkpoint.cursor {
+                ensure!(
+                    cursor.day != *day
+                        || (cursor.revision == *revision && cursor.ordinal == *after),
+                    "overlapping or missing chunks at {}",
+                    path.display()
+                );
+                ensure!(
+                    cursor.day == *day || *after == 0,
+                    "missing first chunk at {}",
+                    path.display()
+                );
+            } else {
+                ensure!(*after == 0, "missing first chunk");
+            }
+            let at = Instant::now();
+            let batch = crate::prepared::load(path)
+                .with_context(|| format!("invalid cache: {}", path.display()))?;
+            load_ms += at.elapsed().as_secs_f64() * 1000.;
+            let at = Instant::now();
+            let encoded = crate::prepared::encode(&batch)?;
+            codec_encode_ms += at.elapsed().as_secs_f64() * 1000.;
+            codec_bytes += encoded.len();
+            fixed_chunks += usize::from(&encoded[..8] == b"FPRUN003");
+            let at = Instant::now();
+            let batch =
+                crate::prepared::decode(&encoded).context("cache codec roundtrip failed")?;
+            codec_decode_ms += at.elapsed().as_secs_f64() * 1000.;
+            bytes += path.metadata()?.len();
+            rows += batch.row_count();
+            runs += batch.runs.len();
+            let last = batch.last_cursor().context("empty prepared chunk")?;
+            while series.checkpoint.cursor != Some(last) {
+                let at = Instant::now();
+                let (checkpoint, output) = project(&series, &batch)?;
+                project_ms += at.elapsed().as_secs_f64() * 1000.;
+                ensure!(
+                    checkpoint.cursor != series.checkpoint.cursor,
+                    "projection did not advance"
+                );
+                series.checkpoint = checkpoint;
+                bars += output.len();
+                // Hash bars individually so the digest is independent of batching.
+                for bar in &output {
+                    hash.update(postcard::to_allocvec(bar)?);
+                }
+                let at = Instant::now();
+                let encoded = crate::storage::encode_bars(&output)?;
+                std::hint::black_box(&encoded);
+                encode_ms += at.elapsed().as_secs_f64() * 1000.;
+            }
+        }
+        hash.update(postcard::to_allocvec(&series.checkpoint)?);
+        let digest = hash
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        if let Some(expected) = &expected {
+            ensure!(*expected == digest, "replay digest changed");
+        }
+        expected = Some(digest.clone());
+        observed.push(
+            json!({"rows":rows,"runs":runs,"closedBars":bars,"cacheBytes":bytes,
+            "loadAndDecodeMs":load_ms,"projectMs":project_ms,"barEncodeMs":encode_ms,
+            "codecEncodeMs":codec_encode_ms,"codecDecodeFromMemoryMs":codec_decode_ms,
+            "encodedCacheBytes":codec_bytes,"fixedWidthChunks":fixed_chunks,
+            "elapsedMsIncludingDigest":started.elapsed().as_secs_f64()*1000.,"digest":digest}),
+        );
+    }
+    Ok(
+        json!({"scope":"Read-only replay of real prepared files. Existing-file load/checksum/decode and new codec encode/decode measured separately. Codec decode includes checksum but reads freshly encoded memory, excluding disk I/O. Projector consumes the roundtripped cache. No ClickHouse, durable writes, queue, network, or rendering. Samples repeat the same history; OS page cache is not cleared.",
+        "exchange":exchange.name(),"chunks":paths.len(),"continuation":continuation,"reversal":reversal,"samples":observed}),
+    )
+}
+
 pub async fn soak(config: &Config, hours: u32, output: &Path) -> Result<()> {
     ensure!(
         (1..=168).contains(&hours),

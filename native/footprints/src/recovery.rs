@@ -140,7 +140,10 @@ async fn download(
     }
     tokio::io::AsyncWriteExt::flush(&mut writer).await?;
     drop(writer);
-    Ok((file, format!("{:x}", hash.finalize())))
+    Ok((
+        file,
+        hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
+    ))
 }
 pub struct Archive {
     pub path: PathBuf,

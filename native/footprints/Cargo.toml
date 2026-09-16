@@ -22,7 +22,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rusqlite = { version = "0.38", features = ["bundled", "fallible_uint"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
-sha2 = "0.10"
+# 0.11 enables runtime-detected ARM SHA instructions by default. In 0.10
+# the default ARM backend was software, making multi-GB cache checks expensive.
+sha2 = "0.11"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

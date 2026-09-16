@@ -39,6 +39,19 @@ enum Command {
         #[arg(long, default_value_t = 1_000_000)]
         rows: usize,
     },
+    /// Read-only replay of existing prepared chunks; no database or cache writes.
+    BenchPrepared {
+        #[arg(long)]
+        directory: std::path::PathBuf,
+        #[arg(long)]
+        exchange: Exchange,
+        #[arg(long, default_value_t = 3)]
+        samples: usize,
+        #[arg(long, default_value_t = 504)]
+        continuation: u64,
+        #[arg(long, default_value_t = 704)]
+        reversal: u64,
+    },
     /// Record ready-state, queues, gaps and delivery lag every five seconds.
     Soak {
         #[arg(long, default_value_t = 72)]
@@ -115,6 +128,25 @@ async fn main() -> Result<()> {
         }
         Command::Bench { rows } => {
             println!("{}", footprints::ops::benchmark(rows)?);
+            return Ok(());
+        }
+        Command::BenchPrepared {
+            directory,
+            exchange,
+            samples,
+            continuation,
+            reversal,
+        } => {
+            println!(
+                "{}",
+                footprints::ops::benchmark_prepared(
+                    &directory,
+                    exchange,
+                    samples,
+                    continuation,
+                    reversal
+                )?
+            );
             return Ok(());
         }
         Command::ArchiveCheck {

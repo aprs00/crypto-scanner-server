@@ -11,8 +11,16 @@ use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::{Notify, broadcast};
+
+const PROJECT_LEVELS: usize = 200_000;
+const HISTORY_BATCHES: usize = 10;
+const HISTORY_SLICE: Duration = Duration::from_millis(250);
 
 const SCHEMA:&str="
 CREATE TABLE IF NOT EXISTS control_version(version INTEGER NOT NULL);
@@ -407,47 +415,96 @@ impl Service {
             .cursor
             .map(|c| c.day)
             .unwrap_or(day(series.anchor));
-        let mut days = self.store.days(series.exchange.id(), start).await?;
-        days.extend(series.manifest.keys().copied().filter(|d| *d >= start));
-        days.sort_unstable();
-        days.dedup();
+        // The checkpoint already identifies the current partition. Discover
+        // later days only after reaching its end, not for every 100k trades.
+        let mut days = vec![start];
+        let mut discovered = false;
         let cache = if live {
             &self.live_cache
         } else {
             &self.cold_cache
         };
-        for partition in days {
+        let mut day_index = 0;
+        while let Some(&partition) = days.get(day_index) {
+            day_index += 1;
             let revision = series.manifest.get(&partition).copied().unwrap_or(0);
-            let after = series
-                .checkpoint
-                .cursor
-                .filter(|c| c.day == partition && c.revision == revision)
-                .map(|c| c.ordinal)
-                .unwrap_or(0);
-            let batch = cache
-                .read(
-                    series.exchange.id(),
-                    partition,
-                    revision,
-                    after,
-                    series.kind == Kind::Trev,
-                    series.anchor,
-                )
-                .await?;
-            if batch.rows.is_empty() {
+            let before = series.checkpoint.state.next_bar_index;
+            let mut bars = Vec::new();
+            let (mut batches, mut levels) = (0, 0);
+            let (mut read_ms, mut project_ms) = (0., 0.);
+            let slice = Instant::now();
+            loop {
+                let after = series
+                    .checkpoint
+                    .cursor
+                    .filter(|c| c.day == partition && c.revision == revision)
+                    .map(|c| c.ordinal)
+                    .unwrap_or(0);
+                let at = Instant::now();
+                let batch = cache
+                    .read(
+                        series.exchange.id(),
+                        partition,
+                        revision,
+                        after,
+                        series.kind == Kind::Trev,
+                        series.anchor,
+                    )
+                    .await?;
+                read_ms += at.elapsed().as_secs_f64() * 1000.;
+                if batch.rows.is_empty() {
+                    break;
+                }
+                let input = series.clone();
+                let at = Instant::now();
+                let (checkpoint, output) =
+                    tokio::task::spawn_blocking(move || project(&input, &batch)).await??;
+                project_ms += at.elapsed().as_secs_f64() * 1000.;
+                ensure!(
+                    checkpoint.cursor != series.checkpoint.cursor,
+                    "CHART_INVALID_PREPARED_TAPE"
+                );
+                series.checkpoint = checkpoint;
+                levels += output.iter().map(|b| b.value.levels.len()).sum::<usize>();
+                bars.extend(output);
+                batches += 1;
+                // Retain only one input chunk at a time. Bound accumulated
+                // output and time; live projection still commits every chunk.
+                if live
+                    || batches >= HISTORY_BATCHES
+                    || bars.len() >= 2_000
+                    || levels >= PROJECT_LEVELS
+                    || slice.elapsed() >= HISTORY_SLICE
+                    || self.health.stop.is_cancelled()
+                {
+                    break;
+                }
+            }
+            if batches == 0 {
+                if !discovered {
+                    let mut later = self
+                        .store
+                        .days(series.exchange.id(), start.saturating_add(1))
+                        .await?;
+                    later.extend(series.manifest.keys().copied().filter(|d| *d > start));
+                    later.sort_unstable();
+                    later.dedup();
+                    days.extend(later);
+                    discovered = true;
+                }
                 continue;
             }
-            let before = series.checkpoint.state.next_bar_index;
-            let input = series.clone();
-            let (checkpoint, bars) =
-                tokio::task::spawn_blocking(move || project(&input, &batch)).await??;
             // Durable bars precede the FULL SQLite checkpoint. On a crash this
-            // exact batch is replayed; readers hide uncheckpointed rows.
+            // input is replayed; readers hide uncheckpointed rows. Bar values
+            // remain identical even when a time budget changes insert grouping.
+            let at = Instant::now();
             self.store.insert_bars(&bars).await?;
-            let data = postcard::to_allocvec(&checkpoint)?;
+            let insert_ms = at.elapsed().as_secs_f64() * 1000.;
+            let at = Instant::now();
+            let data = postcard::to_allocvec(&series.checkpoint)?;
             let id = series.id;
             self.db.call(move|c|{c.execute("UPDATE series SET checkpoint=?,status=CASE WHEN status='queued' THEN 'building' ELSE status END WHERE id=?",params![data,id])?;Ok(())}).await?;
-            series.checkpoint = checkpoint;
+            let checkpoint_ms = at.elapsed().as_secs_f64() * 1000.;
             if live {
                 let levels = bars.iter().map(|b| b.value.levels.len()).sum::<usize>()
                     + ChartBar::active(&series.checkpoint)?
@@ -471,6 +528,11 @@ impl Service {
             tracing::debug!(
                 series = series.key,
                 bars = series.checkpoint.state.next_bar_index - before,
+                batches,
+                read_ms,
+                project_ms,
+                insert_ms,
+                checkpoint_ms,
                 "checkpoint committed"
             );
             return Ok(true);
@@ -607,7 +669,8 @@ pub fn project(series: &Series, batch: &Batch) -> Result<(Checkpoint, Vec<Stored
                 && row.ordinal <= cursor.ordinal
         });
     }
-    let mut run_index = 0;
+    let mut run_index = batch.runs.partition_point(|run| run.end <= index);
+    let mut levels = 0;
     while index < batch.rows.len() {
         let trade = &batch.rows[index];
         if trade.raw.timestamp < series.anchor && engine.state.last_order.is_none() {
@@ -615,6 +678,7 @@ pub fn project(series: &Series, batch: &Batch) -> Result<(Checkpoint, Vec<Stored
             index += 1;
             continue;
         }
+        let emitted_before = bars.len();
         if checkpoint.spec.is_some()
             && (checkpoint.segment != trade.segment || checkpoint.spec != Some(trade.spec))
         {
@@ -659,8 +723,12 @@ pub fn project(series: &Series, batch: &Batch) -> Result<(Checkpoint, Vec<Stored
             index += 1;
         }
         drain_bars(series.id, &mut output, trade.spec, &mut bars)?;
+        levels += bars[emitted_before..]
+            .iter()
+            .map(|b| b.value.levels.len())
+            .sum::<usize>();
         checkpoint.cursor = cursor.or_else(|| Some(batch.rows[index - 1].cursor()));
-        if bars.len() >= 2_000 {
+        if bars.len() >= 2_000 || levels >= PROJECT_LEVELS {
             break;
         }
     }

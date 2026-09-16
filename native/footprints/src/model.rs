@@ -22,9 +22,10 @@ impl Spec {
         }
     }
     pub fn id(self) -> u64 {
-        (xxhash_rust::xxh3::xxh3_64(&[self.tick.to_le_bytes(), self.step.to_le_bytes()].concat())
-            & i64::MAX as u64)
-            .max(1)
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&self.tick.to_le_bytes());
+        bytes[8..].copy_from_slice(&self.step.to_le_bytes());
+        (xxhash_rust::xxh3::xxh3_64(&bytes) & i64::MAX as u64).max(1)
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
