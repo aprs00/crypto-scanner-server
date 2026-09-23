@@ -1,0 +1,50 @@
+{
+  "scope": "Fresh public HTTPS chart-series request through ready state, followed by a 20-bar chart-bars request; excludes browser rendering",
+  "dateUtc": "2026-09-23",
+  "backendImage": "crypto-scanner-footprints:d658b63",
+  "frontendCommit": "4ab32618b296ee3de10e390af19d3f2225a00cdf",
+  "hostArchitecture": "aarch64",
+  "preparation": {
+    "command": "footprints warm-prepared --days 5",
+    "timing": "Completed before switching the footprint API image",
+    "binanceArchivedTrades": 19060846,
+    "bybitArchivedTrades": 11078244,
+    "daysPerExchange": 5
+  },
+  "requests": [
+    {
+      "market": "binance:perpetual:BTCUSDT",
+      "chartType": "trev",
+      "continuationTicks": 317,
+      "reversalTicks": 479,
+      "lookbackDays": 5,
+      "firstStatus": "queued",
+      "readyMs": 8415.6,
+      "snapshotMs": 394.9,
+      "snapshotLimit": 20
+    },
+    {
+      "market": "binance:perpetual:BTCUSDT",
+      "chartType": "trev",
+      "continuationTicks": 319,
+      "reversalTicks": 487,
+      "lookbackDays": 5,
+      "firstStatus": "queued",
+      "readyMs": 8182.6,
+      "snapshotMs": 318.9,
+      "snapshotLimit": 20
+    },
+    {
+      "market": "binance:perpetual:BTCUSDT",
+      "chartType": "tick",
+      "tradesPerBar": 137,
+      "lookbackDays": 1,
+      "firstStatus": "queued",
+      "readyMs": 5981.9,
+      "snapshotMs": 228.8,
+      "snapshotLimit": 20,
+      "preparedArchive": false
+    }
+  ],
+  "limitations": "One sample per setting, including polling intervals and public HTTP latency. TRev archive tape was prewarmed, but each chart setting was new. Tick archive tape was not prewarmed. The full frontend interaction and a fully uncached five-day production request were not measured."
+}

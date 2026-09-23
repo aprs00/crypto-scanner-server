@@ -31,7 +31,7 @@ ClickHouse and the collectors start independently. Collectors journal through Cl
 4. Run `footprints soak --hours 72 --output /var/lib/footprints/soak.jsonl` inside the API container. Preserve readiness, queue growth, delivery/chart lag, reconnects, gaps, and archive errors. A short smoke test does not establish long-term uptime; record explicitly when an authorized release precedes this observation period.
 5. Measure public request-to-ready-snapshot time for real five-day and 30-day TRev and one-day Tick charts, with both cold and prepared input. Record the market and chart settings. The CLI scalar/prepared benchmark isolates engine speed and is not an end-to-end improvement claim.
 
-The [local cold and prepared HTTP measurements](../benchmarks/results/footprint-cold-http-2026-09-23.json) establish a server-side baseline; production and browser latency still require measurement after deployment.
+The [local cold and prepared HTTP measurements](../benchmarks/results/footprint-cold-http-2026-09-23.json) establish a server-side baseline. The [production public-HTTP measurements](../benchmarks/results/footprint-production-http-2026-09-23.json) cover new five-day TRev and one-day Tick settings after the first prepared-tape release; browser latency and a fully uncached five-day production request remain unmeasured.
 
 ## Initial cutover from Python
 
