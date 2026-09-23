@@ -21,6 +21,7 @@ Commands:
 - `control promote|drain [--url URL]`: private collector administration.
 - `archive-check --exchange binance|bybit --date YYYY-MM-DD --file PATH`: parse a downloaded public archive and report exact totals; independent checksum/candle verification remains part of automatic recovery.
 - `bench --rows N`: deterministic scalar/prepared Rust comparison, with exact state parity. Excludes ClickHouse and network time.
+- `warm-prepared --days 5`: prepare shared TRev tapes for verified recent archives before serving new chart configurations; it does not create chart series.
 - `soak --hours 72 --output /var/lib/footprints/soak.jsonl`: record collector and server health every five seconds, plus a final completion/availability summary. Run inside the API container. Interrupted runs are not completed soaks.
 
 See [architecture and guarantees](../../docs/footprints.md), [recovery](../../docs/trade-recovery.md), [operations and cutover](../../docs/footprints-production.md), [validation results](../../docs/footprints-validation.md), and [candle semantics](../../docs/footprint-algorithm-semantics.md).

@@ -39,17 +39,19 @@ TRev uses `continuationTicks` and `reversalTicks`:
 6. Expansion from one execution is bounded to prevent pathological input from
    exhausting memory.
 
-Each market and threshold pair has one continuous series. Its initial anchor
-is 30 days before creation, rounded down to the hour; the first available
-execution at or after that anchor opens the segment. The full window is built
-forward once, with no execution-count history cap. That anchor is retained as
-the series advances. `lookbackDays` only filters persisted candle history and
-never changes the engine state or recent candle boundaries.
+Each market, threshold pair, and `lookbackDays` value has its own continuous
+series. Its initial anchor is the requested number of days before creation,
+rounded down to the hour; the first available execution at or after that
+anchor opens the segment. The requested window is built forward once, with no
+execution-count history cap. The anchor is retained as the series advances.
+Changing `lookbackDays` creates a new series, so TRev boundaries can differ
+between lookbacks. A repaired generation may rebase its anchor to keep the
+requested window inside retained history.
 
 Opening an existing series restores the complete checkpoint and processes only
 trades after its source cursor. Restoring and replaying must produce exactly the
 same candles and active state as uninterrupted forward processing. Without a
-valid checkpoint, a new generation must bootstrap from its canonical anchor;
+valid checkpoint, a new generation must bootstrap from its requested anchor;
 neither backward construction nor initialization from an arbitrary recent trade
 is valid. Source reconciliation replaces affected generations, and a checkpoint
 whose required replay window has expired cannot be resumed silently.

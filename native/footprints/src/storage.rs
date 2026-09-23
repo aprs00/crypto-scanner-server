@@ -108,6 +108,29 @@ impl Store {
         }
         Ok(rows)
     }
+    pub async fn first_ordinal_at_or_after(
+        &self,
+        market: u8,
+        day: i32,
+        revision: u64,
+        timestamp: i64,
+    ) -> Result<Option<u64>> {
+        let bytes = self
+            .sql(
+                &format!(
+                    "SELECT ordinal FROM {}.executions WHERE market={market} AND day={day} AND revision={revision} AND timestamp_us>={timestamp} ORDER BY ordinal LIMIT 1 FORMAT RowBinary",
+                    self.config.database
+                ),
+                vec![],
+            )
+            .await?;
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(u64::from_le_bytes(
+            bytes.as_ref().try_into().context("invalid first ordinal")?,
+        )))
+    }
     pub async fn days(&self, market: u8, start: i32) -> Result<Vec<i32>> {
         let bytes=self.sql(&format!("SELECT DISTINCT day FROM {}.executions WHERE market={market} AND day>={start} AND revision=0 ORDER BY day FORMAT JSONEachRow",self.config.database),vec![]).await?;
         #[derive(Deserialize)]

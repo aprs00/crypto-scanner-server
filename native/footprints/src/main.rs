@@ -52,6 +52,11 @@ enum Command {
         #[arg(long, default_value_t = 704)]
         reversal: u64,
     },
+    /// Precompute shared TRev trade tapes for verified recent archives.
+    WarmPrepared {
+        #[arg(long, default_value_t = 5)]
+        days: u32,
+    },
     /// Record ready-state, queues, gaps and delivery lag every five seconds.
     Soak {
         #[arg(long, default_value_t = 72)]
@@ -177,6 +182,14 @@ async fn main() -> Result<()> {
     }
     if matches!(cli.command, Command::Migrate) {
         return Store::new(&config)?.migrate().await;
+    }
+    if let Command::WarmPrepared { days } = cli.command {
+        let service = Service::open(
+            config,
+            Health::new("warm-prepared", CancellationToken::new()),
+        )
+        .await?;
+        return service.warm_recent_archives(days).await;
     }
     let stop = CancellationToken::new();
     let signals = stop.clone();

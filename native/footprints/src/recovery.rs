@@ -439,8 +439,12 @@ async fn repair(
         if batch.is_empty() {
             break;
         }
+        let start_after = after;
         after = batch.last().unwrap().ordinal;
         service.store.insert_trades(&batch).await?;
+        if let Err(error) = service.prepare_archive_batch(batch, start_after).await {
+            tracing::warn!(%error, "archive cache preparation skipped");
+        }
     }
     ensure!(after == archive.rows, "archive upload incomplete");
     let count = archive.rows;

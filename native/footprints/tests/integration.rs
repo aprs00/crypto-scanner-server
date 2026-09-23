@@ -77,6 +77,13 @@ async fn database_retries_projection_api_and_atomic_replacement() -> Result<()> 
     service.store.insert_trades(&rows).await?;
     journal.ack(ack).await?;
     assert_eq!(service.store.read(1, partition, 0, 0, 100).await?.len(), 4);
+    assert_eq!(
+        service
+            .store
+            .first_ordinal_at_or_after(1, partition, 0, timestamp + 3_000)
+            .await?,
+        Some(2)
+    );
     let requested = service
         .request(Request {
             exchange: Exchange::Binance,

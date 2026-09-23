@@ -26,7 +26,7 @@ Tick consumes individual executions. TRev reuses the existing Rust mathematical 
 
 Limits remain 16 leased configurations per market, 1–4,000 trades/ticks per parameter, 4,000 price levels per bar, and 500 synthetic boundary expansions per execution. Snapshots cap at 500 bars/40,000 levels; live updates cap at 50 bars/8,000 levels. Larger updates request an HTTP resnapshot. A chart configuration failure does not stop raw capture.
 
-TRev maintains a continuous generation with up to 30 days of visible history; lookback changes only the visible range. Tick's initial anchor depends on its requested lookback. Data retention is 31 days. A checkpoint beyond raw retention triggers a fresh generation instead of joining across expired history. Delivery rejects a journal whose stored position conflicts with ClickHouse. New storage and public series IDs deliberately replace the old Python history.
+Tick and TRev each start a continuous generation at the requested lookback, up to 30 days. Changing the TRev lookback creates a new generation and can change bar boundaries because TRev depends on the starting trade. Data retention is 31 days. A checkpoint beyond raw retention triggers a fresh generation instead of joining across expired history. Delivery rejects a journal whose stored position conflicts with ClickHouse. New storage and public series IDs deliberately replace the old Python history.
 
 ## API
 

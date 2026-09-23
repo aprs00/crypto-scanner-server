@@ -132,6 +132,19 @@ pub struct Cache {
     store: Store,
 }
 impl Cache {
+    fn path(
+        &self,
+        market: u8,
+        day: i32,
+        revision: u64,
+        after: u64,
+        trev: bool,
+        cutoff: i64,
+    ) -> PathBuf {
+        self.directory.join(format!(
+            "{market}_{day}_{revision}_{after}_{trev}_{cutoff}.bin"
+        ))
+    }
     pub async fn begin_pass(&self) {
         self.entries
             .lock()
@@ -145,6 +158,45 @@ impl Cache {
             store,
         }
     }
+    pub(crate) async fn prepare_archive_batch(&self, rows: Vec<Trade>, after: u64) -> Result<()> {
+        let Some(first) = rows.first() else {
+            return Ok(());
+        };
+        ensure!(
+            first.revision != 0 && first.ordinal > after,
+            "invalid archive cache batch"
+        );
+        let path = self.path(first.market, first.day, first.revision, after, true, 0);
+        tokio::task::spawn_blocking(move || {
+            if load_versioned(&path).is_some() {
+                return Ok(());
+            }
+            let mut batch = Batch::new(rows)?;
+            batch.compact();
+            save(&path, &encode(&batch)?)?;
+            ensure!(
+                load_versioned(&path).is_some(),
+                "prepared archive cache unavailable"
+            );
+            Ok(())
+        })
+        .await?
+    }
+    pub async fn warm_archive_day(&self, market: u8, day: i32, revision: u64) -> Result<u64> {
+        let mut after = 0;
+        loop {
+            let batch = self.read(market, day, revision, after, true, 0).await?;
+            let Some(last) = batch.last_cursor() else {
+                return Ok(after);
+            };
+            ensure!(
+                load_versioned(&self.path(market, day, revision, after, true, 0)).is_some(),
+                "prepared archive cache unavailable"
+            );
+            ensure!(last.ordinal > after, "archive cache did not advance");
+            after = last.ordinal;
+        }
+    }
     pub async fn read(
         &self,
         market: u8,
@@ -154,7 +206,7 @@ impl Cache {
         trev: bool,
         anchor: i64,
     ) -> Result<Arc<Batch>> {
-        let cutoff = if trev && crate::config::day(anchor) == day {
+        let cutoff = if crate::config::day(anchor) == day {
             anchor
         } else {
             0
@@ -181,9 +233,7 @@ impl Cache {
             cache.push_back(item);
             return Ok(batch);
         }
-        let path = self.directory.join(format!(
-            "{market}_{day}_{revision}_{after}_{trev}_{cutoff}.bin"
-        ));
+        let path = self.path(market, day, revision, after, trev, cutoff);
         let saved = path.clone();
         let from_disk = if revision != 0 {
             tokio::task::spawn_blocking(move || load_versioned(&saved)).await?
@@ -203,9 +253,27 @@ impl Cache {
             }
             batch
         } else {
+            let source_after = if cutoff != 0 && after == 0 {
+                match self
+                    .store
+                    .first_ordinal_at_or_after(market, day, revision, cutoff)
+                    .await?
+                {
+                    Some(first) => first.saturating_sub(1),
+                    None => {
+                        return Ok(Arc::new(Batch {
+                            rows: Vec::new(),
+                            runs: Vec::new(),
+                            compacted: false,
+                        }));
+                    }
+                }
+            } else {
+                after
+            };
             let rows = self
                 .store
-                .read(market, day, revision, after, READ_BATCH)
+                .read(market, day, revision, source_after, READ_BATCH)
                 .await?;
             let batch = tokio::task::spawn_blocking(move || {
                 let mut batch = Batch::new(rows)?;
@@ -580,5 +648,23 @@ mod tests {
         assert_eq!(entries[0].0.3, 100);
         trim(&mut entries, bytes - 1);
         assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepared_archive_serves_a_new_configuration_without_clickhouse() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut config = Config::load()?;
+        config.directory = directory.path().into();
+        config.clickhouse_url = "http://127.0.0.1:9".into();
+        let cache = Cache::new(&config, Store::new(&config)?);
+        cache.prepare_archive_batch(tape(), 0).await?;
+        let loaded = cache.read(1, 20701, 42, 0, true, 0).await?;
+        let mut expected = Batch::new(tape())?;
+        expected.compact();
+        assert_eq!(
+            projected(&loaded, Kind::Trev),
+            projected(&expected, Kind::Trev)
+        );
+        Ok(())
     }
 }

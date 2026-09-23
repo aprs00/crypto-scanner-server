@@ -3,7 +3,7 @@ use crate::{
     db::Db,
     engine::Engine,
     health::Health,
-    model::{ChartBar, Checkpoint, Coverage, CoverageStatus, Spec},
+    model::{ChartBar, Checkpoint, Coverage, CoverageStatus, Spec, Trade},
     prepared::{Batch, Cache},
     storage::{Store, StoredBar},
 };
@@ -18,9 +18,9 @@ use std::{
 };
 use tokio::sync::{Notify, broadcast};
 
-const PROJECT_LEVELS: usize = 200_000;
-const HISTORY_BATCHES: usize = 10;
-const HISTORY_SLICE: Duration = Duration::from_millis(250);
+const PROJECT_LEVELS: usize = 500_000;
+const HISTORY_BATCHES: usize = 30;
+const HISTORY_SLICE: Duration = Duration::from_secs(2);
 
 const SCHEMA:&str="
 CREATE TABLE IF NOT EXISTS control_version(version INTEGER NOT NULL);
@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS gaps(market INTEGER NOT NULL,start INTEGER NOT NULL,e
 CREATE TABLE IF NOT EXISTS source_health(market INTEGER PRIMARY KEY,payload TEXT NOT NULL,observed INTEGER NOT NULL);
 ";
 pub type Manifest = BTreeMap<i32, u64>;
+fn has_revised_history(series: &Series, latest: &Manifest) -> bool {
+    // Expiring archive metadata is not a source revision. The checkpoint
+    // already incorporates that history; rebuilding it changes the anchor and
+    // needlessly replays a month of executions. Pending repairs likewise keep
+    // the pinned generation until a new verified revision is available.
+    latest
+        .range(day(series.anchor)..)
+        .any(|(partition, revision)| series.manifest.get(partition) != Some(revision))
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -68,11 +77,7 @@ impl Request {
             self.kind.name(),
             self.a,
             self.b,
-            if self.kind == Kind::Tick {
-                self.lookback
-            } else {
-                0
-            }
+            self.lookback
         )
     }
 }
@@ -176,7 +181,7 @@ impl Service {
                 // database and network errors never become permanent failures.
                 s.requested=now_us();tx.execute("UPDATE series SET requested=? WHERE id=? OR supersedes=?",params![s.requested,s.id,s.id])?;tx.commit()?;return Ok(s)
             }
-            let anchor=(now_us()-DAY_US*i64::from(if request.kind==Kind::Tick{request.lookback}else{30})).div_euclid(3_600_000_000)*3_600_000_000;
+            let anchor=(now_us()-DAY_US*i64::from(request.lookback)).div_euclid(3_600_000_000)*3_600_000_000;
             manifest.retain(|partition,_| *partition>=day(anchor));
             let public=uuid::Uuid::new_v4().to_string();let cp=postcard::to_allocvec(&Checkpoint::default())?;
             tx.execute("INSERT INTO series(public_key,config_key,market,kind,a,b,lookback,anchor,requested,status,checkpoint,manifest) VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?)",params![public,key,request.exchange.id(),request.kind.name(),request.a,request.b,request.lookback,anchor,now_us(),cp,serde_json::to_string(&manifest)?])?;
@@ -184,6 +189,32 @@ impl Service {
         }).await?;
         self.wake.notify_waiters();
         Ok(result)
+    }
+    pub(crate) async fn prepare_archive_batch(&self, rows: Vec<Trade>, after: u64) -> Result<()> {
+        self.cold_cache.prepare_archive_batch(rows, after).await
+    }
+    pub async fn warm_recent_archives(&self, days: u32) -> Result<()> {
+        ensure!((1..=30).contains(&days), "INVALID_LOOKBACK_DAYS");
+        let earliest = day(now_us()) - days as i32;
+        for exchange in [Exchange::Binance, Exchange::Bybit] {
+            let manifest = self.manifest(exchange).await?;
+            for (&partition, &revision) in manifest.iter().rev() {
+                if partition < earliest {
+                    break;
+                }
+                let rows = self
+                    .cold_cache
+                    .warm_archive_day(exchange.id(), partition, revision)
+                    .await?;
+                tracing::info!(
+                    exchange = exchange.name(),
+                    partition,
+                    rows,
+                    "prepared archive ready"
+                );
+            }
+        }
+        Ok(())
     }
     pub async fn verify_storage_history(&self) -> Result<()> {
         let allocated = self
@@ -263,7 +294,9 @@ impl Service {
         self.db.call(move|c|{
             let mut verified=None;let mut pending=false;let mut contiguous=true;
             if recoverable {
-                for day in day(anchor)..day(now_us()) {
+                // Archives before retention cannot be rechecked. Their
+                // already-projected state remains pinned by the checkpoint.
+                for day in day(anchor).max(day(now_us()) - 30)..day(now_us()) {
                     let revision:Option<u64>=c.query_row("SELECT revision FROM archives WHERE market=? AND day=? AND status='verified'",params![market,day],|r|r.get(0)).optional()?.flatten();
                     if revision.is_some() && pinned.get(&day).copied()==revision {if contiguous{verified=Some((i64::from(day)+1)*DAY_US/1000);}}
                     else {pending=true;contiguous=false;}
@@ -448,7 +481,11 @@ impl Service {
                         revision,
                         after,
                         series.kind == Kind::Trev,
-                        series.anchor,
+                        if series.checkpoint.state.last_order.is_some() {
+                            0
+                        } else {
+                            series.anchor
+                        },
                     )
                     .await?;
                 read_ms += at.elapsed().as_secs_f64() * 1000.;
@@ -541,7 +578,7 @@ impl Service {
             // Refuse publication if recovery advanced again during the rebuild.
             let mut latest = self.manifest(series.exchange).await?;
             latest.retain(|partition, _| *partition >= day(series.anchor));
-            if latest != series.manifest {
+            if has_revised_history(&series, &latest) {
                 self.replace_or_restart(&series, latest).await?;
                 return Ok(true);
             }
@@ -570,9 +607,9 @@ impl Service {
     }
     async fn replace_or_restart(&self, s: &Series, mut manifest: Manifest) -> Result<()> {
         let s = s.clone();
-        let anchor = s
-            .anchor
-            .max((now_us() - 30 * DAY_US).div_euclid(3_600_000_000) * 3_600_000_000);
+        let anchor = s.anchor.max(
+            (now_us() - i64::from(s.lookback) * DAY_US).div_euclid(3_600_000_000) * 3_600_000_000,
+        );
         manifest.retain(|partition, _| *partition >= day(anchor));
         self.db.call(move|c|{
             let tx=c.transaction()?;let checkpoint=postcard::to_allocvec(&Checkpoint::default())?;
@@ -590,13 +627,16 @@ impl Service {
     }
     pub async fn schedule_replacements(&self, exchange: Exchange) -> Result<()> {
         let manifest = self.manifest(exchange).await?;
-        let candidates=self.db.call(move|c|{let mut q=c.prepare("SELECT * FROM series WHERE market=? AND active=1 AND status='ready' AND NOT EXISTS(SELECT 1 FROM series AS replacement WHERE replacement.supersedes=series.id AND replacement.status IN ('queued','building'))")?;Ok(q.query_map([exchange.id()],row)?.collect::<rusqlite::Result<Vec<_>>>()?)}).await?;
+        // Do not recreate expired replacement jobs after maintenance removes
+        // them. Otherwise each job protects its old parent from deletion and
+        // the pair is recreated indefinitely, even with no chart subscribers.
+        let candidates=self.db.call(move|c|{let mut q=c.prepare("SELECT * FROM series WHERE market=? AND active=1 AND status='ready' AND requested>? AND NOT EXISTS(SELECT 1 FROM series AS replacement WHERE replacement.supersedes=series.id AND replacement.status IN ('queued','building'))")?;Ok(q.query_map(params![exchange.id(),now_us()-DAY_US],row)?.collect::<rusqlite::Result<Vec<_>>>()?)}).await?;
         for s in candidates {
             let relevant: Manifest = manifest
                 .range(day(s.anchor)..)
                 .map(|(day, revision)| (*day, *revision))
                 .collect();
-            if s.manifest != relevant {
+            if has_revised_history(&s, &relevant) {
                 self.replace_or_restart(&s, relevant).await?;
             }
         }
@@ -750,4 +790,122 @@ fn drain_bars(
         })
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn trev_lookback_bounds_the_build_and_identifies_a_separate_series() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut config = Config::load()?;
+        config.directory = directory.path().into();
+        let service = Service::open(config, Health::new("test", CancellationToken::new())).await?;
+        let request = |lookback| Request {
+            exchange: Exchange::Binance,
+            kind: Kind::Trev,
+            a: 314,
+            b: 471,
+            lookback,
+        };
+        let five = service.request(request(5)).await?;
+        let thirty = service.request(request(30)).await?;
+        assert_ne!(five.key, thirty.key);
+        assert_eq!(five.key, service.request(request(5)).await?.key);
+        assert!(five.anchor - thirty.anchor >= 25 * DAY_US - 3_600_000_000);
+        assert!(five.anchor - thirty.anchor <= 25 * DAY_US + 3_600_000_000);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn expired_archive_does_not_replace_ready_chart_or_recreate_idle_job() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut config = Config::load()?;
+        config.directory = directory.path().into();
+        config.collector_urls.clear();
+        let service = Service::open(config, Health::new("test", CancellationToken::new())).await?;
+        let old_day = day(now_us()) - 30;
+        service
+            .db
+            .call(move |c| {
+                c.execute(
+                    "INSERT INTO archives(market,day,revision,status) VALUES(1,?,7,'verified')",
+                    [old_day],
+                )?;
+                Ok(())
+            })
+            .await?;
+        let original = service
+            .request(Request {
+                exchange: Exchange::Binance,
+                kind: Kind::Trev,
+                a: 314,
+                b: 471,
+                lookback: 30,
+            })
+            .await?;
+        let id = original.id;
+        assert_eq!(original.manifest.get(&old_day), Some(&7));
+        service
+            .db
+            .call(move |c| {
+                c.execute("UPDATE series SET status='ready' WHERE id=?", [id])?;
+                c.execute("DELETE FROM archives WHERE market=1 AND day=?", [old_day])?;
+                Ok(())
+            })
+            .await?;
+        service.schedule_replacements(Exchange::Binance).await?;
+        assert_eq!(
+            service
+                .db
+                .call(|c| Ok(
+                    c.query_row("SELECT count(*) FROM series", [], |r| r.get::<_, u64>(0))?
+                ))
+                .await?,
+            1
+        );
+
+        let new_day = day(now_us()) - 1;
+        service
+            .db
+            .call(move |c| {
+                c.execute(
+                    "INSERT INTO archives(market,day,revision,status) VALUES(1,?,8,'verified')",
+                    [new_day],
+                )?;
+                Ok(())
+            })
+            .await?;
+        service.schedule_replacements(Exchange::Binance).await?;
+        assert_eq!(
+            service
+                .db
+                .call(move |c| Ok(c.query_row(
+                    "SELECT count(*) FROM series WHERE supersedes=?",
+                    [id],
+                    |r| r.get::<_, u64>(0)
+                )?))
+                .await?,
+            1
+        );
+
+        service.db.call(move |c| {
+            c.execute("UPDATE series SET requested=?", [now_us() - DAY_US - 1])?;
+            c.execute("DELETE FROM series WHERE requested<? AND id NOT IN (SELECT supersedes FROM series WHERE supersedes IS NOT NULL)", [now_us()-DAY_US])?;
+            Ok(())
+        }).await?;
+        service.schedule_replacements(Exchange::Binance).await?;
+        assert_eq!(
+            service
+                .db
+                .call(|c| Ok(
+                    c.query_row("SELECT count(*) FROM series", [], |r| r.get::<_, u64>(0))?
+                ))
+                .await?,
+            1
+        );
+        Ok(())
+    }
 }

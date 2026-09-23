@@ -26,10 +26,12 @@ ClickHouse and the collectors start independently. Collectors journal through Cl
 ## Verification before cutover
 
 1. Run Rust unit/oracle tests, Clippy, the isolated ClickHouse integration test, and frontend footprint tests/build (`native/footprints/README.md`).
-2. Build the footprint image and check its CLI and health commands. Its final runtime must contain no Python executable, package, or wheel.
+2. Build the footprint image and check its CLI and health commands. Its final runtime must contain no Python executable, package, or wheel. For an existing deployment, run `footprints warm-prepared --days 5` from the candidate image against the existing ClickHouse and control volume before switching the chart API; verified archives then have shared TRev tapes ready for new settings.
 3. Start an isolated Rust stack with fresh volumes/database, then inspect counts and duplicates. Exercise ClickHouse outages, collector SIGTERM/restart, standby handoff, and archive verification. Confirm queued journals drain afterward.
 4. Run `footprints soak --hours 72 --output /var/lib/footprints/soak.jsonl` inside the API container. Preserve readiness, queue growth, delivery/chart lag, reconnects, gaps, and archive errors. A short smoke test does not establish long-term uptime; record explicitly when an authorized release precedes this observation period.
-5. Compare real 30-day TRev cold/prepared loads and one-day Tick loads with the prior results in `benchmarks/results`, using the same hardware/history. The CLI scalar/prepared benchmark isolates engine speed and is not an end-to-end improvement claim.
+5. Measure public request-to-ready-snapshot time for real five-day and 30-day TRev and one-day Tick charts, with both cold and prepared input. Record the market and chart settings. The CLI scalar/prepared benchmark isolates engine speed and is not an end-to-end improvement claim.
+
+The [local cold and prepared HTTP measurements](../benchmarks/results/footprint-cold-http-2026-09-23.json) establish a server-side baseline; production and browser latency still require measurement after deployment.
 
 ## Initial cutover from Python
 

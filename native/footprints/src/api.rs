@@ -210,6 +210,9 @@ async fn bars(
     if !s.active {
         return Err(anyhow::anyhow!("CHART_SERIES_REPLACED").into());
     }
+    if s.kind == Kind::Trev && lookback > s.lookback {
+        return Err(bad("INVALID_LOOKBACK_DAYS"));
+    }
     if s.status != "ready" {
         return Ok((StatusCode::CONFLICT,Json(json!({"code":"CHART_SERIES_NOT_READY","error":"Chart history is building","seriesKey":s.key,"status":s.status,"errorCode":s.error}))).into_response());
     }
