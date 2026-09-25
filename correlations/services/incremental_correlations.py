@@ -37,7 +37,7 @@ from core.redis_streams import (
 from correlations.services.save_correlations import (
     save_correlation_matrices_batch_to_db,
 )
-from correlations.selectors import get_historical_correlation_matrix
+from correlations.selectors import get_historical_correlation_matrices
 
 
 class CorrelationTracker:
@@ -303,7 +303,7 @@ class CorrelationCalculator:
         self.initialized = False
         self.last_update_time: float = 0
         self.update_count: int = 0
-        self._data_types = tuple(KLINE_FIELD_MAP)
+        self._data_types = tuple(EXCHANGE_CONFIG[exchange]["data_types"])
         self._last_processed_kline_timestamp_ms: Optional[int] = None
         self._last_processed_stream_id: Optional[str] = None
         self._throttled_log_at: Dict[str, float] = {}
@@ -431,20 +431,22 @@ class CorrelationCalculator:
         max_hours = max(self.hours_options)
         self.trackers = {}
 
+        fetch_start = time.time()
+        historical_matrices = get_historical_correlation_matrices(
+            hours=max_hours,
+            symbols=self.symbols,
+            symbol_to_idx=self.symbol_to_idx,
+            exchange=self.exchange,
+            contract_type=self.contract_type,
+            data_types=self._data_types,
+            end_time=end_time,
+        )
+        print(
+            f"[{self.exchange}] Loaded {len(historical_matrices)} historical matrices in {time.time() - fetch_start:.2f}s"
+        )
+
         for data_type in self._data_types:
-            fetch_start = time.time()
-            historical_matrix = get_historical_correlation_matrix(
-                hours=max_hours,
-                symbols=self.symbols,
-                symbol_to_idx=self.symbol_to_idx,
-                exchange=self.exchange,
-                contract_type=self.contract_type,
-                data_type=data_type,
-                end_time=end_time,
-            )
-            print(
-                f"[{self.exchange}] Loaded {data_type} matrix {historical_matrix.shape} in {time.time() - fetch_start:.2f}s"
-            )
+            historical_matrix = historical_matrices.pop(data_type)
 
             for hours in sorted(self.hours_options, reverse=True):
                 window = hours * 60
@@ -972,6 +974,13 @@ class CorrelationCalculator:
         )
 
         self.initialized = True
+        unsupported_keys = [
+            f"correlations:{data_type}:{hours}:{self.exchange}:{self.contract_type}"
+            for data_type in set(KLINE_FIELD_MAP) - set(self._data_types)
+            for hours in self.hours_options
+        ]
+        if unsupported_keys:
+            self.redis.delete(*unsupported_keys)
         self._cache_correlations(save_to_db=False)
 
         # Mark the initial timestamp as processed to prevent duplicate processing
