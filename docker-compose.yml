@@ -19,42 +19,6 @@ x-env-common: &env-common
   POSTGRES_USER: ${POSTGRES_USER}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
-x-footprint-environment: &footprint-environment
-  FOOTPRINT_DATABASE: ${FOOTPRINT_DATABASE:-footprints_rust}
-  FOOTPRINT_CLICKHOUSE_URL: ${FOOTPRINT_CLICKHOUSE_URL:-http://clickhouse:8123}
-  CLICKHOUSE_USER: ${CLICKHOUSE_USER:-footprints}
-  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
-  FOOTPRINT_DATA_DIR: /var/lib/footprints
-  FOOTPRINT_OUTBOX_MAX_BYTES: ${FOOTPRINT_OUTBOX_MAX_BYTES:-2147483648}
-  FOOTPRINT_DISK_RESERVE_BYTES: ${FOOTPRINT_DISK_RESERVE_BYTES:-5368709120}
-  FOOTPRINT_ALLOWED_ORIGINS: ${FOOTPRINT_ALLOWED_ORIGINS:-https://www.crypto-scanner.xyz,https://crypto-scanner.xyz,http://localhost:5173,http://localhost:3000}
-
-x-footprint-common: &footprint-common
-  image: ${FOOTPRINT_IMAGE:-crypto-scanner-footprints:latest}
-  build:
-    context: .
-    dockerfile: Dockerfile.footprints
-  environment: *footprint-environment
-  restart: unless-stopped
-  init: true
-  read_only: true
-  tmpfs:
-    - /tmp:size=128m
-  cap_drop: [ALL]
-  security_opt: [no-new-privileges:true]
-  stop_grace_period: 60s
-  healthcheck:
-    test: ["CMD", "footprints", "health"]
-    interval: 10s
-    timeout: 5s
-    retries: 3
-    start_period: 15s
-  logging:
-    driver: json-file
-    options:
-      max-size: "10m"
-      max-file: "3"
-
 services:
   db:
     container_name: cs-db
@@ -75,37 +39,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  clickhouse:
-    container_name: cs-clickhouse
-    image: clickhouse:26.3.17.56
-    restart: unless-stopped
-    stop_grace_period: 60s
-    environment:
-      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-footprints}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-footprints}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
-    ports:
-      - "127.0.0.1:${CLICKHOUSE_HOST_PORT:-8123}:8123"
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-      - ./clickhouse/config.d/system-logs.xml:/etc/clickhouse-server/config.d/system-logs.xml:ro
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    healthcheck:
-      test: ["CMD-SHELL", "clickhouse-client --user \"$${CLICKHOUSE_USER}\" --password \"$${CLICKHOUSE_PASSWORD}\" --query 'SELECT 1'"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
     logging:
       driver: "json-file"
       options:
@@ -394,37 +327,6 @@ services:
       timeout: 10s
       retries: 3
 
-  footprint-api:
-    <<: *footprint-common
-    container_name: cs-footprint-api
-    command: ["serve"]
-    volumes:
-      - footprint_rust_control:/var/lib/footprints
-
-  binance-footprints:
-    <<: *footprint-common
-    image: ${BINANCE_FOOTPRINT_IMAGE:-${FOOTPRINT_IMAGE:-crypto-scanner-footprints:latest}}
-    container_name: cs-binance-footprints
-    command: ["collect", "--exchange", "binance"]
-    volumes:
-      - binance_footprint_rust:/var/lib/footprints
-
-  bybit-footprints:
-    <<: *footprint-common
-    image: ${BYBIT_FOOTPRINT_IMAGE:-${FOOTPRINT_IMAGE:-crypto-scanner-footprints:latest}}
-    container_name: cs-bybit-footprints
-    command: ["collect", "--exchange", "bybit"]
-    volumes:
-      - bybit_footprint_rust:/var/lib/footprints
-
-  hyperliquid-footprints:
-    <<: *footprint-common
-    image: ${HYPERLIQUID_FOOTPRINT_IMAGE:-${FOOTPRINT_IMAGE:-crypto-scanner-footprints:latest}}
-    container_name: cs-hyperliquid-footprints
-    command: ["collect", "--exchange", "hyperliquid"]
-    volumes:
-      - hyperliquid_footprint_rust:/var/lib/footprints
-
   gateway:
     image: nginx:1.28-alpine
     container_name: cs-gateway
@@ -432,18 +334,9 @@ services:
     ports:
       - "127.0.0.1:${APP_HOST_PORT:-8000}:8000"
     volumes:
-      - ./deploy/footprint-gateway.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/gateway.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - app
-      - footprint-api
 
 volumes:
-  footprint_rust_control:
-  binance_footprint_rust:
-  bybit_footprint_rust:
-  hyperliquid_footprint_rust:
-  # Legacy volumes are never mounted by Rust; remove manually after release verification.
-  binance_footprint_outbox:
-  bybit_footprint_outbox:
   pgdata18:
-  clickhouse_data:

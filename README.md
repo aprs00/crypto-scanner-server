@@ -2,13 +2,6 @@
 
 A Django-based server for scanning and analyzing cryptocurrency market data.
 
-See [Tick and TRev chart data](docs/footprints.md) for the execution-driven
-ClickHouse pipeline. Exact projector rules live in
-[Tick/TRev projector semantics](docs/footprint-algorithm-semantics.md), and
-[ClickHouse operations](clickhouse/README.md) documents the local schema.
-The small single-host release checklist is in
-[Footprint production deployment](docs/footprints-production.md).
-
 
 # Populate Klines
 

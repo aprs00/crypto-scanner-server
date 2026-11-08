@@ -1,8 +1,6 @@
 x-production:
   # Fail interpolation early instead of accidentally deploying `latest`.
   app-image: ${APP_IMAGE:?Set APP_IMAGE to an immutable commit-tagged image}
-  footprint-image: ${FOOTPRINT_IMAGE:?Set FOOTPRINT_IMAGE to an immutable Rust image}
-  clickhouse-password: ${CLICKHOUSE_PASSWORD:?Set a non-empty CLICKHOUSE_PASSWORD}
   postgres-password: ${POSTGRES_PASSWORD:?Set a non-empty POSTGRES_PASSWORD}
   secret-key: ${SECRET_KEY:?Set a non-empty SECRET_KEY}
 
@@ -20,8 +18,6 @@ services:
 
   binance-klines:
     volumes: !reset []
-  binance-footprints:
-    build: !reset null
   binance-correlations:
     volumes: !reset []
   binance-zscore:
@@ -31,8 +27,6 @@ services:
 
   hyperliquid-klines:
     volumes: !reset []
-  hyperliquid-footprints:
-    build: !reset null
   hyperliquid-correlations:
     volumes: !reset []
   hyperliquid-zscore:
@@ -42,8 +36,6 @@ services:
 
   bybit-klines:
     volumes: !reset []
-  bybit-footprints:
-    build: !reset null
   bybit-correlations:
     volumes: !reset []
   bybit-zscore:
@@ -60,7 +52,5 @@ services:
   okx-cointegration:
     volumes: !reset []
 
-  footprint-api:
-    build: !reset null
   db-maintenance:
     volumes: !reset []
