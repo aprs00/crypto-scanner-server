@@ -63,7 +63,6 @@ INSTALLED_APPS = [
     "correlations",
     "zscore",
     "averages",
-    "cointegration",
     "rest_framework",
 ]
 

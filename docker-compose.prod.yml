@@ -22,16 +22,12 @@ services:
     volumes: !reset []
   binance-zscore:
     volumes: !reset []
-  binance-cointegration:
-    volumes: !reset []
 
   hyperliquid-klines:
     volumes: !reset []
   hyperliquid-correlations:
     volumes: !reset []
   hyperliquid-zscore:
-    volumes: !reset []
-  hyperliquid-cointegration:
     volumes: !reset []
 
   bybit-klines:
@@ -40,16 +36,12 @@ services:
     volumes: !reset []
   bybit-zscore:
     volumes: !reset []
-  bybit-cointegration:
-    volumes: !reset []
 
   okx-klines:
     volumes: !reset []
   okx-correlations:
     volumes: !reset []
   okx-zscore:
-    volumes: !reset []
-  okx-cointegration:
     volumes: !reset []
 
   db-maintenance:

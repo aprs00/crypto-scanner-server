@@ -22,7 +22,6 @@ class DatabaseMaintenanceTests(SimpleTestCase):
     def test_enabled_cycle_runs_every_cleanup(self):
         with (
             patch.object(db_maintenance, "cleanup_old_correlation_data") as correlation,
-            patch.object(db_maintenance, "cleanup_old_cointegration_data") as cointegration,
             patch.object(db_maintenance, "cleanup_old_zscore_data") as zscore,
             patch.object(db_maintenance, "cleanup_old_kline_data") as klines,
         ):
@@ -30,9 +29,6 @@ class DatabaseMaintenanceTests(SimpleTestCase):
 
         correlation.assert_called_once_with(
             retention_hours=db_maintenance.CORRELATION_RETENTION_HOURS
-        )
-        cointegration.assert_called_once_with(
-            retention_hours=db_maintenance.COINTEGRATION_RETENTION_HOURS
         )
         zscore.assert_called_once_with(
             retention_hours=db_maintenance.ZSCORE_RETENTION_HOURS
@@ -42,7 +38,6 @@ class DatabaseMaintenanceTests(SimpleTestCase):
     def test_disabled_cycle_only_skips_kline_cleanup(self):
         with (
             patch.object(db_maintenance, "cleanup_old_correlation_data"),
-            patch.object(db_maintenance, "cleanup_old_cointegration_data"),
             patch.object(db_maintenance, "cleanup_old_zscore_data"),
             patch.object(db_maintenance, "cleanup_old_kline_data") as klines,
         ):

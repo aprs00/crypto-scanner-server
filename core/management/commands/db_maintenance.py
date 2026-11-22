@@ -3,13 +3,11 @@ import time
 from django.core.management.base import BaseCommand
 from django.db import connection
 from correlations.db_utils import cleanup_old_correlation_data
-from cointegration.db_utils import cleanup_old_cointegration_data
 from exchange_connections.db_utils import cleanup_old_kline_data
 from zscore.services.db_utils import cleanup_old_zscore_data
 
 INTERVAL_SECONDS = 300
 CORRELATION_RETENTION_HOURS = 4
-COINTEGRATION_RETENTION_HOURS = 8
 ZSCORE_RETENTION_HOURS = 12
 KLINE_RETENTION_DAYS = 30
 
@@ -23,7 +21,6 @@ def _env_flag(name: str, *, default: bool) -> bool:
 
 def _run_cleanup_cycle(*, kline_cleanup_enabled: bool) -> None:
     cleanup_old_correlation_data(retention_hours=CORRELATION_RETENTION_HOURS)
-    cleanup_old_cointegration_data(retention_hours=COINTEGRATION_RETENTION_HOURS)
     cleanup_old_zscore_data(retention_hours=ZSCORE_RETENTION_HOURS)
     if kline_cleanup_enabled:
         cleanup_old_kline_data(retention_days=KLINE_RETENTION_DAYS)
