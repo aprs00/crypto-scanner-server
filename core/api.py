@@ -2,7 +2,6 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
 from core.constants import ACTIVE_EXCHANGES, EXCHANGE_CONFIG
-from cointegration.constants import COINTEGRATION_LIVE_TABLE_CONFIG
 from exchange_connections.constants import get_btc_symbol
 from exchange_connections.selectors import (
     get_exchange_symbols,
@@ -17,13 +16,6 @@ def get_chart_defaults(exchange: str, market_cap_symbols: list[str]) -> dict:
     """
     default_symbol = get_btc_symbol(exchange)
 
-    default_window = next(
-        iter(COINTEGRATION_LIVE_TABLE_CONFIG["window_options"].values()), 1440
-    )
-    comparison_symbols = [
-        symbol for symbol in market_cap_symbols if symbol != default_symbol
-    ][:5]
-
     return {
         "heatmap": {
             "symbols": market_cap_symbols[:50],
@@ -36,14 +28,6 @@ def get_chart_defaults(exchange: str, market_cap_symbols: list[str]) -> dict:
             "comparison_symbols": [
                 s for s in market_cap_symbols if s != default_symbol
             ][:10],
-        },
-        "cointegration_pair_history": {
-            "base_symbol": default_symbol,
-            "comparison_symbols": comparison_symbols,
-            "window": str(default_window),
-        },
-        "cointegration_live_table": {
-            "symbols": market_cap_symbols[:75],
         },
     }
 
@@ -81,18 +65,9 @@ def bootstrap(request):
         ]
     }
 
-    cointegration_live_table = {
-        **COINTEGRATION_LIVE_TABLE_CONFIG,
-        "window_options": {
-            key: str(value)
-            for key, value in COINTEGRATION_LIVE_TABLE_CONFIG["window_options"].items()
-        },
-    }
-
     data = {
         "exchanges": [{"id": k, "name": v["name"]} for k, v in EXCHANGE_CONFIG.items() if k in ACTIVE_EXCHANGES],
         "exchange_data": exchange_data,
-        "cointegration_live_table": cointegration_live_table,
     }
 
     return JsonResponse(data, safe=False)

@@ -39,8 +39,8 @@ Pick the existing exchange that's structurally closest to mirror — Bybit V5 is
 | `exchange_connections/management/commands/klines.py` | Add the new enum value to `EXCHANGE_KLINES_MAP` and the `--exchange` help string. |
 | `exchange_connections/base/kline_collector.py` | Extend `_map_market_cap_symbol` to convert a CoinGecko base symbol (`BTC`) into the exchange's symbol format. Without this, market-cap rankings will silently match zero symbols. |
 | `exchange_connections/services/klines_ingest.py` | Touch the comment at the dict-format branch if you want it to name your exchange. |
-| `cointegration/management/commands/cointegration_scan.py`, `correlations/management/commands/incremental_correlations.py`, `zscore/management/commands/incremental_zscore.py` | Add the new exchange to the `--exchange` help string. (No `choices=` to update — these accept any string.) |
-| `docker-compose.yml` | Add 4 services after the previous exchange's block: `<name>-klines`, `<name>-correlations`, `<name>-zscore`, `<name>-cointegration`. Mirror the bybit block exactly, swapping the name. |
+| `correlations/management/commands/incremental_correlations.py`, `zscore/management/commands/incremental_zscore.py` | Add the new exchange to the `--exchange` help string. (No `choices=` to update — these accept any string.) |
+| `docker-compose.yml` | Add 3 services after the previous exchange's block: `<name>-klines`, `<name>-correlations`, `<name>-zscore`. Mirror the bybit block exactly, swapping the name. |
 | `README.md` | Add a populate example. |
 
 No DB migration is needed — exchange and symbol rows are created on demand via `get_or_create` in `klines_ingest.py`.
